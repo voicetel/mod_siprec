@@ -37,7 +37,7 @@
 #include <switch_types.h>
 
 switch_status_t start_recording_session(switch_core_session_t *session, const char *recording_server_name);
-switch_status_t stop_recording_session(switch_core_session_t session);
+switch_status_t stop_recording_session(switch_core_session_t *session);
 
 #endif
 

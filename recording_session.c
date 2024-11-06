@@ -29,6 +29,7 @@
  * mod_siprec.c -- SIPRec RFC 7866 implementation
  *
  */
+#include <switch.h>
 #include "mod_siprec.h"
 #include "recording_session.h"
 
@@ -36,12 +37,12 @@ static switch_status_t my_on_destroy(switch_core_session_t *session)
 {
     switch_assert(session);
     if (stop_recording_session(session) == SWITCH_STATUS_FALSE) {
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARN, "Failed to stop recording session\n");
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING, "Failed to stop recording session\n");
     }
     return SWITCH_STATUS_SUCCESS;
 }
 
-static switch_state_handler_table_t state_handlers = {
+static switch_state_handler_table_t state_handlers  __attribute__((unused)) = {
     /*.on_init */ NULL,
     /*.on_routing */ NULL,
     /*.on_execute */ NULL,
@@ -56,6 +57,7 @@ static switch_state_handler_table_t state_handlers = {
     /*.on_destroy */ my_on_destroy,
     SSH_FLAG_STICKY
 };
+
 
 switch_status_t stop_recording_session(switch_core_session_t *session)
 {
@@ -120,7 +122,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 
     recording = (recording_t *) switch_core_alloc(recording_pool, sizeof(*recording));
 
-    switch_core_new_memory_pool(recording_pool);
+    switch_core_new_memory_pool(&recording_pool);
     recording->pool = recording_pool;
     switch_mutex_init(&recording->mutex, SWITCH_MUTEX_NESTED, recording->pool);
 
