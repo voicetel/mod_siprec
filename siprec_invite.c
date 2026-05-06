@@ -46,6 +46,7 @@
  * label-aware builder for the day that hook lands.
  */
 #include "siprec_invite.h"
+#include "siprec_sdp.h"
 
 #include <switch.h>
 
@@ -325,6 +326,20 @@ switch_status_t siprec_invite_send(
         }
     }
 
+    /* Pull the local SDP off the channel for the post-originate
+     * label-injection re-INVITE (below). We do this BEFORE
+     * rwunlock so the pointer's lifetime is well-defined; the
+     * inject helper builds a fresh heap string we can use after
+     * unlock. zstr fallback covers the (rare) case where
+     * sofia hasn't materialised sip_local_sdp_str by the time
+     * originate returns. */
+    const char *local_sdp_now =
+        switch_channel_get_variable(rch, "sip_local_sdp_str");
+    char *labelled_sdp = NULL;
+    if (!zstr(local_sdp_now)) {
+        labelled_sdp = siprec_sdp_inject_label(local_sdp_now, "1");
+    }
+
     switch_core_session_rwunlock(new_session);
 
     for (size_t s = 0; s < ctx->negotiated_count; s++) {
@@ -339,16 +354,47 @@ switch_status_t siprec_invite_send(
             srs_uri);
     }
 
-    /* sdp_body parameter is reserved for a future strict-RFC
-     * SDP-override path (RFC 7866 §8.5 a=label per stream).
-     * The previous implementation fired an immediate
-     * re-INVITE with the caller-supplied labelled SDP, but
-     * that body carried port=1 placeholders and a fresh
-     * o=session-id — both incompatible with the dialog the
-     * SRS had just answered. The re-INVITE was therefore
-     * always rejected. Until a proper "set local SDP before
-     * originate" path is wired through mod_sofia, the
-     * argument is unused. */
+    /* RFC 7866 §8.5 label injection. mod_sofia's auto-gen
+     * offer doesn't emit a=label:N, so we surgically modify
+     * the just-negotiated local SDP (preserving every byte
+     * except the o= version bump and the new a=label line)
+     * and re-INVITE. The labelled SDP carries the SAME ports
+     * / codec / c= as what the SRS just accepted, so a
+     * conformant SRS treats it as a session modification and
+     * applies the label.
+     *
+     * Fire-and-forget. If the SRS rejects the re-INVITE
+     * (488 / 5xx), RFC 3261 §14.1 keeps the dialog at the
+     * pre-modification SDP — the recording continues without
+     * labels, which is degraded but not broken. media_attach
+     * runs immediately after this returns, using the original
+     * negotiated[] endpoints either way.
+     *
+     * Multi-stream limitation: the same "1" label goes into
+     * every m= block today. mod_sofia's auto-gen produces a
+     * single m=audio so this is effectively single-stream.
+     * Per-stream distinct labels (a=label:1 + a=label:2 in
+     * one offer) need the SDP-override hook through mod_sofia
+     * — sdp_body parameter (already void-cast at function top)
+     * is reserved for that future path. */
+
+    if (labelled_sdp) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,
+            "siprec: dispatching post-originate label re-INVITE "
+            "(RFC 7866 §8.5)\n");
+        if (siprec_invite_reinvite(recording, labelled_sdp, NULL)
+            != SWITCH_STATUS_SUCCESS) {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+                "siprec: label re-INVITE dispatch failed; recording "
+                "continues without a=label:1 in the offer\n");
+        }
+        siprec_sdp_free(labelled_sdp);
+    } else if (zstr(local_sdp_now)) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+            "siprec: sip_local_sdp_str not yet materialised; skipping "
+            "RFC 7866 §8.5 label injection — recording continues "
+            "without a=label:1 in the offer\n");
+    }
 
     return SWITCH_STATUS_SUCCESS;
 }
