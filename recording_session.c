@@ -98,36 +98,72 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
     recording_t *recording = NULL;
     const char *uuid = switch_core_session_get_uuid(session);
     char *recording_key = NULL;
-    switch_memory_pool_t *recording_pool;
+    switch_memory_pool_t *recording_pool = NULL;
+
+    /* Reject NULL server name early. APR's switch_core_hash_find with
+     * APR_HASH_KEY_STRING calls strlen() on the key — passing NULL
+     * segfaults FreeSWITCH.
+     */
+    if (zstr(recording_server_name)) {
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+            "siprec: no recording server specified (usage: siprec <server-name>)\n");
+        return SWITCH_STATUS_FALSE;
+    }
 
     switch_mutex_lock(globals.recording_servers_mutex);
     server = switch_core_hash_find(globals.recording_servers_hash, recording_server_name);
     switch_mutex_unlock(globals.recording_servers_mutex);
 
     if (!server) {
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Recording server %s not found\n", recording_server_name);
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+            "siprec: recording server %s not found in siprec.conf\n", recording_server_name);
         return SWITCH_STATUS_FALSE;
     }
 
     recording_key = switch_mprintf("%s-%s", recording_server_name, uuid);
 
+    /* Duplicate-detect against the recordings hash, NOT the
+     * recording_servers hash. The original code looked up the new
+     * recording_key in the SERVER hash (a different keyspace), which
+     * would never match — the dup check was effectively dead.
+     */
     switch_mutex_lock(globals.recordings_mutex);
-    recording = switch_core_hash_find(globals.recording_servers_hash, recording_key);
+    recording = switch_core_hash_find(globals.recordings_hash, recording_key);
     switch_mutex_unlock(globals.recordings_mutex);
 
     if (recording) {
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Recording %s already exists\n", recording_key);
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+            "siprec: recording %s already exists\n", recording_key);
+        switch_safe_free(recording_key);
+        return SWITCH_STATUS_FALSE;
+    }
+
+    /* CRITICAL FIX: create the memory pool BEFORE allocating from
+     * it. The original code did the inverse — `switch_core_alloc(
+     * recording_pool, ...)` was called while recording_pool was
+     * still uninitialized (declared but never assigned), which
+     * dereferenced an indeterminate pointer and segfaulted FS on
+     * the first siprec dispatch.
+     */
+    if (switch_core_new_memory_pool(&recording_pool) != SWITCH_STATUS_SUCCESS) {
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+            "siprec: failed to allocate recording memory pool\n");
+        switch_safe_free(recording_key);
         return SWITCH_STATUS_FALSE;
     }
 
     recording = (recording_t *) switch_core_alloc(recording_pool, sizeof(*recording));
-
-    switch_core_new_memory_pool(&recording_pool);
     recording->pool = recording_pool;
     switch_mutex_init(&recording->mutex, SWITCH_MUTEX_NESTED, recording->pool);
 
-    recording->key = recording_key;
-    recording->uuid = switch_core_session_get_uuid(session);
+    /* recording_key was returned by switch_mprintf (heap-allocated);
+     * copy into the recording's pool so the lifetime is bounded by
+     * the recording, not the pool-less malloc. The original key
+     * pointer leaks on the success path; guard with the copy here.
+     */
+    recording->key = switch_core_strdup(recording->pool, recording_key);
+    switch_safe_free(recording_key);
+    recording->uuid = switch_core_strdup(recording->pool, uuid);
     recording->start_epoch = switch_epoch_time_now(NULL);
     recording->session = session;
     recording->server = server;

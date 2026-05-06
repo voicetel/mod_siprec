@@ -102,9 +102,12 @@ static switch_status_t switch_xml_config_parse_module_recording_servers(const ch
 		}
 	}
 
+	/* Only free the root xml — xserver and servers are children
+	 * (returned by switch_xml_child) and live inside the root's
+	 * allocation. Freeing them after switch_xml_free(xml) is a
+	 * use-after-free / double-free that crashes on module reload.
+	 */
 	switch_xml_free(xml);
-	switch_xml_free(xserver);
-	switch_xml_free(servers);
 
 	return status;
 }
@@ -131,14 +134,24 @@ SWITCH_STANDARD_APP(siprec_app_function)
 	char *mydata = NULL;
 	const char *recording_server_name = NULL;
 
+	if (zstr(data)) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+			"siprec: no arguments — usage: siprec <recording_server>\n");
+		return;
+	}
+
 	if (!(mydata = switch_core_session_strdup(session, data))) {
 		return;
 	}
 
-	if ((argc = switch_separate_string(mydata, ' ', argv, (sizeof(argv) / sizeof(argv[0]))))) {
-		if (argc == 2) {
-			recording_server_name = switch_core_session_strdup(session, argv[0]);
-		}
+	/* Original code required argc == 2 to populate the server name —
+	 * which meant a single-arg invocation like `siprec default` left
+	 * recording_server_name as NULL and crashed inside
+	 * start_recording_session. Accept any non-empty first token.
+	 */
+	argc = switch_separate_string(mydata, ' ', argv, (sizeof(argv) / sizeof(argv[0])));
+	if (argc >= 1 && !zstr(argv[0])) {
+		recording_server_name = argv[0];
 	}
 
 	start_recording_session(session, recording_server_name);
