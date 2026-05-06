@@ -98,40 +98,53 @@ switch_status_t siprec_invite_send(
     }
     ctx->sent_body = mp_metadata;
 
-    /* Originate variables. The {curly-brace} prefix sets per-
-     * leg channel variables before dial.
+    /* Originate variables.
      *
-     *   sip_multipart    — appended as a multipart MIME part
-     *                      after the SDP (see sofia_media.c).
-     *   sip_h_Require    — RFC 7866 §6.1: SRS MUST 421 if it
-     *                      doesn't support the siprec extension.
-     *   absolute_codec_string — pin codecs so the leg's auto-
-     *                      generated SDP is predictable
-     *                      (PCMU/PCMA only at the carrier rate).
-     *   ignore_early_media — don't progress media on 1xx; we
-     *                      only care about 200 OK.
-     *   hangup_after_bridge=false — recording leg lives until
-     *                      we BYE it explicitly on caller-side
-     *                      hangup, not when the bridge breaks.
+     * sip_multipart MUST be passed via ovars rather than the
+     * brace-prefixed inline channel variable form. The brace
+     * grammar is parsed by switch_event_create_brackets in
+     * switch_ivr.c and treats `,`, `'`, `}`, and unbalanced
+     * braces inside a value as terminators. The metadata XML
+     * legitimately contains all three (commas in URIs,
+     * apostrophes in escaped attributes, and braces would
+     * never appear but the safety margin matters), so the
+     * inline form silently truncates or corrupts the body.
+     * ovars values are added verbatim to the new channel.
+     *
+     * Constants stay inline since they're known-safe:
+     *   absolute_codec_string  pins the auto-generated SDP
+     *                          to the carrier-side codecs.
+     *   ignore_early_media     suppresses 1xx media progress.
+     *   hangup_after_bridge    the recording leg lives until
+     *                          we BYE it explicitly.
      *
      * Trailing app: park() keeps the leg alive after answer.
      * Without it the leg drops the moment the originate
      * returns and the media bug has nothing to forward to.
      */
-    char dial_string[2048];
+    switch_event_t *ovars = NULL;
+    if (switch_event_create_plain(&ovars, SWITCH_EVENT_CHANNEL_DATA)
+        != SWITCH_STATUS_SUCCESS) {
+        return SWITCH_STATUS_FALSE;
+    }
+    /* RFC 7866 §6.1: SRS MUST 421 if siprec extension unsupported. */
+    switch_event_add_header_string(ovars, SWITCH_STACK_BOTTOM,
+        "sip_h_Require", "siprec");
+    switch_event_add_header_string(ovars, SWITCH_STACK_BOTTOM,
+        "sip_multipart", mp_metadata);
+
+    char dial_string[512];
     int dn = switch_snprintf(dial_string, sizeof(dial_string),
         "{ignore_early_media=true,"
         "hangup_after_bridge=false,"
-        "sip_h_Require=siprec,"
-        "sip_multipart=%s,"
-        "absolute_codec_string='PCMU,PCMA',"
-        "originate_timeout=15"
+        "absolute_codec_string='PCMU,PCMA'"
         "}sofia/%s/%s &park()",
-        mp_metadata, sofia_profile, srs_uri);
+        sofia_profile, srs_uri);
 
     if (dn <= 0 || (size_t)dn >= sizeof(dial_string)) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
-            "siprec: dial-string overflow (metadata too large for inline var)\n");
+            "siprec: dial-string overflow\n");
+        switch_event_destroy(&ovars);
         return SWITCH_STATUS_FALSE;
     }
 
@@ -148,10 +161,12 @@ switch_status_t siprec_invite_send(
         /*cid_name*/     "siprec",
         /*cid_num*/      "siprec",
         /*caller_p*/     NULL,
-        /*ovars*/        NULL,
+        /*ovars*/        ovars,
         /*flags*/        SOF_NONE,
         /*cancel_cause*/ NULL,
         /*caller_dialed*/NULL);
+
+    switch_event_destroy(&ovars);
 
     if (st != SWITCH_STATUS_SUCCESS) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
