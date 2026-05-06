@@ -8,8 +8,3 @@
 
 # Test binary
 siprec_test
-
-# Claude Code per-machine permission overrides (force-with-lease grant
-# etc) — must NOT be committed; downstream forks shouldn't inherit
-# permissions a single operator authorized for themselves.
-.claude/settings.local.json
