@@ -4,22 +4,46 @@
 # the full FS source tree + ./configure-generated headers).
 #
 # Usage:
-#   make -f Makefile.test test
-#   make -f Makefile.test lint
+#   make -f Makefile.test test          # strict-warnings build + run
+#   make -f Makefile.test lint          # cppcheck across every TU
+#   make -f Makefile.test asan          # ASAN+UBSAN+LSAN test run
+#   make -f Makefile.test analyzer      # gcc -fanalyzer on builders
+#   make -f Makefile.test all-checks    # everything above
 #   make -f Makefile.test clean
 
 CC      ?= gcc
-CFLAGS  ?= -Wall -Wextra -Wpedantic -O2 -std=c11
+CFLAGS  ?= -Wall -Wextra -Wpedantic -Werror -O2 -g -std=c11
 TEST    = siprec_test
 SOURCES = siprec_test.c siprec_sdp.c siprec_metadata.c
 
-.PHONY: test lint clean
+# C11 Annex K bounds-checked stdlib (memcpy_s, vsnprintf_s, ...)
+# is provided by libsafec (`apt install libsafec-dev`). The
+# builders + test driver use the _s variants throughout so
+# clang-tidy's clang-analyzer-security.insecureAPI check stays
+# green without any per-call NOLINT or global config
+# suppression.
+LIBS    = -lsafec
+
+# ASAN+UBSAN flags. -O1 instead of -O2 keeps reports readable;
+# -fno-omit-frame-pointer gets accurate stacks. Do NOT combine
+# with -fsanitize=thread in the same build — ASAN and TSAN are
+# mutually exclusive (Clang/GCC reject the combination).
+SAN_CFLAGS  = -O1 -g -std=c11 -Wall -Wextra -Wpedantic \
+              -fsanitize=address,undefined -fno-omit-frame-pointer
+SAN_LDFLAGS = -fsanitize=address,undefined
+
+# Realistic sanitizer options: stop on the first failure so the
+# CI signal is unambiguous; print a stack on every report.
+SAN_RUN_ENV = UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+              ASAN_OPTIONS=detect_leaks=1:halt_on_error=1
+
+.PHONY: test lint asan analyzer tidy all-checks clean
 
 test: $(TEST)
 	./$(TEST)
 
 $(TEST): $(SOURCES) siprec_sdp.h siprec_metadata.h
-	$(CC) $(CFLAGS) $(SOURCES) -o $@
+	$(CC) $(CFLAGS) $(SOURCES) $(LIBS) -o $@
 
 lint:
 	cppcheck --enable=all --inline-suppr --check-level=exhaustive \
@@ -31,6 +55,38 @@ lint:
 	    siprec_sdp.c siprec_metadata.c siprec_test.c \
 	    siprec_invite.c siprec_media.c siprec_srtp.c \
 	    mod_siprec.c recording_session.c
+
+# AddressSanitizer + UndefinedBehaviorSanitizer + LeakSanitizer
+# (LSAN runs implicitly under ASAN at process exit). Catches:
+#   * heap/stack/global out-of-bounds
+#   * use-after-free
+#   * double-free
+#   * leaks at exit
+#   * signed integer overflow, shift overflow, NULL deref, etc.
+asan:
+	rm -f $(TEST)
+	$(CC) $(SAN_CFLAGS) $(SOURCES) $(LIBS) $(SAN_LDFLAGS) -o $(TEST)
+	$(SAN_RUN_ENV) ./$(TEST)
+
+# gcc -fanalyzer is a flow-sensitive checker that's
+# complementary to cppcheck — finds null-deref, leak, and
+# use-after-free issues across a wider call-graph than
+# cppcheck's pattern matching.
+analyzer:
+	$(CC) -fanalyzer -Wall -Wextra -std=c11 -c siprec_sdp.c -o /dev/null
+	$(CC) -fanalyzer -Wall -Wextra -std=c11 -c siprec_metadata.c -o /dev/null
+	$(CC) -fanalyzer -Wall -Wextra -std=c11 -c siprec_test.c -o /dev/null
+
+# clang-tidy (cross-tool coverage with cppcheck + gcc -fanalyzer).
+# Reads .clang-tidy in the repo root; WarningsAsErrors is on
+# there, so any newly-flagged finding fails the build.
+# Install with `apt install clang-tidy`. scan-build is a
+# separate package (clang-tools) and not currently wired in.
+tidy:
+	clang-tidy siprec_sdp.c siprec_metadata.c siprec_test.c \
+	    -- -Wall -Wextra -std=c11 -I.
+
+all-checks: test lint analyzer asan tidy
 
 clean:
 	rm -f $(TEST)
