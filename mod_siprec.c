@@ -268,15 +268,21 @@ static switch_status_t siprec_change_direction(
 	switch_channel_t *rch = switch_core_session_get_channel(rs);
 	const char *local_sdp =
 		switch_channel_get_variable(rch, "sip_local_sdp_str");
-	char *new_sdp = NULL;
 
-	if (!zstr(local_sdp)) {
-		new_sdp = siprec_sdp_flip_direction(local_sdp, paused);
-	}
+	/* Capture state and produce the rewritten SDP BEFORE
+	 * rwunlock — local_sdp is a pointer into the channel's
+	 * pool, which can be freed once we drop the read-lock and
+	 * sofia / FS-core finish tearing down the session. The
+	 * rewritten new_sdp is a fresh malloc, independent of the
+	 * channel's lifetime. */
+	int   had_local_sdp = !zstr(local_sdp);
+	char *new_sdp       = had_local_sdp
+		? siprec_sdp_flip_direction(local_sdp, paused)
+		: NULL;
 
 	switch_core_session_rwunlock(rs);
 
-	if (zstr(local_sdp)) {
+	if (!had_local_sdp) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
 			SWITCH_LOG_ERROR,
 			"siprec: recording leg has no sip_local_sdp_str — "
