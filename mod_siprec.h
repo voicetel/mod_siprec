@@ -99,16 +99,12 @@ struct recording {
 typedef struct recording recording_t;
 
 typedef struct {
-    char *odbc_dsn;
-    char *dbname;
     int src_enabled;
     int srs_enabled;
     switch_hash_t *recording_servers_hash;
     switch_mutex_t *recording_servers_mutex;
     switch_hash_t *recordings_hash;
     switch_mutex_t *recordings_mutex;
-    switch_mutex_t *db_mutex;
-    switch_bool_t global_database_lock;
 } globals_t;
 
 extern globals_t globals;
