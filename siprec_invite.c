@@ -365,15 +365,23 @@ switch_status_t siprec_invite_send_failover(
         return SWITCH_STATUS_FALSE;
     }
 
+    /* Bound the walk: 16 candidates is comfortably more than
+     * any sane deployment, and the cap stops us from spinning
+     * if the chain accidentally cycles (operator pasted the
+     * same recording-server entry twice with a copy/paste
+     * loop, or future code bug). */
+    enum { SIPREC_FAILOVER_MAX_ATTEMPTS = 16 };
     int attempts = 0;
-    for (const recording_server_t *srv = first; srv; srv = srv->next) {
+    for (const recording_server_t *srv = first;
+         srv && attempts < SIPREC_FAILOVER_MAX_ATTEMPTS;
+         srv = srv->next) {
         attempts++;
 
         char *uri = siprec_uri_for(recording->pool, srv);
         if (!uri) continue;
 
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,
-            "siprec: failover attempt %d/N → %s\n", attempts, uri);
+            "siprec: failover attempt %d → %s\n", attempts, uri);
 
         switch_status_t st = siprec_invite_send(
             recording, sofia_profile, uri, sdp_body, metadata_body);
