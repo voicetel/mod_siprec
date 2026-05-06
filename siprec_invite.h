@@ -39,14 +39,6 @@ typedef struct siprec_invite_ctx {
      * safely instead of dereferencing the bare pointer. */
     char recording_uuid[80];
 
-    /* SDP body sent on INVITE. Owned by the recording's pool. */
-    const char *sent_sdp;
-
-    /* Multipart MIME body sent on INVITE (sdp + metadata).
-     * Owned by the recording's pool. */
-    const char *sent_body;
-    const char *sent_boundary;
-
     /* Negotiated remote RTP endpoint(s) from the 200 OK SDP.
      * Populated by parse_remote_sdp. Filled in once per
      * stream (one per a=label in the SRC offer).

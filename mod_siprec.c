@@ -390,7 +390,6 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_siprec_shutdown)
 		siprec_media_detach(recording);
 		siprec_invite_send_bye(recording);
 
-		switch_mutex_destroy(recording->mutex);
 		switch_core_destroy_memory_pool(&recording->pool);
 	}
 	

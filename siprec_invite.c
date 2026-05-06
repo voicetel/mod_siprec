@@ -173,7 +173,6 @@ switch_status_t siprec_invite_send(
     if (!mp_metadata) {
         return SWITCH_STATUS_FALSE;
     }
-    ctx->sent_body = mp_metadata;
 
     /* Originate variables.
      *

@@ -113,15 +113,13 @@ switch_status_t stop_recording_session(switch_core_session_t *session)
         switch_core_hash_delete(globals.recordings_hash, recording->key);
         switch_mutex_unlock(globals.recordings_mutex);
 
-        /* Tear down the recording's resources. The original code
-         * removed the hash entry but never destroyed the mutex or
-         * the recording's memory pool — every <Stop><Siprec/>
-         * leaked the recording_t struct, its mutex, and its pool's
-         * full allocation arena until module shutdown rolled them
-         * up via the shutdown function's hash walk. With per-call
-         * dispatch on a multi-tenant box, the leak compounds.
-         */
-        switch_mutex_destroy(recording->mutex);
+        /* Tear down the recording's pool. The original code
+         * removed the hash entry but never destroyed the
+         * pool — every <Stop><Siprec/> leaked the recording_t
+         * struct and its pool's full allocation arena until
+         * module shutdown rolled them up via the shutdown
+         * function's hash walk. With per-call dispatch on a
+         * multi-tenant box, the leak compounds. */
         switch_core_destroy_memory_pool(&recording->pool);
     }
     switch_mutex_unlock(globals.recording_servers_mutex);
@@ -164,7 +162,6 @@ static void discard_pending_recording(recording_t *recording)
     switch_core_hash_delete(globals.recordings_hash, recording->key);
     switch_mutex_unlock(globals.recordings_mutex);
 
-    switch_mutex_destroy(recording->mutex);
     switch_core_destroy_memory_pool(&recording->pool);
 }
 
@@ -230,7 +227,6 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 
     recording = (recording_t *) switch_core_alloc(recording_pool, sizeof(*recording));
     recording->pool = recording_pool;
-    switch_mutex_init(&recording->mutex, SWITCH_MUTEX_NESTED, recording->pool);
 
     /* recording_key was returned by switch_mprintf (heap-allocated);
      * copy into the recording's pool so the lifetime is bounded by
@@ -243,7 +239,6 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
     recording->start_epoch = switch_epoch_time_now(NULL);
     recording->session = session;
     recording->server = server;
-    recording->running = 1;
 
     switch_mutex_lock(globals.recordings_mutex);
     switch_core_hash_insert(globals.recordings_hash, recording->key, recording);

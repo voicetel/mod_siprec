@@ -80,11 +80,9 @@ struct recording {
     char *key;
     char *uuid;
     int start_epoch;
-    switch_mutex_t *mutex;
     switch_core_session_t *session;
     recording_server_t *server;
     switch_memory_pool_t *pool;
-    int running;
 
     /* SIP signalling context — populated by siprec_invite_send.
      * Owns the recording-leg session pointer + dialog
