@@ -49,6 +49,17 @@
 
 #include <switch.h>
 
+/* Compile-time invariant: the parser's out_max derived from
+ * sizeof(ctx->negotiated) must equal SIPREC_MAX_STREAMS. If
+ * someone bumps the array size without updating the constant
+ * (or vice versa), this assertion fires before the bug
+ * surfaces at runtime as a parse_remote_sdp truncation. */
+_Static_assert(
+    sizeof(((siprec_invite_ctx_t *)0)->negotiated)
+        / sizeof(((siprec_invite_ctx_t *)0)->negotiated[0])
+    == SIPREC_MAX_STREAMS,
+    "negotiated[] must be sized to SIPREC_MAX_STREAMS");
+
 /* parse_remote_sdp_streams: walk the SRS-side SDP from
  * sip_remote_sdp_str and extract one (ip, port) per m=audio
  * block. RFC 4566 §5.7: a session-level c= applies to every

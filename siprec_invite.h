@@ -17,6 +17,23 @@
 #include <switch.h>
 #include "mod_siprec.h"
 
+/* Maximum recorded streams per SIPREC dialog. SIPREC v1
+ * models a 2-leg call as one stream per direction (caller-
+ * spoken / callee-spoken). The cap is also the size of the
+ * fixed-allocation arrays in siprec_invite_ctx_t.negotiated[]
+ * and siprec_media_ctx_t.streams[]; both arrays MUST be sized
+ * to this constant so parse_remote_sdp_streams' sizeof-based
+ * out_max stays in lockstep with the media path's stream_idx
+ * (READ→0, WRITE→1) mapping. _Static_assert in siprec_invite.c
+ * + siprec_media.c enforces the lockstep at compile time.
+ *
+ * Bumping this above 2 also requires extending the bug callback
+ * to map additional ABC types onto stream_idx > 1, which doesn't
+ * make sense for SMBF_READ_STREAM | SMBF_WRITE_STREAM today —
+ * adding more streams would be a deliberate architectural change,
+ * not a constant tweak. */
+#define SIPREC_MAX_STREAMS 2
+
 /* Per-recording SIP context. Lives inside the recording_t
  * pool. NULL on entry to siprec_invite_send; populated when
  * 200 OK arrives from the SRS so subsequent BYE / re-INVITE
@@ -56,7 +73,7 @@ typedef struct siprec_invite_ctx {
         uint16_t remote_port;
         uint8_t  srtp_keymat[64];   /* room for the largest suite */
         size_t   srtp_keymat_len;
-    } negotiated[2]; /* v1: two-stream cap */
+    } negotiated[SIPREC_MAX_STREAMS];
     size_t negotiated_count;
 } siprec_invite_ctx_t;
 

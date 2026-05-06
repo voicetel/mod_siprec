@@ -21,6 +21,13 @@
  * the public header doesn't pull libsrtp2 into every callsite. */
 struct siprec_srtp_session;
 
+/* SIPREC_MAX_STREAMS is defined in siprec_invite.h; we pull
+ * it through the same include path that consumers of this
+ * file already need (mod_siprec.h ↔ siprec_invite.h). The
+ * _Static_assert in siprec_media.c verifies the bug-callback
+ * stream_idx mapping (READ→0, WRITE→1) is in range. */
+#include "siprec_invite.h"
+
 /* Struct is named so mod_siprec.h's forward declaration
  * `struct siprec_media_ctx` resolves to the same type as
  * `siprec_media_ctx_t`. */
@@ -63,7 +70,7 @@ typedef struct siprec_media_ctx {
          * is 1 so the first packet of the recording is also
          * marked. */
         uint8_t    marker_pending;
-    } streams[2];
+    } streams[SIPREC_MAX_STREAMS];
     size_t stream_count;
 
     /* PCMU/PCMA payload type for the encoded frames. The

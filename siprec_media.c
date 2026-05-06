@@ -34,6 +34,28 @@
  * full definition. */
 #include "siprec_invite.h"
 
+/* Compile-time invariants:
+ *
+ *  1. The bug callback maps SWITCH_ABC_TYPE_READ → stream 0
+ *     and SWITCH_ABC_TYPE_WRITE → stream 1. The streams[]
+ *     array therefore MUST hold at least 2 entries.
+ *
+ *  2. invite_ctx->negotiated[] and media_ctx->streams[] are
+ *     paired (one negotiated entry feeds one streams entry).
+ *     They MUST share the same fixed size so the for-loop
+ *     copy in siprec_media_attach can't read past either.
+ *
+ * If anyone changes SIPREC_MAX_STREAMS or either array size
+ * without updating its peer, these assertions fire at
+ * compile time. */
+_Static_assert(SIPREC_MAX_STREAMS >= 2,
+    "SIPREC_MAX_STREAMS must cover the READ→0 / WRITE→1 mapping");
+_Static_assert(
+    sizeof(((siprec_media_ctx_t *)0)->streams)
+        / sizeof(((siprec_media_ctx_t *)0)->streams[0])
+    == SIPREC_MAX_STREAMS,
+    "streams[] must be sized to SIPREC_MAX_STREAMS");
+
 #include <switch.h>
 
 #include <arpa/inet.h>
