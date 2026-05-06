@@ -228,6 +228,63 @@ static void test_metadata_partial_datamode(void) {
     siprec_metadata_free(xml);
 }
 
+static void test_metadata_reason_elements(void) {
+    /* RFC 7865 §5: <reason> is allowed inside <group>,
+     * <session>, and <participant>. */
+    const siprec_metadata_participant_t parts[] = {
+        { .participant_id = "p1", .aor = "sip:a@x", .display_name = NULL,
+          .reason = "transferred" },
+    };
+    siprec_metadata_options_t opts = {
+        .session_id    = "sess",
+        .group_id      = "grp",
+        .associate_time_utc = "2026-05-06T03:00:00Z",
+        .session_reason = "paused",
+        .group_reason  = "merged",
+        .participants  = parts, .participant_count = 1,
+    };
+    char *xml = siprec_metadata_build(&opts);
+    check_contains(xml, "<reason>paused</reason>",       "meta:session reason");
+    check_contains(xml, "<reason>merged</reason>",       "meta:group reason");
+    check_contains(xml, "<reason>transferred</reason>",  "meta:participant reason");
+    siprec_metadata_free(xml);
+}
+
+static void test_metadata_assoc_elements(void) {
+    /* RFC 7865 §5 explicit associations. */
+    const siprec_metadata_participant_t parts[] = {
+        { .participant_id = "p-alice", .aor = "sip:alice@x" },
+        { .participant_id = "p-bob",   .aor = "sip:bob@x" },
+    };
+    const siprec_metadata_stream_t streams[] = {
+        { .stream_id = "s1", .mode = SIPREC_STREAM_SEND,
+          .participant_idx = 0, .label = "1" },
+        { .stream_id = "s2", .mode = SIPREC_STREAM_SEND,
+          .participant_idx = 1, .label = "2" },
+    };
+    siprec_metadata_options_t opts = {
+        .session_id   = "sess",
+        .associate_time_utc = "2026-05-06T03:00:00Z",
+        .participants = parts, .participant_count = 2,
+        .streams      = streams, .stream_count = 2,
+    };
+    char *xml = siprec_metadata_build(&opts);
+
+    check_contains(xml,
+        "<participantsessionassoc participant_id=\"p-alice\" session_id=\"sess\"",
+        "meta:participantsessionassoc alice");
+    check_contains(xml,
+        "<participantsessionassoc participant_id=\"p-bob\" session_id=\"sess\"",
+        "meta:participantsessionassoc bob");
+    check_contains(xml,
+        "<participantstreamassoc participant_id=\"p-alice\">",
+        "meta:participantstreamassoc alice");
+    check_contains(xml, "<send>s1</send>", "meta:stream-assoc send-1");
+    check_contains(xml, "<send>s2</send>", "meta:stream-assoc send-2");
+
+    siprec_metadata_free(xml);
+}
+
 static void test_metadata_stream_default_media_type(void) {
     /* When .media_type is NULL the builder defaults to audio. */
     const siprec_metadata_participant_t parts[] = {
@@ -310,6 +367,8 @@ int main(void) {
     test_metadata_invalid_returns_null();
     test_metadata_partial_datamode();
     test_metadata_stream_default_media_type();
+    test_metadata_reason_elements();
+    test_metadata_assoc_elements();
 
     printf("\n%d/%d passed\n", test_count - fail_count, test_count);
     return fail_count == 0 ? 0 : 1;

@@ -55,13 +55,18 @@ up is the next milestone (see [`tests/README.md`](tests/README.md)).
 | [§6.4][rfc7866-6.4] BYE on hangup | ✅ (state-handler) |
 | [§6.4][rfc7866-6.4] pause/resume re-INVITE | ✅ (`siprec_pause` / `siprec_resume` apps) |
 | [§7.4][rfc7866-7.4] sendonly direction on SRC streams | ✅ (sofia auto-generates) |
-| [§8.5][rfc7866-8.5] `a=label:N` per stream | ⏳ v2 (gated on SDP override) |
+| [§8.5][rfc7866-8.5] `a=label:N` per stream | ✅ (post-originate re-INVITE) |
 | [§8.4][rfc7866-8.4] DTMF tone forking | ✅ (passes through audio bug) |
+| [§11.1.1][rfc7866-11.1.1] communication-failure soft-fail | ✅ (original call unaffected) |
+| [§11.3][rfc7866-11.3] SIPS transport for SRC→SRS | ✅ (`transport=tls` config) |
+| §11.1.1 SRS failover (multiple endpoints, ordered) | ✅ (multiple `<recording-server>` entries) |
 | RFC 7865 §5 `<recording>` schema | ✅ |
 | RFC 7865 §5 multi-participant + stream cross-ref | ✅ |
 | RFC 7865 §5 `<stream>` body with `<label>` + `<media-type>` | ✅ |
 | RFC 7865 §5 `<session group_ref="…">` | ✅ |
 | RFC 7865 §5 `<group>` body with `<associate-time>` | ✅ |
+| RFC 7865 §5 `<participantsessionassoc>` / `<participantstreamassoc>` | ✅ |
+| RFC 7865 §5 `<reason>` on group/session/participant | ✅ |
 | RFC 7865 §5.1 `<datamode>` (complete + partial) | ✅ |
 | RFC 7865 §5 `<associate-time>` ISO-8601 | ✅ |
 | RFC 7865 §5 XML escaping for caller-supplied content | ✅ |

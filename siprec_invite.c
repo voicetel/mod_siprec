@@ -185,7 +185,99 @@ switch_status_t siprec_invite_send(
         "siprec: INVITE to %s answered, remote=%s:%u\n",
         srs_uri, ctx->negotiated[0].remote_ip,
         (unsigned)ctx->negotiated[0].remote_port);
+
+    /* RFC 7866 §8.5 strict-RFC: when the caller pre-built an
+     * SDP body with `a=label:N` per stream, fire an immediate
+     * re-INVITE so the dialog's negotiated SDP carries the
+     * labels. This adds one SIP transaction at session-start
+     * but bridges the gap between mod_sofia's auto-generated
+     * SDP (no labels) and what RFC-strict SRSes require.
+     *
+     * sdp_body is NULL on the v1 path (sofia auto-gen is
+     * accepted as-is) — only the v2 strict-RFC bring-up
+     * passes a labelled SDP here.
+     */
+    if (sdp_body && *sdp_body) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,
+            "siprec: dispatching strict-RFC re-INVITE with a=label\n");
+        if (siprec_invite_reinvite(recording, sdp_body, NULL)
+            != SWITCH_STATUS_SUCCESS) {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+                "siprec: label-override re-INVITE failed; recording continues without labels\n");
+            /* don't fail the recording — the SRS may accept
+             * the unlabelled form even if it's strict. */
+        }
+    }
+
     return SWITCH_STATUS_SUCCESS;
+}
+
+/* siprec_uri_for: build the SIP URI for an SRS candidate,
+ * honouring the configured transport. For TLS we use the
+ * `sips:` scheme — sofia routes via the profile's TLS socket
+ * automatically. UDP/TCP use plain `sip:`; the transport
+ * suffix is added so the profile picks the right socket
+ * when both UDP and TCP are configured.
+ */
+static char *siprec_uri_for(
+    switch_memory_pool_t *pool,
+    const recording_server_t *srv)
+{
+    if (!srv || !srv->host) return NULL;
+
+    int  port = srv->port > 0 ? srv->port : 5060;
+    const char *transport = (srv->transport && *srv->transport)
+        ? srv->transport : "udp";
+
+    char buf[256];
+    if (!strcasecmp(transport, "tls")) {
+        switch_snprintf(buf, sizeof(buf), "sips:%s:%d;transport=tls",
+            srv->host, port);
+    } else if (!strcasecmp(transport, "tcp")) {
+        switch_snprintf(buf, sizeof(buf), "sip:%s:%d;transport=tcp",
+            srv->host, port);
+    } else {
+        switch_snprintf(buf, sizeof(buf), "sip:%s:%d", srv->host, port);
+    }
+    return switch_core_strdup(pool, buf);
+}
+
+switch_status_t siprec_invite_send_failover(
+    recording_t *recording,
+    const char *sofia_profile,
+    const struct recording_server *first,
+    const char *sdp_body,
+    const char *metadata_body)
+{
+    if (!recording || !sofia_profile || !first) {
+        return SWITCH_STATUS_FALSE;
+    }
+
+    int attempts = 0;
+    for (const recording_server_t *srv = first; srv; srv = srv->next) {
+        attempts++;
+
+        char *uri = siprec_uri_for(recording->pool, srv);
+        if (!uri) continue;
+
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,
+            "siprec: failover attempt %d/N → %s\n", attempts, uri);
+
+        switch_status_t st = siprec_invite_send(
+            recording, sofia_profile, uri, sdp_body, metadata_body);
+
+        if (st == SWITCH_STATUS_SUCCESS) {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,
+                "siprec: failover succeeded on attempt %d (%s)\n",
+                attempts, uri);
+            return SWITCH_STATUS_SUCCESS;
+        }
+    }
+
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+        "siprec: failover exhausted after %d attempts; recording NOT started\n",
+        attempts);
+    return SWITCH_STATUS_FALSE;
 }
 
 switch_status_t siprec_invite_send_bye(recording_t *recording)

@@ -124,7 +124,7 @@ siprec_media.h
           <recording-server name="default">
             <param name="host" value="127.0.0.1"/>
             <param name="port" value="5070"/>
-            <param name="profile" value="voicetel"/>
+            <param name="profile" value="external"/>
             <param name="src-realm" value="src.example.com"/>
             <!-- optional auth -->
             <param name="username" value=""/>

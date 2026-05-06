@@ -46,7 +46,7 @@ go run ./cmd -listen 127.0.0.1:5070 -dir /tmp/srs-recordings &
 fs_cli -x 'reload mod_siprec'
 
 # 5. Place a test call that triggers the siprec app
-fs_cli -x 'originate sofia/voicetel/sip:test@somewhere &siprec(default)'
+fs_cli -x 'originate sofia/$PROFILE/sip:test@somewhere &siprec(default)'
 ```
 
 ## Verification checklist
@@ -63,7 +63,7 @@ operator-side check to perform on first deploy.
 | Multipart entry grammar | `<Content-Type>:body` or `<Content-Type>:~<extra-headers>\r\n<body>` (per `process_mp` in sofia_media.c:98). `~` form lets us inject `Content-Disposition: recording-session` per RFC 7866 §6.1.2 | tcpdump on SRS port — second part must carry `Content-Type: application/rs-metadata+xml` and `Content-Disposition: recording-session` |
 | Media bug flag set | `SMBF_READ_STREAM \| SMBF_WRITE_STREAM` (observe-only). Callback handles `SWITCH_ABC_TYPE_READ` / `_WRITE`, fetches frames via `switch_core_media_bug_read(bug, &frame, SWITCH_FALSE)` — the canonical pattern from `record_callback` in switch_ivr_async.c | `fs_cli show channels` while a recording is active should list the `siprec` bug; RTP packets reach SRS at the negotiated port (verify with `tcpdump -i lo udp port <srs-rtp-port>`) |
 | `remote_media_ip` / `remote_media_port` | mod_sofia populates these channel variables on the recording-leg session once 200 OK arrives. v1 records a single audio stream so one (ip, port) is sufficient; multi-stream is gated on the v1.1 strict-RFC SDP override | `uuid_dump <recording-leg-uuid>` should show `remote_media_ip` + `remote_media_port` populated immediately after originate returns success |
-| RTP source-port allocation | Delegated to mod_sofia via the profile's `rtp-port-min`/`-max` range — we don't open a listening socket ourselves; the UDP fork in siprec_media.c uses `sendto` against the SRS endpoint, kernel-assigned source port | `sofia status profile voicetel` shows the rtp-port range; no race possible because we never bind |
+| RTP source-port allocation | Delegated to mod_sofia via the profile's `rtp-port-min`/`-max` range — we don't open a listening socket ourselves; the UDP fork in siprec_media.c uses `sendto` against the SRS endpoint, kernel-assigned source port | `sofia status profile $YOUR_PROFILE` shows the rtp-port range; no race possible because we never bind |
 | Pause / resume re-INVITE | `siprec_invite_reinvite` sends `SWITCH_MESSAGE_INDICATE_MEDIA_REDIRECT` with `string_arg=new_sdp` to the recording leg. mod_sofia's handler at mod_sofia.c:1650 calls `switch_core_media_set_local_sdp` then `sofia_glue_do_invite` — emits the re-INVITE on the existing dialog | drive via `uuid_siprec_pause <call-uuid>` (TODO: app glue not yet wired); confirm re-INVITE SDP has `a=inactive` instead of `a=sendonly` |
 
 ## Expected behaviour by scenario

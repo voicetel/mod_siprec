@@ -19,11 +19,11 @@
        and mod_siprec opens the SIPREC INVITE to the matching
        entry's host:port.
 
-       Multiple recording servers may be defined; the
-       application argument selects one. v1 supports a single
-       active recording per call leg (one SRC INVITE per
-       <Start><Siprec/>); a future revision may fan out to N
-       SRS endpoints in parallel.
+       FAILOVER: declare multiple <recording-server> entries
+       with the same name. mod_siprec walks them in config
+       order, trying each (host, port, transport) candidate
+       until one accepts the INVITE. The first declaration
+       is the primary; subsequent declarations are backups.
 
        Voicetel default deployment: cb-srs (Go SRS) on
        127.0.0.1:5070. -->
@@ -40,6 +40,14 @@
              socket. cb-srs binds 5070 by default. -->
         <param name="port" value="5070"/>
 
+        <!-- Transport: "udp" (default) | "tcp" | "tls".
+             "tls" is SIPS per RFC 7866 §11.3 and requires
+             the host's sofia profile to have sip-tls-port
+             configured. Without TLS, recording-leg SIP and
+             metadata travel in cleartext — only safe on
+             trusted-network links (loopback / VPN). -->
+        <param name="transport" value="udp"/>
+
         <!-- v1 does not register with the SRS (SRS is a
              stateless receiver in our deployment). Setting
              this true is reserved for future SRS deployments
@@ -53,5 +61,17 @@
         <param name="password" value=""/>
       </settings>
     </recording-server>
+
+    <!-- Failover example: a second declaration with the same
+         name="default" is appended to the chain. Uncomment
+         and adjust to a backup SRS host.
+    <recording-server name="default">
+      <settings>
+        <param name="host" value="srs2.example.com"/>
+        <param name="port" value="5070"/>
+        <param name="transport" value="tls"/>
+      </settings>
+    </recording-server>
+    -->
   </recording-servers>
 </configuration>

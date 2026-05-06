@@ -57,6 +57,12 @@ typedef struct {
     /* Optional display name (RFC 7865 §5 nameID/name).
      * NULL omits the element. */
     const char *display_name;
+
+    /* Optional <reason> child (RFC 7865 §5). Free-text reason
+     * for a state change, e.g. "transferred", "left",
+     * "removed". Used predominantly on PARTIAL re-INVITE
+     * updates that signal participant departure. NULL omits. */
+    const char *reason;
 } siprec_metadata_participant_t;
 
 /* siprec_metadata_datamode: RFC 7865 §5.1 <datamode>.
@@ -94,6 +100,14 @@ typedef struct {
      * COMPLETE. Re-INVITE updates that carry only changed
      * fields should set this to PARTIAL. */
     siprec_metadata_datamode_t datamode;
+
+    /* Optional session-level <reason> (RFC 7865 §5).
+     * Surfaces inside <session>; common values are
+     * "terminated", "paused", "resumed". NULL omits. */
+    const char *session_reason;
+
+    /* Optional group-level <reason>. NULL omits. */
+    const char *group_reason;
 
     /* Participants array. */
     const siprec_metadata_participant_t *participants;

@@ -82,12 +82,29 @@ static switch_status_t load_recording_server(switch_xml_t xml)
 				recording_server->username = switch_core_strdup(recording_server_pool, val);
 			} else if (!strcmp(var, "password")) {
 				recording_server->password = switch_core_strdup(recording_server_pool, val);
+			} else if (!strcmp(var, "transport")) {
+				/* "udp" (default), "tcp", "tls". TLS implies
+				 * the dial URI uses sips:; the sofia profile
+				 * MUST have sip-tls-port configured. */
+				recording_server->transport =
+					switch_core_strdup(recording_server_pool, val);
 			}
 		}
 	}
 
 	switch_mutex_lock(globals.recording_servers_mutex);
-	switch_core_hash_insert(globals.recording_servers_hash, recording_server->name, recording_server);
+	/* If an entry with this name already exists, append the
+	 * new one to the end of the failover chain. siprec_invite
+	 * walks the chain on dial failure. */
+	recording_server_t *existing =
+		switch_core_hash_find(globals.recording_servers_hash, recording_server->name);
+	if (existing) {
+		while (existing->next) existing = existing->next;
+		existing->next = recording_server;
+	} else {
+		switch_core_hash_insert(globals.recording_servers_hash,
+			recording_server->name, recording_server);
+	}
 	switch_mutex_unlock(globals.recording_servers_mutex);
 
 	return SWITCH_STATUS_SUCCESS;

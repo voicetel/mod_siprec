@@ -51,7 +51,9 @@ typedef struct {
  *   recording          — the recording_t for this session
  *                       (allocates ctx in recording->pool)
  *   sofia_profile      — the FS sofia profile to use as
- *                       transport (typically "voicetel")
+ *                       transport. Read from the original
+ *                       channel's `sofia_profile_name`
+ *                       variable; never hardcoded.
  *   srs_uri            — SIP URI of the SRS, e.g.
  *                       "sip:srs@127.0.0.1:5070"
  *   sdp_body           — pre-built SDP from siprec_sdp_build
@@ -80,6 +82,28 @@ switch_status_t siprec_invite_send(
     const char *sofia_profile,
     const char *srs_uri,
     const char *sdp_body,         /* may be NULL in v1 */
+    const char *metadata_body);
+
+/* siprec_invite_send_failover: walk a chain of recording_server
+ * entries (linked via ->next) in order; the first one whose
+ * INVITE is accepted (200 OK) becomes the active recording leg.
+ * On 4xx/5xx/timeout from one server we move to the next.
+ *
+ * Each candidate's host:port + transport are folded into the
+ * SIP URI: udp/tcp use sip:, tls uses sips:;transport=tls.
+ * The sofia profile MUST have a matching transport configured
+ * (sip-port for udp/tcp, sip-tls-port for tls).
+ *
+ * Returns SWITCH_STATUS_SUCCESS on the first successful
+ * INVITE; SWITCH_STATUS_FALSE if every candidate fails. The
+ * recording stays in the hash on failure so the operator's
+ * Stop verb still finds it for cleanup.
+ */
+switch_status_t siprec_invite_send_failover(
+    recording_t *recording,
+    const char *sofia_profile,
+    const struct recording_server *first,
+    const char *sdp_body,         /* may be NULL */
     const char *metadata_body);
 
 /* siprec_invite_send_bye: tear down the recording leg.

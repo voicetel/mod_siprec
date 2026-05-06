@@ -43,7 +43,22 @@ struct recording_server {
     int should_register;
     char *username;
     char *password;
+
+    /* RFC 7866 §11.3: the SRC-to-SRS hop SHOULD use SIPS for
+     * confidentiality on hostile-network deployments. When
+     * `transport` is "tls" the dial-string uses sips:..;transport=tls
+     * and the sofia profile MUST have a TLS port configured.
+     * Default ("udp" / NULL) keeps the v1 plain-UDP path. */
+    char *transport;
+
     switch_memory_pool_t *pool;
+
+    /* Forward-pointer for the next entry in the failover
+     * chain. Multiple recording-server entries with the same
+     * name form an ordered list; siprec_invite_send walks
+     * them in order on connect / 4xx-5xx failure until one
+     * accepts. NULL on the last entry. */
+    struct recording_server *next;
 };
 typedef struct recording_server recording_server_t;
 

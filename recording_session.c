@@ -38,6 +38,7 @@
 #include "siprec_invite.h"
 #include "siprec_media.h"
 #include "siprec_metadata.h"
+#include "siprec_sdp.h"
 
 static switch_status_t my_on_destroy(switch_core_session_t *session)
 {
@@ -312,27 +313,78 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
         return SWITCH_STATUS_FALSE;
     }
 
-    /* Build the SRS URI from the recording-server config. */
-    char srs_uri[256];
-    switch_snprintf(srs_uri, sizeof(srs_uri), "sip:%s:%d",
-        server->host ? server->host : "127.0.0.1",
-        server->port ? server->port : 5060);
-
     /* Profile: same one carrying the original call. The
-     * channel's `sofia_profile_name` is the canonical source.
-     * Falls back to "voicetel" (the deployed profile name). */
+     * channel's `sofia_profile_name` is the canonical source
+     * — set automatically by mod_sofia for any channel that
+     * arrived through (or was originated against) a profile.
+     * Hardcoding deployment-specific names like "voicetel" or
+     * even the vanilla-config "internal" / "external" couples
+     * the module to one operator's layout; the channel
+     * variable lets us run unmodified on any profile name.
+     *
+     * If sofia_profile_name is absent, the channel almost
+     * certainly didn't come from sofia (loopback, mod_dingaling
+     * legacy, mod_skinny, …) — SIPREC isn't applicable in
+     * those cases. Fail loud rather than guess at a default.
+     */
     const char *profile = switch_channel_get_variable(
         switch_core_session_get_channel(session),
         "sofia_profile_name");
-    if (!profile) profile = "voicetel";
+    if (zstr(profile)) {
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+            "siprec: channel has no sofia_profile_name — "
+            "SIPREC requires a sofia-backed channel\n");
+        siprec_metadata_free(metadata_body);
+        return SWITCH_STATUS_FALSE;
+    }
 
-    /* sdp_body argument is reserved for v1.1 (strict-RFC SDP
-     * override with a=label per stream). v1 lets mod_sofia
-     * auto-generate the SDP — see siprec_invite_send. */
-    switch_status_t inv = siprec_invite_send(
-        recording, profile, srs_uri, /*sdp_body*/ NULL, metadata_body);
+    /* Build the strict-RFC SDP body with a=label:N per stream
+     * (RFC 7866 §8.5). siprec_invite_send_failover passes this
+     * to siprec_invite_send, which fires an immediate re-INVITE
+     * after the dialog establishes — bridging the gap between
+     * sofia's auto-generated SDP (no labels) and the labelled
+     * form RFC-strict SRSes require.
+     *
+     * The src_ip uses local_ip_v4 (set at sofia startup); the
+     * RTP ports advertised in this offer are what the recording
+     * leg will receive on, but mod_sofia chose them during the
+     * initial INVITE — we don't override here. The SRS already
+     * accepted them in its 200 OK; the re-INVITE only updates
+     * the SDP attributes (labels + group), not the m=audio
+     * port. */
+    const char *src_ip = switch_core_get_variable("local_ip_v4");
+    if (!src_ip) src_ip = "127.0.0.1";
+
+    const siprec_sdp_track_t sdp_tracks[2] = {
+        { .label = "1", .port = 1, .pt = 0,
+          .codec_name = "PCMU", .clock_rate = 8000,
+          .channels = 1, .ptime_ms = 20 },
+        { .label = "2", .port = 1, .pt = 0,
+          .codec_name = "PCMU", .clock_rate = 8000,
+          .channels = 1, .ptime_ms = 20 },
+    };
+    const char *group_labels[2] = { "1", "2" };
+
+    siprec_sdp_options_t sopts = {
+        .src_ip            = src_ip,
+        .session_id        = (uint64_t)switch_epoch_time_now(NULL),
+        .session_version   = 1,
+        .tracks            = sdp_tracks,
+        .track_count       = 2,
+        .group_labels      = group_labels,
+        .group_label_count = 2,
+    };
+    char *labelled_sdp = siprec_sdp_build(&sopts);
+
+    /* Use the failover variant — siprec_invite_send_failover
+     * walks the recording_server's ->next chain, trying each
+     * (host, port, transport) candidate in config order until
+     * one accepts the INVITE. */
+    switch_status_t inv = siprec_invite_send_failover(
+        recording, profile, server, labelled_sdp, metadata_body);
 
     siprec_metadata_free(metadata_body);
+    if (labelled_sdp) siprec_sdp_free(labelled_sdp);
 
     if (inv != SWITCH_STATUS_SUCCESS) {
         return inv;

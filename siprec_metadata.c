@@ -162,8 +162,10 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
      * associate-time is known, emit it inside the group too so
      * the SRS can timestamp the conversation start as well as
      * the per-session start. */
-    int group_has_body = opts->group_id && *opts->group_id
-        && opts->associate_time_utc && *opts->associate_time_utc;
+    int group_has_body =
+        opts->group_id && *opts->group_id &&
+        ((opts->associate_time_utc && *opts->associate_time_utc) ||
+         (opts->group_reason && *opts->group_reason));
 
     if (opts->group_id && *opts->group_id) {
         sb_appendf(&sb, "  <group group_id=\"");
@@ -171,9 +173,18 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
         sb_appendf(&sb, "\"");
 
         if (group_has_body) {
-            sb_appendf(&sb, ">\r\n    <associate-time>");
-            xml_escape_into(&sb, opts->associate_time_utc);
-            sb_appendf(&sb, "</associate-time>\r\n  </group>\r\n");
+            sb_appendf(&sb, ">\r\n");
+            if (opts->associate_time_utc && *opts->associate_time_utc) {
+                sb_appendf(&sb, "    <associate-time>");
+                xml_escape_into(&sb, opts->associate_time_utc);
+                sb_appendf(&sb, "</associate-time>\r\n");
+            }
+            if (opts->group_reason && *opts->group_reason) {
+                sb_appendf(&sb, "    <reason>");
+                xml_escape_into(&sb, opts->group_reason);
+                sb_appendf(&sb, "</reason>\r\n");
+            }
+            sb_appendf(&sb, "  </group>\r\n");
         } else {
             sb_appendf(&sb, "/>\r\n");
         }
@@ -194,7 +205,9 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
 
     /* If we have nothing to put inside <session>, render as a
      * self-closing element. Otherwise open + close. */
-    int session_has_body = opts->associate_time_utc && *opts->associate_time_utc;
+    int session_has_body =
+        (opts->associate_time_utc && *opts->associate_time_utc) ||
+        (opts->session_reason && *opts->session_reason);
 
     if (!session_has_body) {
         sb_appendf(&sb, "/>\r\n");
@@ -204,6 +217,11 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
             sb_appendf(&sb, "    <associate-time>");
             xml_escape_into(&sb, opts->associate_time_utc);
             sb_appendf(&sb, "</associate-time>\r\n");
+        }
+        if (opts->session_reason && *opts->session_reason) {
+            sb_appendf(&sb, "    <reason>");
+            xml_escape_into(&sb, opts->session_reason);
+            sb_appendf(&sb, "</reason>\r\n");
         }
         sb_appendf(&sb, "  </session>\r\n");
     }
@@ -246,7 +264,72 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
             sb_appendf(&sb, "</%s>\r\n", tag);
         }
 
+        /* Optional per-participant <reason> — RFC 7865 §5
+         * — surfaces on PARTIAL re-INVITE updates that signal
+         * a state change for this participant (transferred,
+         * left, etc.). */
+        if (p->reason && *p->reason) {
+            sb_appendf(&sb, "    <reason>");
+            xml_escape_into(&sb, p->reason);
+            sb_appendf(&sb, "</reason>\r\n");
+        }
+
         sb_appendf(&sb, "  </participant>\r\n");
+    }
+
+    /* <participantsessionassoc> — RFC 7865 §5 explicit
+     * binding between participants and the session. Each
+     * participant we declared above gets one. The <send>/
+     * <recv> child references on the participant already
+     * give the SRS a participant-stream association, but
+     * a participant can be in a session without sending
+     * any stream (e.g. observer / supervisor); the explicit
+     * <participantsessionassoc> covers that case and the
+     * SRS gets a definitive binding either way.
+     */
+    for (size_t i = 0; i < opts->participant_count; i++) {
+        const siprec_metadata_participant_t *p = &opts->participants[i];
+
+        sb_appendf(&sb, "  <participantsessionassoc participant_id=\"");
+        xml_escape_into(&sb, p->participant_id);
+        sb_appendf(&sb, "\" session_id=\"");
+        xml_escape_into(&sb, opts->session_id);
+        sb_appendf(&sb, "\"");
+
+        if (opts->associate_time_utc && *opts->associate_time_utc) {
+            sb_appendf(&sb, ">\r\n    <associate-time>");
+            xml_escape_into(&sb, opts->associate_time_utc);
+            sb_appendf(&sb,
+                "</associate-time>\r\n  </participantsessionassoc>\r\n");
+        } else {
+            sb_appendf(&sb, "/>\r\n");
+        }
+    }
+
+    /* <participantstreamassoc> — RFC 7865 §5 explicit binding
+     * between participants and streams. Mirrors the
+     * <send>/<recv> cross-references on each participant; the
+     * dual representation matches the schema's allowed forms
+     * and lets SRSes that prefer top-level associations to
+     * the in-line form bind streams unambiguously.
+     */
+    for (size_t i = 0; i < opts->stream_count; i++) {
+        const siprec_metadata_stream_t *s = &opts->streams[i];
+        if (s->participant_idx >= opts->participant_count) continue;
+        const siprec_metadata_participant_t *p =
+            &opts->participants[s->participant_idx];
+
+        sb_appendf(&sb, "  <participantstreamassoc participant_id=\"");
+        xml_escape_into(&sb, p->participant_id);
+        sb_appendf(&sb, "\">\r\n");
+
+        const char *tag =
+            (s->mode == SIPREC_STREAM_RECV) ? "recv" : "send";
+        sb_appendf(&sb, "    <%s>", tag);
+        xml_escape_into(&sb, s->stream_id);
+        sb_appendf(&sb, "</%s>\r\n", tag);
+
+        sb_appendf(&sb, "  </participantstreamassoc>\r\n");
     }
 
     /* <stream> entries — declare each stream once at the
