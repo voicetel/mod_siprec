@@ -5,14 +5,24 @@ A FreeSWITCH module that implements [RFC 7866][rfc7866] SIPREC
 with [RFC 7865][rfc7865]-compliant metadata.
 
 For each call you want to record, mod_siprec opens a parallel
-SIP INVITE to a configured Session Recording Server (SRS),
-attaches a `multipart/mixed` body containing both the SDP and an
-XML metadata document, taps the original call's audio via a FreeSWITCH
-media bug, and forks the captured audio as RFC 3550 RTP to the
-endpoints negotiated in the SRS's 200 OK answer.
+SIP INVITE ([RFC 3261][rfc3261]) to a configured Session
+Recording Server (SRS), attaches a `multipart/mixed`
+([RFC 2046][rfc2046]) body containing both the [SDP][rfc4566]
+offer and an XML metadata document, taps the original call's
+audio via a FreeSWITCH media bug, and forks the captured audio
+as [RFC 3550][rfc3550] RTP to the endpoints negotiated in the
+SRS's 200 OK answer.
 
-[rfc7866]: https://datatracker.ietf.org/doc/html/rfc7866
+[rfc2046]: https://datatracker.ietf.org/doc/html/rfc2046
+[rfc3261]: https://datatracker.ietf.org/doc/html/rfc3261
+[rfc3550]: https://datatracker.ietf.org/doc/html/rfc3550
+[rfc3551]: https://datatracker.ietf.org/doc/html/rfc3551
+[rfc3711]: https://datatracker.ietf.org/doc/html/rfc3711
+[rfc4566]: https://datatracker.ietf.org/doc/html/rfc4566
+[rfc4568]: https://datatracker.ietf.org/doc/html/rfc4568
+[rfc5888]: https://datatracker.ietf.org/doc/html/rfc5888
 [rfc7865]: https://datatracker.ietf.org/doc/html/rfc7865
+[rfc7866]: https://datatracker.ietf.org/doc/html/rfc7866
 
 ## Why this fork
 
@@ -43,44 +53,52 @@ This fork:
 
 ## Status
 
-`v1.1` — feature-complete to the RFC for the common SRC use case.
-Audio recording, metadata, multi-participant cross-references,
-pause/resume, BYE-on-hangup are all wired. Live FreeSWITCH bring-
-up is the next milestone (see [`tests/README.md`](tests/README.md)).
+**Alpha — pre-bringup.** All paths build, lint clean, and the
+unit-test suite for the SDP / metadata builders passes 77/77
+assertions. The dispatch / media / signalling pipeline has
+been audited and the broken pieces from the original fork have
+been replaced; live integration against `cb-srs` (see
+[`tests/README.md`](tests/README.md)) is the next gate before
+this earns a stable version label.
 
-| RFC concept | Status |
-|---|---|
-| [§6.1][rfc7866-6.1] SRC INVITE with `Require: siprec` | ✅ |
-| [§6.1.2][rfc7866-6.1.2] `multipart/mixed` (SDP + metadata) | ✅ |
-| [§6.4][rfc7866-6.4] BYE on hangup | ✅ (state-handler) |
-| [§6.4][rfc7866-6.4] pause/resume re-INVITE | ✅ (`siprec_pause` / `siprec_resume` apps) |
-| [§7.4][rfc7866-7.4] sendonly direction on SRC streams | ✅ (sofia auto-generates) |
-| [§8.5][rfc7866-8.5] `a=label:N` per stream | ✅ (post-originate re-INVITE) |
-| [§8.4][rfc7866-8.4] DTMF tone forking | ✅ (passes through audio bug) |
-| [§11.1.1][rfc7866-11.1.1] communication-failure soft-fail | ✅ (original call unaffected) |
-| [§11.2][rfc7866-11.2] SRTP for the recording RTP fork | ✅ (`srtp=true` config; libsrtp2; AES-128 HMAC-SHA1-80) |
-| [§11.3][rfc7866-11.3] SIPS transport for SRC→SRS | ✅ (`transport=tls` config) |
-| §11.1.1 SRS failover (multiple endpoints, ordered) | ✅ (multiple `<recording-server>` entries) |
-| RFC 7865 §5 `<recording>` schema | ✅ |
-| RFC 7865 §5 multi-participant + stream cross-ref | ✅ |
-| RFC 7865 §5 `<stream>` body with `<label>` + `<media-type>` | ✅ |
-| RFC 7865 §5 `<session group_ref="…">` | ✅ |
-| RFC 7865 §5 `<group>` body with `<associate-time>` | ✅ |
-| RFC 7865 §5 `<participantsessionassoc>` / `<participantstreamassoc>` | ✅ |
-| RFC 7865 §5 `<reason>` on group/session/participant | ✅ |
-| RFC 7865 §5.1 `<datamode>` (complete + partial) | ✅ |
-| RFC 7865 §5 `<associate-time>` ISO-8601 | ✅ |
-| RFC 7865 §5 XML escaping for caller-supplied content | ✅ |
+| Concept | Spec | Status |
+|---|---|---|
+| SRC INVITE with `Require: siprec` | [RFC 7866 §6.1][rfc7866-6.1] | ✅ via `switch_ivr_originate` ovars |
+| `multipart/mixed` (SDP + metadata) | [RFC 7866 §6.1.2][rfc7866-6.1.2] / [RFC 2046][rfc2046] | ✅ `sip_multipart` channel var |
+| BYE on hangup | [RFC 7866 §6.4][rfc7866-6.4] | ✅ on_destroy state-handler |
+| pause / resume re-INVITE | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_pause` / `siprec_resume` apps; SDP direction-flip preserves negotiated session |
+| sendonly direction on SRC streams | [RFC 7866 §7.4][rfc7866-7.4] | ✅ sofia auto-gen offer |
+| `a=label:N` per stream | [RFC 7866 §8.5][rfc7866-8.5] | ⏸ blocked on a "set local SDP before originate" path through mod_sofia |
+| DTMF tone forking | [RFC 7866 §8.4][rfc7866-8.4] | ✅ passes through the audio bug |
+| communication-failure soft-fail | [RFC 7866 §11.1.1][rfc7866-11.1.1] | ✅ original call unaffected on dispatch failure |
+| SRS failover (multiple endpoints, ordered) | [RFC 7866 §11.1.1][rfc7866-11.1.1] | ✅ multiple `<recording-server>` entries, walked in config order |
+| SRTP for the recording RTP fork | [RFC 7866 §11.2][rfc7866-11.2] / [RFC 3711][rfc3711] / [RFC 4568][rfc4568] | ⏸ `srtp=true` is currently refused; needs initial-offer override (gates on the RFC 7866 §8.5 row above) |
+| SIPS transport for SRC→SRS | [RFC 7866 §11.3][rfc7866-11.3] | ✅ `transport=tls` config |
+| SDP body shape (`v=`, `o=`, `s=`, `c=`, `t=`, `m=`, `a=rtpmap`, `a=ptime`, `a=label`, `a=sendonly`) | [RFC 4566][rfc4566] / [RFC 7866 §7][rfc7866-7] | ✅ `siprec_sdp_build` (offered to operators that build their own; sofia auto-gen used otherwise) |
+| Pause/resume SDP direction-flip with `o=` version bump | [RFC 4566 §5.2][rfc4566] | ✅ `siprec_sdp_flip_direction` |
+| RTP packet framing (V=2, M-bit at talkspurt start, big-endian seq/ts/SSRC) | [RFC 3550 §5.1][rfc3550] / [RFC 3551 §4.1][rfc3551] | ✅ `siprec_media.c` |
+| Random SSRC | [RFC 3550 §8.1][rfc3550] | ✅ /dev/urandom seed |
+| G.711 µ-law / A-law encoders | [G.711][g711] | ✅ inline encoders, INT16_MIN-safe |
+| `<recording>` schema (top-level element + sequence) | [RFC 7865 §5 / Appendix A][rfc7865] | ✅ |
+| `<datamode>` (`complete` + `partial`) | [RFC 7865 §5.1][rfc7865] | ✅ |
+| `<group>` (`group_id`, `<associate-time>`) | [RFC 7865 Appendix A][rfc7865] | ✅ |
+| `<session>` (`session_id`, `<reason>`, `<group-ref>`, `<start-time>`) | [RFC 7865 Appendix A][rfc7865] | ✅ |
+| `<participant>` (`participant_id`, `<nameID>`) | [RFC 7865 Appendix A][rfc7865] | ✅ schema-strict (no inline send/recv, no session_id attr) |
+| `<stream>` (`stream_id`, `session_id`, `<label>`) | [RFC 7865 Appendix A][rfc7865] | ✅ |
+| `<participantsessionassoc>` / `<participantstreamassoc>` | [RFC 7865 Appendix A][rfc7865] | ✅ |
+| XML escaping for caller-supplied content | [RFC 7865 §5][rfc7865] | ✅ &amp; &lt; &gt; &quot; &apos; |
 
 [rfc7866-6.1]: https://datatracker.ietf.org/doc/html/rfc7866#section-6.1
 [rfc7866-6.1.2]: https://datatracker.ietf.org/doc/html/rfc7866#section-6.1.2
 [rfc7866-6.4]: https://datatracker.ietf.org/doc/html/rfc7866#section-6.4
+[rfc7866-7]: https://datatracker.ietf.org/doc/html/rfc7866#section-7
 [rfc7866-7.4]: https://datatracker.ietf.org/doc/html/rfc7866#section-7.4
 [rfc7866-8.4]: https://datatracker.ietf.org/doc/html/rfc7866#section-8.4
 [rfc7866-8.5]: https://datatracker.ietf.org/doc/html/rfc7866#section-8.5
 [rfc7866-11.1.1]: https://datatracker.ietf.org/doc/html/rfc7866#section-11.1.1
 [rfc7866-11.2]: https://datatracker.ietf.org/doc/html/rfc7866#section-11.2
 [rfc7866-11.3]: https://datatracker.ietf.org/doc/html/rfc7866#section-11.3
+[g711]: https://www.itu.int/rec/T-REC-G.711
 
 ## Build
 
@@ -113,7 +131,7 @@ The SDP and metadata builders are pure C and exercised by a
 standalone test target:
 
 ```sh
-make -f Makefile.test test    # 43 / 43 assertions
+make -f Makefile.test test    # 77 / 77 assertions
 make -f Makefile.test lint    # cppcheck --enable=all clean
 ```
 
@@ -208,11 +226,20 @@ Files:
   FreeSWITCH's sofia profile.
 - **`siprec_media.{c,h}`** — media bug callback + RFC 3550 RTP
   fork, inline G.711 µ-law / A-law encoders.
-- **`siprec_sdp.{c,h}`** — RFC 7866 §7 SDP body builder
-  (reserved for v2 strict-RFC label override).
-- **`siprec_metadata.{c,h}`** — RFC 7865 §5 metadata XML builder
-  with full XML-entity escaping.
-- **`siprec_test.c`** — 43 unit-test assertions for the builders.
+- **`siprec_sdp.{c,h}`** — [RFC 7866 §7][rfc7866-7] SDP body
+  builder + `siprec_sdp_flip_direction` helper used by the
+  pause/resume re-INVITE path.
+- **`siprec_metadata.{c,h}`** — [RFC 7865 Appendix A][rfc7865]
+  schema-conformant metadata XML builder with full XML-entity
+  escaping.
+- **`siprec_srtp.{c,h}`** — [libsrtp2][libsrtp2] wrapper
+  (AES_CM_128_HMAC_SHA1_80) + base64 keymat encoder. Currently
+  not exercised at runtime — see the SRTP row in the status
+  table for the gating issue.
+- **`siprec_test.c`** — 77 unit-test assertions for the builders
+  and the SDP direction-flip helper.
+
+[libsrtp2]: https://github.com/cisco/libsrtp
 - **`autoload_conf/siprec.conf.xml`** — module config schema.
 - **[`ARCHITECTURE.md`](ARCHITECTURE.md)** — phase plan + RFC mapping.
 - **[`tests/README.md`](tests/README.md)** — operator field-test

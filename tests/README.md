@@ -51,20 +51,20 @@ fs_cli -x 'originate sofia/$PROFILE/sip:test@somewhere &siprec(default)'
 
 ## Verification checklist
 
-The original `TODO(field-test)` markers were each resolved by
-reading the FS source (commit-time research) rather than left
-for runtime discovery. Each item below documents the resolved
-mechanism, the FS source line that confirmed it, and the
-operator-side check to perform on first deploy.
+Each row documents the implementation mechanism, the FS source
+that confirms it, and the operator-side check to perform on
+first deploy.
 
 | Concern | Resolution | First-deploy check |
 |---------|-----------|--------------------|
-| Multipart body insertion | `sip_multipart` channel variable; mod_sofia walks all entries via `sofia_media_get_multipart` (sofia_media.c:112) and assembles `multipart/mixed` with the auto-generated SDP as part 1, our metadata as part 2 | `sofia loglevel all 9` while siprec dispatches; INVITE Content-Type must be `multipart/mixed; boundary=<call-uuid>` |
-| Multipart entry grammar | `<Content-Type>:body` or `<Content-Type>:~<extra-headers>\r\n<body>` (per `process_mp` in sofia_media.c:98). `~` form lets us inject `Content-Disposition: recording-session` per RFC 7866 §6.1.2 | tcpdump on SRS port — second part must carry `Content-Type: application/rs-metadata+xml` and `Content-Disposition: recording-session` |
+| Multipart body insertion | `sip_multipart` set on the originate's `ovars` event (NOT the brace-prefix dial-string — the brace grammar would terminate at the first `,` or `'` inside the XML). mod_sofia walks all `sip_multipart` channel-var entries via `sofia_media_get_multipart` (sofia_media.c) and assembles `multipart/mixed` with the auto-generated SDP as part 1, our metadata as part 2 | `sofia loglevel all 9` while siprec dispatches; INVITE Content-Type must be `multipart/mixed; boundary=<call-uuid>` |
+| Multipart entry grammar | `<Content-Type>:body` or `<Content-Type>:~<extra-headers>\r\n<body>` (per `process_mp` in sofia_media.c). `~` form lets us inject `Content-Disposition: recording-session` per RFC 7866 §6.1.2 | tcpdump on SRS port — second part must carry `Content-Type: application/rs-metadata+xml` and `Content-Disposition: recording-session` |
 | Media bug flag set | `SMBF_READ_STREAM \| SMBF_WRITE_STREAM` (observe-only). Callback handles `SWITCH_ABC_TYPE_READ` / `_WRITE`, fetches frames via `switch_core_media_bug_read(bug, &frame, SWITCH_FALSE)` — the canonical pattern from `record_callback` in switch_ivr_async.c | `fs_cli show channels` while a recording is active should list the `siprec` bug; RTP packets reach SRS at the negotiated port (verify with `tcpdump -i lo udp port <srs-rtp-port>`) |
-| `remote_media_ip` / `remote_media_port` | mod_sofia populates these channel variables on the recording-leg session once 200 OK arrives. v1 records a single audio stream so one (ip, port) is sufficient; multi-stream is gated on the v1.1 strict-RFC SDP override | `uuid_dump <recording-leg-uuid>` should show `remote_media_ip` + `remote_media_port` populated immediately after originate returns success |
-| RTP source-port allocation | Delegated to mod_sofia via the profile's `rtp-port-min`/`-max` range — we don't open a listening socket ourselves; the UDP fork in siprec_media.c uses `sendto` against the SRS endpoint, kernel-assigned source port | `sofia status profile $YOUR_PROFILE` shows the rtp-port range; no race possible because we never bind |
-| Pause / resume re-INVITE | `siprec_invite_reinvite` sends `SWITCH_MESSAGE_INDICATE_MEDIA_REDIRECT` with `string_arg=new_sdp` to the recording leg. mod_sofia's handler at mod_sofia.c:1650 calls `switch_core_media_set_local_sdp` then `sofia_glue_do_invite` — emits the re-INVITE on the existing dialog | drive via `uuid_siprec_pause <call-uuid>` (TODO: app glue not yet wired); confirm re-INVITE SDP has `a=inactive` instead of `a=sendonly` |
+| Per-stream remote endpoint | `siprec_invite.c:parse_remote_sdp_streams` walks `sip_remote_sdp_str` and pulls one (ip, port) per `m=audio` block in the SRS answer. RTP forwarding uses one UDP socket per stream so the read-direction and write-direction can land on different SRS ports if the answer chose them. Falls back to the `remote_media_ip` / `remote_media_port` channel vars (single endpoint) when the answer SDP isn't materialised | `uuid_dump <recording-leg-uuid>` should show both `sip_remote_sdp_str` and `remote_media_ip`/`remote_media_port`; the log line `siprec: ... stream[N] remote=IP:PORT` should appear once per `m=audio` block in the answer |
+| RTP source-port allocation | Each fork stream calls `socket(AF_INET, SOCK_DGRAM, 0)` and lets the kernel assign an ephemeral source port; `sendto` targets the SRS endpoint extracted above. No listening socket — the SRC is sendonly per RFC 7866 §7.4 | `lsof -p $(pidof freeswitch) -nP -iUDP` while a recording is active; expect one ephemeral UDP socket per active stream |
+| Pause / resume re-INVITE | `siprec_invite_reinvite` runs the existing local SDP through `siprec_sdp_flip_direction` (bumps `o=session-version`, swaps `a=sendonly` ⇄ `a=inactive`) and sends `SWITCH_MESSAGE_INDICATE_MEDIA_REDIRECT` with the rewritten body. mod_sofia's handler in mod_sofia.c calls `switch_core_media_set_local_sdp` then `sofia_glue_do_invite` to emit the re-INVITE on the existing dialog | drive via `uuid_setvar <orig-uuid> dialplan ...` plus a dialplan with `siprec_pause` / `siprec_resume` actions; confirm the re-INVITE body shows `a=inactive`/`a=sendonly` and `o=` version incremented |
+| RTP marker bit | Set on the first packet after a silence/CNG interval per RFC 3551 §4.1; tracked via per-stream `marker_pending` flag in `siprec_media.c` | tcpdump-decoded RTP on the SRS port — first packet of each talkspurt should have M=1, subsequent packets M=0 |
+| Random SSRC | `/dev/urandom` 4-byte read per stream (RFC 3550 §8.1); time-based fallback only when entropy is unavailable | `tcpdump` two consecutive recordings; the SSRCs in their RTP headers should be uniformly distributed, not adjacent values |
 
 ## Expected behaviour by scenario
 
@@ -101,5 +101,9 @@ the SIP response. Same teardown path as above.
 
 ### Edge case: caller hangs up during INVITE handshake
 
-The originate timeout (currently 30s) fires; cause is
-`ALLOTTED_TIMEOUT`. Same teardown path.
+The originate timeout (currently 20s, set as the `timelimit`
+argument to `switch_ivr_originate`) fires; cause is
+`ALLOTTED_TIMEOUT`. The half-built `recording_t` is cleaned
+up immediately on the failure return path
+(`recording_session.c` removes the hash entry and destroys
+the pool — there's no state-handler bound yet).

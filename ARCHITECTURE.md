@@ -61,22 +61,27 @@ siprec_media.h
 
 - [x] `siprec_invite.c` — issues the INVITE via
       `switch_ivr_originate` against the same sofia profile
-      carrying the original call. The metadata XML is attached via
-      the documented `sip_multipart` channel variable
-      (`process_mp` in sofia_media.c parses `<Content-Type>:~<extra-headers>\r\n<body>`
-      and assembles `multipart/mixed` with the auto-generated SDP
-      as part 1, our metadata as part 2). `sip_h_Require=siprec`
-      adds the RFC 7866 §6.1 Require header.
-- [x] BYE: `siprec_invite_send_bye` hangs up the recording-leg
-      session via `switch_channel_hangup(NORMAL_CLEARING)`. Sofia
-      emits the BYE; idempotent — locate-by-UUID guards against
-      double-tear-down.
+      carrying the original call. The metadata XML and
+      `Require: siprec` header are attached through the
+      originate's `ovars` parameter (NOT the brace-prefix
+      dial-string; the brace grammar terminates a value at
+      the first `,`/`'`/`}` and would corrupt the multipart
+      body). `process_mp` in sofia_media.c parses
+      `<Content-Type>:~<extra-headers>\r\n<body>` and
+      assembles `multipart/mixed` with the auto-generated SDP
+      as part 1, our metadata as part 2.
+- [x] BYE: `siprec_invite_send_bye` looks up the recording
+      leg by stashed UUID via `switch_core_session_locate`
+      and hangs up via `switch_channel_hangup(NORMAL_CLEARING)`.
+      Sofia emits the BYE; idempotent — locate returns NULL
+      when the dialog is already gone.
 - [x] re-INVITE: `siprec_invite_reinvite` pushes the updated
-      metadata as a fresh `sip_multipart` entry and drives the
-      re-INVITE via `SWITCH_MESSAGE_INDICATE_MEDIA_REDIRECT`.
-      mod_sofia's handler (mod_sofia.c:1650) calls
-      `switch_core_media_set_local_sdp` + `sofia_glue_do_invite`
-      to emit on the existing dialog.
+      metadata as a fresh `sip_multipart` entry and drives
+      the re-INVITE via `SWITCH_MESSAGE_INDICATE_MEDIA_REDIRECT`.
+      mod_sofia's handler calls `switch_core_media_set_local_sdp`
+      + `sofia_glue_do_invite` to emit on the existing dialog.
+      Locate-by-UUID is used so a torn-down recording leg
+      doesn't UAF the message dispatch.
 
 ### Phase 3 — media tap & RTP fork
 
@@ -86,16 +91,21 @@ siprec_media.h
       switch_ivr_async.c). Callback handles `SWITCH_ABC_TYPE_READ`
       / `_WRITE` and pulls each frame via
       `switch_core_media_bug_read(bug, &frame, SWITCH_FALSE)`.
+      One UDP socket per stream — opened ipv4-only at attach
+      with kernel-assigned ephemeral source port. Per-stream
+      endpoint comes from parsing `sip_remote_sdp_str` in
+      `siprec_invite.c:parse_remote_sdp_streams`.
 - [x] Codec passthrough: `read_codec->ianacode` selects PCMU/PCMA
       at attach time. v1 assumes 8 kHz mono 20 ms ptime.
 - [x] RTP framing: inline G.711 encoders (l16_to_ulaw /
-      l16_to_alaw) + RFC 3550 RTP header packing. One UDP socket
-      per stream; SSRC seeded from `switch_micro_time_now`,
-      sequence + timestamp incremented in lock-step with each
-      frame.
+      l16_to_alaw, INT16_MIN-safe via int promotion) +
+      RFC 3550 §5.1 header packing. SSRC pulled from
+      `/dev/urandom` per RFC 3550 §8.1; sequence + timestamp
+      incremented in lock-step with each frame; M-bit set on
+      the first packet after silence per RFC 3551 §4.1.
 - [ ] DTMF tone forking (RFC 7866 §8.4) — passes through
       transparently via the bug's read path; explicit RFC 2833
-      passthrough is the v1.1 enhancement.
+      passthrough is a future enhancement.
 
 ### Phase 4 — lifecycle integration
 
@@ -110,10 +120,13 @@ siprec_media.h
       channel, &state_handlers)` runs at the end of
       `start_recording_session`, so caller-side hangup of the
       original call automatically tears down the recording.
-- [ ] `siprec_pause` / `siprec_resume` apps — wire dialplan
-      entry points to `siprec_invite_reinvite` with a flipped
-      direction attribute. v1.1 deliverable; the underlying
-      `siprec_invite_reinvite` is implemented and ready.
+- [x] `siprec_pause` / `siprec_resume` apps — wire dialplan
+      entry points through `siprec_change_direction`, which
+      reads the recording leg's `sip_local_sdp_str`, runs it
+      through `siprec_sdp_flip_direction` (bumps
+      `o=session-version` per RFC 4566 §5.2 and swaps
+      `a=sendonly` ⇄ `a=inactive`), and dispatches the
+      re-INVITE through `siprec_invite_reinvite`.
 
 ### Phase 5 — config
 
@@ -136,30 +149,51 @@ siprec_media.h
 
 ### Phase 6 — testing
 
-- [x] Unit tests for `siprec_sdp.c` — 21 assertions covering
-      RFC 7866 §7 line shape, mono vs stereo rtpmap, validation
-      reject paths.
-- [x] Unit tests for `siprec_metadata.c` — 22 assertions
-      covering schema-element ordering, attribute presence, XML
-      escaping of caller-supplied content (no entity injection).
-- [x] `tests/README.md` — operator-facing field-test checklist
-      mapping each `TODO(field-test)` source marker to a concrete
-      verification step (wireshark / sofia loglevel / fs_cli probe).
+- [x] Unit tests for `siprec_sdp.c` — assertions covering
+      RFC 7866 §7 line shape, RFC 4566 SDP shape,
+      `a=group:DUP` correctly absent, mono vs stereo rtpmap,
+      SRTP a=crypto emission, direction-flip helper round-
+      trip, validation reject paths.
+- [x] Unit tests for `siprec_metadata.c` — assertions
+      covering RFC 7865 Appendix A schema element ordering,
+      attribute presence, schema-strict participant /
+      session / group / stream / assoc shapes, XML escaping
+      of caller-supplied content (no entity injection).
+      Run with `make -f Makefile.test test`; lint with
+      `make -f Makefile.test lint` (cppcheck
+      `--enable=all --check-level=exhaustive` clean).
+- [x] `tests/README.md` — operator-facing first-deploy
+      verification checklist with one row per code-path
+      (multipart insertion, per-stream endpoint parsing,
+      pause/resume, marker bit, SSRC randomness).
 - [ ] Live integration against `cb-srs` — run
       `siprec-start-stop.xml` from callBroadcast's TwiML suite
       with mod_siprec built from this fork; the suite already
       checks for `EXECUTE.*siprec\(` in the journal and
       `[twiml] <uuid>: done`. Move from FAIL to PASS once the
-      `TODO(field-test)` items are closed.
+      verification checklist passes on a live FreeSWITCH.
+
+## Known gaps
+
+- **Initial-offer SDP override**: `a=label:N` per stream
+  (RFC 7866 §8.5) and SRTP `a=crypto` (RFC 4568) both need
+  the SRC to control the SDP carried on the initial INVITE.
+  mod_sofia auto-generates that body and there's no
+  per-call hook today that lets mod_siprec inject either
+  attribute. Until this lands, `srtp=true` recording is
+  refused at start; SRSes that strictly require labels will
+  reject our offers.
 
 ## Non-goals (deferred)
 
 - **Server-side (SRS)**: this module is SRC-only. The cb-srs
   receiver is implemented separately in Go.
 - **Video tracks**: RFC 7866 supports them; v1 is audio-only.
-- **End-to-end TLS**: SIPS / SRTP support deferred. The SRS hop
-  in our deployment is loopback (127.0.0.1:5070), so plain
-  UDP/RTP is the v1 transport.
+- **IPv6 RTP fork**: the UDP fork in `siprec_media.c` is
+  AF_INET only. An IPv6 negotiated endpoint is detected at
+  attach and the recording is refused with a clear error.
 - **Persistence/resume across module reloads**: a recording
   session is a per-call construct; module reload terminates
-  active recordings. No state recovery.
+  active recordings (the shutdown handler detaches the bug
+  and BYEs the recording leg before freeing pools). No
+  state recovery.
