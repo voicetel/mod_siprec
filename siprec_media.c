@@ -354,7 +354,13 @@ switch_status_t siprec_media_attach(recording_t *recording)
             htons(ictx->negotiated[i].remote_port);
         if (inet_pton(AF_INET, ictx->negotiated[i].remote_ip,
                       &mctx->streams[i].dst.sin_addr) != 1) {
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+            /* recording->session is non-null per the entry guard
+             * at the top of siprec_media_attach; SESSION_LOG lets
+             * mod_syslog stamp this line with the original-leg
+             * UUID so a "siprec on UUID X failed" trace shows up
+             * under the same channel-id as the rest of the call. */
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+                SWITCH_LOG_ERROR,
                 "siprec: stream[%zu] negotiated remote '%s' is not "
                 "an IPv4 address; v1 fork supports IPv4 only — "
                 "aborting media attach\n",
@@ -410,7 +416,8 @@ switch_status_t siprec_media_attach(recording_t *recording)
                 ictx->negotiated[i].srtp_keymat,
                 ictx->negotiated[i].srtp_keymat_len);
             if (!mctx->streams[i].srtp) {
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+                    SWITCH_LOG_ERROR,
                     "siprec: SRTP session-create failed for stream %zu\n", i);
                 for (size_t j = 0; j <= i; j++) {
                     if (mctx->streams[j].srtp)

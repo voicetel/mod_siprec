@@ -255,7 +255,13 @@ switch_status_t siprec_invite_send(
         sofia_profile, srs_uri);
 
     if (dn <= 0 || (size_t)dn >= sizeof(dial_string)) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+        /* Bind every siprec log line to the parent-call UUID via
+         * recording->session — that's the call-sid an operator
+         * would grep for, NOT the recording leg's. recording->session
+         * is set at start_recording_session and lives the entire
+         * recording lifecycle. */
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+            SWITCH_LOG_ERROR,
             "siprec: dial-string overflow\n");
         switch_event_destroy(&ovars);
         return SWITCH_STATUS_FALSE;
@@ -282,7 +288,8 @@ switch_status_t siprec_invite_send(
     switch_event_destroy(&ovars);
 
     if (st != SWITCH_STATUS_SUCCESS) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+            SWITCH_LOG_ERROR,
             "siprec: INVITE to %s failed: cause=%s\n",
             srs_uri, switch_channel_cause2str(cause));
         return SWITCH_STATUS_FALSE;
@@ -350,7 +357,8 @@ switch_status_t siprec_invite_send(
                 ctx->negotiated[0].remote_port = (uint16_t)pn;
                 ctx->negotiated_count = 1;
             } else {
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+                    SWITCH_LOG_ERROR,
                     "siprec: remote_media_port='%s' is not a valid "
                     "1-65535 integer; fallback path failing\n",
                     rport);
@@ -375,13 +383,15 @@ switch_status_t siprec_invite_send(
     switch_core_session_rwunlock(new_session);
 
     for (size_t s = 0; s < ctx->negotiated_count; s++) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+            SWITCH_LOG_INFO,
             "siprec: INVITE to %s answered, stream[%zu] remote=%s:%u\n",
             srs_uri, s, ctx->negotiated[s].remote_ip,
             (unsigned)ctx->negotiated[s].remote_port);
     }
     if (ctx->negotiated_count == 0) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+            SWITCH_LOG_ERROR,
             "siprec: INVITE to %s answered with no usable streams\n",
             srs_uri);
     }
@@ -411,18 +421,21 @@ switch_status_t siprec_invite_send(
      * is reserved for that future path. */
 
     if (labelled_sdp) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+            SWITCH_LOG_INFO,
             "siprec: dispatching post-originate label re-INVITE "
             "(RFC 7866 §8.5)\n");
         if (siprec_invite_reinvite(recording, labelled_sdp, NULL)
             != SWITCH_STATUS_SUCCESS) {
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+                SWITCH_LOG_WARNING,
                 "siprec: label re-INVITE dispatch failed; recording "
                 "continues without a=label:1 in the offer\n");
         }
         siprec_sdp_free(labelled_sdp);
     } else if (zstr(local_sdp_now)) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+            SWITCH_LOG_WARNING,
             "siprec: sip_local_sdp_str not yet materialised; skipping "
             "RFC 7866 §8.5 label injection — recording continues "
             "without a=label:1 in the offer\n");
@@ -487,21 +500,24 @@ switch_status_t siprec_invite_send_failover(
         char *uri = siprec_uri_for(recording->pool, srv);
         if (!uri) continue;
 
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+            SWITCH_LOG_INFO,
             "siprec: failover attempt %d → %s\n", attempts, uri);
 
         switch_status_t st = siprec_invite_send(
             recording, sofia_profile, uri, sdp_body, metadata_body);
 
         if (st == SWITCH_STATUS_SUCCESS) {
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+                SWITCH_LOG_INFO,
                 "siprec: failover succeeded on attempt %d (%s)\n",
                 attempts, uri);
             return SWITCH_STATUS_SUCCESS;
         }
     }
 
-    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+        SWITCH_LOG_ERROR,
         "siprec: failover exhausted after %d attempts; recording NOT started\n",
         attempts);
     return SWITCH_STATUS_FALSE;
@@ -569,7 +585,14 @@ switch_status_t siprec_invite_reinvite(
     switch_core_session_t *s =
         switch_core_session_locate(ctx->recording_uuid);
     if (!s) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+        /* Bind to the parent-call UUID via recording->session.
+         * The recording leg's UUID (ctx->recording_uuid) is already
+         * in the message body for context, but the userdata UUID
+         * the syslog handler reads should be the parent call —
+         * that's what an operator greps for to find this trace
+         * alongside the rest of the call's events. */
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+            SWITCH_LOG_WARNING,
             "siprec: re-INVITE skipped — recording leg %s is gone\n",
             ctx->recording_uuid);
         ctx->recording_uuid[0] = '\0';
@@ -603,7 +626,8 @@ switch_status_t siprec_invite_reinvite(
     switch_core_session_rwunlock(s);
 
     if (st != SWITCH_STATUS_SUCCESS) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+            SWITCH_LOG_ERROR,
             "siprec: re-INVITE failed status=%d\n", (int)st);
     }
     return st;
