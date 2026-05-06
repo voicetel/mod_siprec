@@ -79,6 +79,8 @@ switch_status_t stop_recording_session(switch_core_session_t *session)
         recording = switch_core_hash_find(globals.recordings_hash, recording_key);
         switch_mutex_unlock(globals.recordings_mutex);
 
+        switch_safe_free(recording_key);
+
         if (!recording) {
             continue;
         }
@@ -86,6 +88,17 @@ switch_status_t stop_recording_session(switch_core_session_t *session)
         switch_mutex_lock(globals.recordings_mutex);
         switch_core_hash_delete(globals.recordings_hash, recording->key);
         switch_mutex_unlock(globals.recordings_mutex);
+
+        /* Tear down the recording's resources. The original code
+         * removed the hash entry but never destroyed the mutex or
+         * the recording's memory pool — every <Stop><Siprec/>
+         * leaked the recording_t struct, its mutex, and its pool's
+         * full allocation arena until module shutdown rolled them
+         * up via the shutdown function's hash walk. With per-call
+         * dispatch on a multi-tenant box, the leak compounds.
+         */
+        switch_mutex_destroy(recording->mutex);
+        switch_core_destroy_memory_pool(&recording->pool);
     }
     switch_mutex_unlock(globals.recording_servers_mutex);
 

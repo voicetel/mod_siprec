@@ -63,16 +63,24 @@ static switch_status_t load_recording_server(switch_xml_t xml)
 		for (param = switch_xml_child(settings, "param"); param; param = param->next) {
 			char *var = (char *) switch_xml_attr_soft(param, "name");
 			char *val = (char *) switch_xml_attr_soft(param, "value");
+			/* Use switch_core_strdup (pool-bound) instead of bare
+			 * strdup. The recording_server's pool is destroyed at
+			 * module shutdown; strings allocated from the heap
+			 * (strdup) leak because nothing tracks their lifetime
+			 * — name was already pool-allocated, the others were
+			 * inconsistent. switch_atoui returns unsigned; the
+			 * cast keeps the signed-int port field tidy.
+			 */
 			if (!strcmp(var, "host")) {
-				recording_server->host = strdup(val);
+				recording_server->host = switch_core_strdup(recording_server_pool, val);
 			} else if (!strcmp(var, "port")) {
-				recording_server->port = switch_atoui(val);
+				recording_server->port = (int) switch_atoui(val);
 			} else if (!strcmp(var, "register")) {
 				recording_server->should_register = switch_true(val);
 			} else if (!strcmp(var, "username")) {
-				recording_server->username = strdup(val);
-			}  else if (!strcmp(var, "password")) {
-				recording_server->password = strdup(val);
+				recording_server->username = switch_core_strdup(recording_server_pool, val);
+			} else if (!strcmp(var, "password")) {
+				recording_server->password = switch_core_strdup(recording_server_pool, val);
 			}
 		}
 	}
