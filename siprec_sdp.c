@@ -165,19 +165,14 @@ char *siprec_sdp_build(const siprec_sdp_options_t *opts) {
      * as long as the original call; no NTP timing info applies. */
     sb_appendf(&sb, "t=0 0" EOL);
 
-    /* a=group:DUP <label1> <label2> ... — RFC 7866 §7.6.
-     * Groups streams that capture the same logical conversation.
-     * Skipped when group_labels is NULL. */
-    if (opts->group_labels && opts->group_label_count > 0) {
-        sb_appendf(&sb, "a=group:DUP");
-        for (size_t i = 0; i < opts->group_label_count; i++) {
-            const char *lbl = opts->group_labels[i];
-            if (lbl && *lbl) {
-                sb_appendf(&sb, " %s", lbl);
-            }
-        }
-        sb_appendf(&sb, EOL);
-    }
+    /* No a=group:DUP. RFC 5888 §5 defines DUP as duplication
+     * semantics — packets of the same content carried over
+     * multiple transports for redundancy. SIPREC's per-direction
+     * streams carry DISTINCT audio (caller-side vs callee-side),
+     * not duplicates, so DUP would mislead the SRS. RFC 7866
+     * does not mandate any specific group attribute; the
+     * <participantstreamassoc> entries in the metadata XML
+     * already correlate streams to participants. */
 
     /* One m=audio block per track. */
     for (size_t i = 0; i < opts->track_count; i++) {

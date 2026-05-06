@@ -59,16 +59,12 @@ static void test_sdp_two_track_pcmu(void) {
         { .label = "2", .port = 12242, .pt = 0, .codec_name = "PCMU",
           .clock_rate = 8000, .channels = 1, .ptime_ms = 20 },
     };
-    const char *group_labels[] = { "1", "2" };
-
     siprec_sdp_options_t opts = {
         .src_ip = "src.example.com",
         .session_id = 1234,
         .session_version = 5678,
         .tracks = tracks,
         .track_count = 2,
-        .group_labels = group_labels,
-        .group_label_count = 2,
     };
 
     char *sdp = siprec_sdp_build(&opts);
@@ -79,7 +75,10 @@ static void test_sdp_two_track_pcmu(void) {
     check_contains(sdp, "s=-\r\n",                       "sdp:session-name line");
     check_contains(sdp, "c=IN IP4 src.example.com\r\n",  "sdp:connection line");
     check_contains(sdp, "t=0 0\r\n",                     "sdp:time line");
-    check_contains(sdp, "a=group:DUP 1 2\r\n",           "sdp:group:DUP");
+    /* RFC 5888 DUP semantics signal duplicated content — wrong
+     * for SIPREC's distinct per-direction streams. The SDP must
+     * not carry a=group:DUP. */
+    check_not_contains(sdp, "a=group:DUP",               "sdp:no a=group:DUP");
     check_contains(sdp, "m=audio 12240 RTP/AVP 0\r\n",   "sdp:m=audio track 1");
     check_contains(sdp, "m=audio 12242 RTP/AVP 0\r\n",   "sdp:m=audio track 2");
     check_contains(sdp, "a=rtpmap:0 PCMU/8000\r\n",      "sdp:rtpmap PCMU/8000");

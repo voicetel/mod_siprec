@@ -77,13 +77,6 @@ typedef struct {
      * up to N participants → N or 2N tracks. */
     const siprec_sdp_track_t *tracks;
     size_t track_count;
-
-    /* a=group:DUP 1 2 — RFC 7866 §7.6 specifies that streams
-     * of the same logical conversation are grouped via DUP.
-     * Set to the labels of the tracks to group; NULL skips
-     * the line. */
-    const char *const *group_labels;
-    size_t group_label_count;
 } siprec_sdp_options_t;
 
 /* siprec_sdp_build: render the SDP body to a heap buffer.
