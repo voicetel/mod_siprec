@@ -13,6 +13,8 @@
 #define SIPREC_MEDIA_H
 
 #include <switch.h>
+#include <netinet/in.h>      /* struct sockaddr_in for the cached
+                              * per-stream destination. */
 #include "mod_siprec.h"
 
 /* Forward decl — siprec_srtp.h is private to siprec_media.c so
@@ -38,6 +40,16 @@ typedef struct siprec_media_ctx {
         int        fd;
         char       remote_ip[64];
         uint16_t   remote_port;
+
+        /* Pre-built destination — inet_pton is run once at
+         * attach time and the result cached here so the
+         * media-bug hot path is allocation-free and parse-free
+         * (every saved cycle on the FS media thread matters
+         * once the box is doing thousands of concurrent
+         * recordings). */
+        struct sockaddr_in dst;
+        socklen_t          dst_len;
+
         uint32_t   ssrc;
         uint32_t   timestamp;
         uint16_t   sequence;

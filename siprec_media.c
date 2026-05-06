@@ -245,18 +245,10 @@ static switch_bool_t media_bug_callback(
             }
         }
 
-        struct sockaddr_in dst;
-        memset(&dst, 0, sizeof(dst));
-        dst.sin_family = AF_INET;
-        dst.sin_port   = htons(ctx->streams[stream_idx].remote_port);
-        if (inet_pton(AF_INET, ctx->streams[stream_idx].remote_ip,
-                      &dst.sin_addr) != 1) {
-            return SWITCH_TRUE;
-        }
-
         rtp_pack_and_send(
             ctx->streams[stream_idx].fd,
-            (struct sockaddr *)&dst, sizeof(dst),
+            (struct sockaddr *)&ctx->streams[stream_idx].dst,
+            ctx->streams[stream_idx].dst_len,
             ctx->pt,
             ctx->streams[stream_idx].marker_pending,
             ctx->streams[stream_idx].ssrc,
@@ -316,9 +308,18 @@ switch_status_t siprec_media_attach(recording_t *recording)
         /* IPv4-only RTP fork in v1. inet_pton returns 0 for a
          * well-formed IPv6 address (or for any other non-IPv4
          * string) — fail loudly here rather than open a socket
-         * we'll never be able to sendto() through. */
-        struct in_addr probe;
-        if (inet_pton(AF_INET, ictx->negotiated[i].remote_ip, &probe) != 1) {
+         * we'll never be able to sendto() through.
+         *
+         * Build the destination sockaddr now so the bug
+         * callback can sendto() with a cached pointer instead
+         * of re-running inet_pton + sockaddr setup on every
+         * 20 ms tick. */
+        memset(&mctx->streams[i].dst, 0, sizeof(mctx->streams[i].dst));
+        mctx->streams[i].dst.sin_family = AF_INET;
+        mctx->streams[i].dst.sin_port =
+            htons(ictx->negotiated[i].remote_port);
+        if (inet_pton(AF_INET, ictx->negotiated[i].remote_ip,
+                      &mctx->streams[i].dst.sin_addr) != 1) {
             switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
                 "siprec: stream[%zu] negotiated remote '%s' is not "
                 "an IPv4 address; v1 fork supports IPv4 only — "
@@ -329,6 +330,7 @@ switch_status_t siprec_media_attach(recording_t *recording)
             }
             return SWITCH_STATUS_FALSE;
         }
+        mctx->streams[i].dst_len = sizeof(mctx->streams[i].dst);
 
         mctx->streams[i].fd = socket(AF_INET, SOCK_DGRAM, 0);
         if (mctx->streams[i].fd < 0) {
