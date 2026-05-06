@@ -332,12 +332,12 @@ static void test_metadata_reason_elements(void) {
         .group_id      = "grp",
         .associate_time_utc = "2026-05-06T03:00:00Z",
         .session_reason = "paused",
-        .group_reason  = "merged",
         .participants  = parts, .participant_count = 1,
     };
     char *xml = siprec_metadata_build(&opts);
     check_contains(xml, "<reason>paused</reason>",       "meta:session reason");
-    check_contains(xml, "<reason>merged</reason>",       "meta:group reason");
+    /* <group> has no <reason> in the schema. */
+    check_not_contains(xml, "<reason>merged</reason>",   "meta:no group reason");
     siprec_metadata_free(xml);
 }
 

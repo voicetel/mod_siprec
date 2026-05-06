@@ -157,15 +157,22 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
             ? "partial" : "complete";
     sb_appendf(&sb, "  <datamode>%s</datamode>\r\n", dm_str);
 
-    /* <group group_id="..."> — wraps related participants in a
-     * single logical conversation. RFC 7865 §5: when an
-     * associate-time is known, emit it inside the group too so
-     * the SRS can timestamp the conversation start as well as
-     * the per-session start. */
+    /* <group group_id="..."> — RFC 7865 Appendix A grouptype.
+     *
+     *   <xs:complexType name="group">
+     *     <xs:sequence>
+     *       <xs:element name="associate-time" type="dateTime"/>
+     *       <xs:element name="disassociate-time" type="dateTime"/>
+     *       <xs:any namespace='##other' .../>
+     *     </xs:sequence>
+     *     <xs:attribute name="group_id" use="required"/>
+     *   </xs:complexType>
+     *
+     * No <reason> child in the schema; only the timestamps
+     * and extension elements. */
     int group_has_body =
         opts->group_id && *opts->group_id &&
-        ((opts->associate_time_utc && *opts->associate_time_utc) ||
-         (opts->group_reason && *opts->group_reason));
+        opts->associate_time_utc && *opts->associate_time_utc;
 
     if (opts->group_id && *opts->group_id) {
         sb_appendf(&sb, "  <group group_id=\"");
@@ -174,16 +181,9 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
 
         if (group_has_body) {
             sb_appendf(&sb, ">\r\n");
-            if (opts->associate_time_utc && *opts->associate_time_utc) {
-                sb_appendf(&sb, "    <associate-time>");
-                xml_escape_into(&sb, opts->associate_time_utc);
-                sb_appendf(&sb, "</associate-time>\r\n");
-            }
-            if (opts->group_reason && *opts->group_reason) {
-                sb_appendf(&sb, "    <reason>");
-                xml_escape_into(&sb, opts->group_reason);
-                sb_appendf(&sb, "</reason>\r\n");
-            }
+            sb_appendf(&sb, "    <associate-time>");
+            xml_escape_into(&sb, opts->associate_time_utc);
+            sb_appendf(&sb, "</associate-time>\r\n");
             sb_appendf(&sb, "  </group>\r\n");
         } else {
             sb_appendf(&sb, "/>\r\n");

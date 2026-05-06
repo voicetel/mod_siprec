@@ -97,13 +97,15 @@ typedef struct {
      * fields should set this to PARTIAL. */
     siprec_metadata_datamode_t datamode;
 
-    /* Optional session-level <reason> (RFC 7865 §5).
-     * Surfaces inside <session>; common values are
-     * "terminated", "paused", "resumed". NULL omits. */
+    /* Optional session-level <reason> (RFC 7865 Appendix A
+     * sessiontype). Surfaces inside <session>; common values
+     * are "terminated", "paused", "resumed". NULL omits.
+     *
+     * <group> has no <reason> in the schema (grouptype only
+     * declares associate-time / disassociate-time / extension
+     * children) so a group-level reason field would be
+     * non-conformant — there is none here. */
     const char *session_reason;
-
-    /* Optional group-level <reason>. NULL omits. */
-    const char *group_reason;
 
     /* Participants array. */
     const siprec_metadata_participant_t *participants;
