@@ -313,6 +313,23 @@ switch_status_t siprec_media_attach(recording_t *recording)
      * iff the invite_ctx carries a keymat for this stream. */
     mctx->stream_count = ictx->negotiated_count;
     for (size_t i = 0; i < mctx->stream_count; i++) {
+        /* IPv4-only RTP fork in v1. inet_pton returns 0 for a
+         * well-formed IPv6 address (or for any other non-IPv4
+         * string) — fail loudly here rather than open a socket
+         * we'll never be able to sendto() through. */
+        struct in_addr probe;
+        if (inet_pton(AF_INET, ictx->negotiated[i].remote_ip, &probe) != 1) {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+                "siprec: stream[%zu] negotiated remote '%s' is not "
+                "an IPv4 address; v1 fork supports IPv4 only — "
+                "aborting media attach\n",
+                i, ictx->negotiated[i].remote_ip);
+            for (size_t j = 0; j < i; j++) {
+                if (mctx->streams[j].fd >= 0) close(mctx->streams[j].fd);
+            }
+            return SWITCH_STATUS_FALSE;
+        }
+
         mctx->streams[i].fd = socket(AF_INET, SOCK_DGRAM, 0);
         if (mctx->streams[i].fd < 0) {
             for (size_t j = 0; j < i; j++) {
