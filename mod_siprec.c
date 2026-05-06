@@ -32,6 +32,7 @@
 #include "mod_siprec.h"
 #include "recording_session.h"
 #include "siprec_invite.h"
+#include "siprec_media.h"
 #include "siprec_sdp.h"
 #include "siprec_srtp.h"
 
@@ -352,6 +353,21 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_siprec_shutdown)
 	for (hi = switch_core_hash_first(globals.recordings_hash); hi; hi = switch_core_hash_next(&hi)) {
 		switch_core_hash_this(hi, &vvar, NULL, &val);
 		recording = (recording_t *) val;
+
+		/* Tear down active state before freeing the pool.
+		 * Without this, the media-bug callback can still fire
+		 * on the FS media thread while user_data
+		 * (siprec_media_ctx_t) is allocated from the pool we're
+		 * about to destroy → use-after-free on module unload
+		 * with active recordings.
+		 *
+		 * siprec_media_detach calls switch_core_media_bug_remove
+		 * which is synchronous — it blocks until any in-flight
+		 * callback has returned. siprec_invite_send_bye is
+		 * idempotent and best-effort; if the recording leg's
+		 * session is already gone the BYE is a no-op. */
+		siprec_media_detach(recording);
+		siprec_invite_send_bye(recording);
 
 		switch_mutex_destroy(recording->mutex);
 		switch_core_destroy_memory_pool(&recording->pool);
