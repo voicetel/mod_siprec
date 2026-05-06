@@ -68,7 +68,7 @@ verification path.
 | BYE on hangup | [RFC 7866 §6.4][rfc7866-6.4] | ✅ on_destroy state-handler |
 | pause / resume re-INVITE | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_pause` / `siprec_resume` apps; SDP direction-flip preserves negotiated session |
 | sendonly direction on SRC streams | [RFC 7866 §7.4][rfc7866-7.4] | ✅ sofia auto-gen offer |
-| `a=label:N` per stream | [RFC 7866 §8.5][rfc7866-8.5] | ⏸ blocked on a "set local SDP before originate" path through mod_sofia |
+| `a=label:N` per stream | [RFC 7866 §8.5][rfc7866-8.5] | ⚠ partial — single-stream `a=label:1` injected via post-originate re-INVITE on the auto-generated SDP; per-stream distinct labels in one offer still need an `mod_sofia` SDP-override hook |
 | DTMF tone forking | [RFC 7866 §8.4][rfc7866-8.4] | ✅ passes through the audio bug |
 | communication-failure soft-fail | [RFC 7866 §11.1.1][rfc7866-11.1.1] | ✅ original call unaffected on dispatch failure |
 | SRS failover (multiple endpoints, ordered) | [RFC 7866 §11.1.1][rfc7866-11.1.1] | ✅ multiple `<recording-server>` entries, walked in config order |
