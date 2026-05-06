@@ -22,6 +22,17 @@
 static int test_count = 0;
 static int fail_count = 0;
 
+/* All fprintf(stderr, ...) calls below this point are test
+ * diagnostics with literal format strings. They are not a
+ * buffer-bound surface — fprintf to a FILE* writes to the
+ * stream, not into a caller-supplied buffer. Annex K's
+ * fprintf_s would satisfy clang-analyzer's check but glibc
+ * doesn't ship it, and replacing fprintf with a vsnprintf_s
+ * + fputs helper trades one analyzer complaint for another.
+ * The block-scoped suppression below makes the rationale
+ * explicit at the call-region level. */
+/* NOLINTBEGIN(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
+
 static void check_contains(const char *got, const char *want, const char *what) {
     test_count++;
     if (!got) {
@@ -517,3 +528,4 @@ int main(void) {
     printf("\n%d/%d passed\n", test_count - fail_count, test_count);
     return fail_count == 0 ? 0 : 1;
 }
+/* NOLINTEND(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */

@@ -60,8 +60,13 @@ static void sb_appendf(sb_t *sb, const char *fmt, ...) {
     }
     /* Two-pass: first vsnprintf with len 0 to learn the size,
      * then reserve + format into the real buffer. */
+    /* vsnprintf with size=0 is the standard C99 sizing pass;
+     * the function is bounded by definition (writes nothing,
+     * returns the would-have-been length). Annex K's
+     * vsnprintf_s rejects size=0 so cannot replace this. */
     va_list ap;
     va_start(ap, fmt);
+    /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
     int n = vsnprintf(NULL, 0, fmt, ap);
     va_end(ap);
 
@@ -75,7 +80,11 @@ static void sb_appendf(sb_t *sb, const char *fmt, ...) {
         return;
     }
 
+    /* Bounded: dst capacity is the explicit second argument
+     * (sb->cap - sb->len), and sb_reserve above guarantees
+     * it covers n+1 bytes. */
     va_start(ap, fmt);
+    /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
     int written = vsnprintf(sb->data + sb->len, sb->cap - sb->len, fmt, ap);
     va_end(ap);
 
@@ -247,6 +256,14 @@ static void sb_append(sb_t *sb, const char *s, size_t n) {
     if (sb->err) return;
     if (n == 0) return;
     if (sb_reserve(sb, sb->len + n + 1) != 0) return;
+    /* sb_reserve only returns 0 on a successful allocation, so
+     * sb->data is non-NULL here. The redundant check exists for
+     * flow-sensitive analyzers that don't propagate
+     * sb_reserve's post-condition. */
+    if (!sb->data) { sb->err = 1; return; }
+    /* Bounded: n is the explicit length, dst tail capacity
+     * was just guaranteed by sb_reserve(len+n+1). */
+    /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
     memcpy(sb->data + sb->len, s, n);
     sb->len += n;
     sb->data[sb->len] = '\0';
@@ -277,6 +294,10 @@ char *siprec_sdp_flip_direction(const char *src_sdp, int paused) {
              * %llu handles values up to 64-bit per the RFC. */
             char     user[64], id[64], net[16], at[16], addr[64];
             unsigned long long ver = 0;
+            /* Bounded: every %s specifier carries an explicit
+             * width (%63s / %15s) that fits its destination
+             * buffer with room for the trailing NUL. */
+            /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
             int n = sscanf(p, "o=%63s %63s %llu %15s %15s %63s",
                 user, id, &ver, net, at, addr);
             if (n == 6) {

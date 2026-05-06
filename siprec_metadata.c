@@ -54,6 +54,12 @@ static void sb_append(sb_t *sb, const char *s, size_t n) {
      * call sb->data is still NULL. */
     if (n == 0) return;
     if (sb_reserve(sb, sb->len + n + 1) != 0) return;
+    /* sb_reserve only returns 0 with sb->data set; redundant
+     * re-check for flow-sensitive analyzers. */
+    if (!sb->data) { sb->err = 1; return; }
+    /* Bounded: n is the explicit length, sb_reserve above
+     * guaranteed at least n+1 bytes of tail capacity. */
+    /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
     memcpy(sb->data + sb->len, s, n);
     sb->len += n;
     sb->data[sb->len] = '\0';
@@ -61,13 +67,20 @@ static void sb_append(sb_t *sb, const char *s, size_t n) {
 
 static void sb_appendf(sb_t *sb, const char *fmt, ...) {
     if (sb->err) return;
+    /* Sizing pass — vsnprintf(NULL, 0, ...) is the canonical
+     * C99 way to learn the formatted length without writing
+     * anything. Bounded by definition. */
     va_list ap;
     va_start(ap, fmt);
+    /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
     int n = vsnprintf(NULL, 0, fmt, ap);
     va_end(ap);
     if (n < 0) { sb->err = 1; return; }
     if (sb_reserve(sb, sb->len + (size_t)n + 1) != 0) return;
+    /* Bounded: dst capacity is the explicit second argument
+     * and sb_reserve above guaranteed it covers n+1 bytes. */
     va_start(ap, fmt);
+    /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
     int written = vsnprintf(sb->data + sb->len, sb->cap - sb->len, fmt, ap);
     va_end(ap);
     if (written < 0 || (size_t)written >= sb->cap - sb->len) {
