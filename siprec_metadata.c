@@ -272,22 +272,24 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
         sb_appendf(&sb, "  </participant>\r\n");
     }
 
-    /* <stream> entries — declare each stream once at the
-     * recording level. Cross-referenced by
-     * <participantstreamassoc> below. Per RFC 7865 Appendix A
-     * the recording sequence places <stream> AFTER
-     * <participant> and BEFORE the assoc elements; emitting
-     * the assocs first would put the document out of schema
-     * sequence and a strict XSD parser would reject.
+    /* <stream> entries — RFC 7865 Appendix A streamtype:
      *
-     * Per-stream child elements:
-     *   <label>      — MUST match the corresponding SDP
-     *                  a=label attribute on the SRC INVITE
-     *                  (RFC 7866 §8.5). The SRS uses this to
-     *                  bind metadata streams to RTP streams.
-     *   <media-type> — "audio" or "video"; defaults to audio
-     *                  when caller leaves it NULL.
-     */
+     *   <xs:complexType name="stream">
+     *     <xs:sequence>
+     *       <xs:element name="label" minOccurs="0" maxOccurs="1"
+     *                   type="xs:string"/>
+     *       <xs:any namespace='##other' .../>
+     *     </xs:sequence>
+     *     <xs:attribute name="stream_id" use="required"/>
+     *     <xs:attribute name="session_id"/>
+     *   </xs:complexType>
+     *
+     * Only <label> is a typed in-namespace child; media type
+     * is conveyed by the SDP, not by a recording: element. A
+     * stream with no label collapses to a self-closing tag.
+     *
+     * Schema sequence: <stream> sits between <participant>
+     * and the assoc elements. */
     for (size_t i = 0; i < opts->stream_count; i++) {
         const siprec_metadata_stream_t *s = &opts->streams[i];
 
@@ -295,21 +297,15 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
         xml_escape_into(&sb, s->stream_id);
         sb_appendf(&sb, "\" session_id=\"");
         xml_escape_into(&sb, opts->session_id);
-        sb_appendf(&sb, "\">\r\n");
+        sb_appendf(&sb, "\"");
 
         if (s->label && *s->label) {
-            sb_appendf(&sb, "    <label>");
+            sb_appendf(&sb, ">\r\n    <label>");
             xml_escape_into(&sb, s->label);
-            sb_appendf(&sb, "</label>\r\n");
+            sb_appendf(&sb, "</label>\r\n  </stream>\r\n");
+        } else {
+            sb_appendf(&sb, "/>\r\n");
         }
-
-        const char *mt = (s->media_type && *s->media_type)
-            ? s->media_type : "audio";
-        sb_appendf(&sb, "    <media-type>");
-        xml_escape_into(&sb, mt);
-        sb_appendf(&sb, "</media-type>\r\n");
-
-        sb_appendf(&sb, "  </stream>\r\n");
     }
 
     /* <participantsessionassoc> — RFC 7865 Appendix A

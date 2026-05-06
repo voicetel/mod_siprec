@@ -231,9 +231,9 @@ static void test_metadata_two_participants(void) {
     };
     const siprec_metadata_stream_t streams[] = {
         { .stream_id = "urn:uuid:s-1", .mode = SIPREC_STREAM_SEND,
-          .participant_idx = 0, .label = "1", .media_type = "audio" },
+          .participant_idx = 0, .label = "1" },
         { .stream_id = "urn:uuid:s-2", .mode = SIPREC_STREAM_SEND,
-          .participant_idx = 1, .label = "2", .media_type = "audio" },
+          .participant_idx = 1, .label = "2" },
     };
 
     siprec_metadata_options_t opts = {
@@ -284,14 +284,14 @@ static void test_metadata_two_participants(void) {
     /* Bob has no display name → self-closing nameID */
     check_contains(xml, "<nameID aor=\"sip:bob@example.com\"/>",     "meta:nameID self-close");
 
-    /* RFC 7865 §5: <stream> body MUST include <label> + <media-type> */
+    /* RFC 7865 Appendix A streamtype: <label> is the only
+     * typed in-namespace child. <media-type> is not in the
+     * schema and was historically a non-conformant emission. */
     check_contains(xml, "<stream stream_id=\"urn:uuid:s-1\"",        "meta:stream 1");
     check_contains(xml, "<stream stream_id=\"urn:uuid:s-2\"",        "meta:stream 2");
     check_contains(xml, "<label>1</label>",                          "meta:stream label 1");
     check_contains(xml, "<label>2</label>",                          "meta:stream label 2");
-    check_contains(xml, "<media-type>audio</media-type>",            "meta:stream media-type");
-    check_not_contains(xml, "<stream stream_id=\"urn:uuid:s-1\" session_id=\"urn:uuid:sess-abc\"/>",
-                                                                     "meta:stream not self-closed");
+    check_not_contains(xml, "<media-type>",                          "meta:no <media-type>");
 
     /* <group> with associate-time gets a body */
     check_contains(xml, "<group group_id=\"urn:uuid:grp-xyz\">",     "meta:group with body open");
@@ -416,14 +416,16 @@ static void test_metadata_element_ordering(void) {
     siprec_metadata_free(xml);
 }
 
-static void test_metadata_stream_default_media_type(void) {
-    /* When .media_type is NULL the builder defaults to audio. */
+static void test_metadata_stream_self_closes_when_unlabelled(void) {
+    /* No label → <stream …/> self-closing per RFC 7865
+     * Appendix A streamtype (label is the only typed
+     * in-namespace child and it's optional). */
     const siprec_metadata_participant_t parts[] = {
         { .participant_id = "p1", .aor = "sip:a@x", .display_name = NULL },
     };
     const siprec_metadata_stream_t streams[] = {
         { .stream_id = "s1", .mode = SIPREC_STREAM_SEND,
-          .participant_idx = 0, .label = "1", .media_type = NULL },
+          .participant_idx = 0, .label = NULL },
     };
     siprec_metadata_options_t opts = {
         .session_id = "sess",
@@ -431,8 +433,8 @@ static void test_metadata_stream_default_media_type(void) {
         .streams = streams, .stream_count = 1,
     };
     char *xml = siprec_metadata_build(&opts);
-    check_contains(xml, "<media-type>audio</media-type>",
-        "meta:default media-type is audio");
+    check_contains(xml, "<stream stream_id=\"s1\" session_id=\"sess\"/>",
+        "meta:unlabelled stream self-closes");
     siprec_metadata_free(xml);
 }
 
@@ -499,7 +501,7 @@ int main(void) {
     test_metadata_xml_escaping();
     test_metadata_invalid_returns_null();
     test_metadata_partial_datamode();
-    test_metadata_stream_default_media_type();
+    test_metadata_stream_self_closes_when_unlabelled();
     test_metadata_reason_elements();
     test_metadata_assoc_elements();
     test_metadata_element_ordering();

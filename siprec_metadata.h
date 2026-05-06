@@ -35,15 +35,13 @@ typedef struct {
      * participants array. */
     size_t participant_idx;
 
-    /* RFC 7865 §5 <label> child of <stream>: the value MUST
-     * match the corresponding SDP a=label attribute on the SRC
-     * INVITE so the SRS can correlate the metadata stream with
-     * the actual RTP session. NULL omits the element. */
+    /* RFC 7865 Appendix A streamtype: only <label> is a typed
+     * in-namespace child. The label MUST match the corresponding
+     * SDP a=label attribute on the SRC INVITE so the SRS can
+     * correlate the metadata stream with the actual RTP session
+     * (RFC 7866 §8.5). NULL omits the element (the stream
+     * becomes self-closing). */
     const char *label;
-
-    /* RFC 7865 §5 <media-type> child of <stream>: typically
-     * "audio" or "video"; defaults to "audio" when NULL. */
-    const char *media_type;
 } siprec_metadata_stream_t;
 
 typedef struct {

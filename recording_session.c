@@ -282,10 +282,10 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
     siprec_metadata_stream_t streams_arr[2] = {
         { .stream_id = "stream-1", .mode = SIPREC_STREAM_SEND,
           .participant_idx = 0, /* caller speaks */
-          .label = "1", .media_type = "audio" },
+          .label = "1" },
         { .stream_id = "stream-2", .mode = SIPREC_STREAM_SEND,
           .participant_idx = 1, /* callee speaks */
-          .label = "2", .media_type = "audio" },
+          .label = "2" },
     };
 
     char associate_time[64] = {0};
