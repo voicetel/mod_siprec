@@ -217,9 +217,23 @@ Issues and PRs welcome. Two things to keep in mind:
    checklist on a live build before merging behavior changes
    in `siprec_invite.c` / `siprec_media.c` / `recording_session.c`.
 
-## License
+## 🙌 Contributors
 
-MIT — see [`LICENSE`](LICENSE).
+We welcome contributions! Thanks to these awesome people:
+
+- [Michael Mavroudis](https://github.com/mavroudis) - Lead Developer & Architect
+
+## 💖 Sponsors
+
+Proudly supported by:
+
+| Sponsor | Contribution |
+|---------|--------------|
+| [VoiceTel Communications](http://www.voicetel.com) | Primary development and testing infrastructure |
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 Files derived from the original
 [StefanYohansson/mod_siprec][upstream] (which is itself derived
