@@ -183,11 +183,14 @@ char *siprec_sdp_build(const siprec_sdp_options_t *opts) {
     for (size_t i = 0; i < opts->track_count; i++) {
         const siprec_sdp_track_t *t = &opts->tracks[i];
 
-        /* m=audio <port> RTP/AVP <pt>
+        /* m=audio <port> RTP/AVP|RTP/SAVP <pt>
          * RFC 4566 §5.14. SRC always offers a single PT per
-         * stream (per RFC 7866 examples) — no codec list. */
-        sb_appendf(&sb, "m=audio %u RTP/AVP %u" EOL,
-            (unsigned)t->port, (unsigned)t->pt);
+         * stream (per RFC 7866 examples) — no codec list.
+         * RFC 4568 §6.1: SAVP profile when SRTP is enabled. */
+        const char *profile = (t->srtp_crypto_suite && *t->srtp_crypto_suite)
+            ? "RTP/SAVP" : "RTP/AVP";
+        sb_appendf(&sb, "m=audio %u %s %u" EOL,
+            (unsigned)t->port, profile, (unsigned)t->pt);
 
         /* a=rtpmap:<pt> <name>/<clock>[/<channels>]
          * RFC 4566 §6. Channels suffix omitted when channels==1
@@ -214,6 +217,16 @@ char *siprec_sdp_build(const siprec_sdp_options_t *opts) {
         /* a=sendonly — RFC 7866 §7.4. The SRC only sends; the
          * SRS records but does not send media back. */
         sb_appendf(&sb, "a=sendonly" EOL);
+
+        /* a=crypto — RFC 4568 §6.1. Per-stream SRTP master
+         * key. tag=1 (single offer; SRS picks); the crypto-
+         * suite + key inline. v1 emits a single offer line
+         * with no session-params (default lifetime, no MKI). */
+        if (t->srtp_crypto_suite && *t->srtp_crypto_suite
+            && t->srtp_inline_key_b64 && *t->srtp_inline_key_b64) {
+            sb_appendf(&sb, "a=crypto:1 %s inline:%s" EOL,
+                t->srtp_crypto_suite, t->srtp_inline_key_b64);
+        }
     }
 
     return sb_take(&sb);

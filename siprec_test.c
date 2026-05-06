@@ -114,6 +114,29 @@ static void test_sdp_stereo_opus(void) {
     siprec_sdp_free(sdp);
 }
 
+static void test_sdp_srtp_emission(void) {
+    /* RFC 4568: when srtp_crypto_suite is set the m= profile
+     * flips to RTP/SAVP and an a=crypto line appears. */
+    const siprec_sdp_track_t tracks[] = {
+        { .label = "1", .port = 12340, .pt = 0,
+          .codec_name = "PCMU", .clock_rate = 8000,
+          .channels = 1, .ptime_ms = 20,
+          .srtp_crypto_suite = "AES_CM_128_HMAC_SHA1_80",
+          .srtp_inline_key_b64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+    };
+    siprec_sdp_options_t opts = {
+        .src_ip = "192.0.2.10",
+        .session_id = 1, .session_version = 1,
+        .tracks = tracks, .track_count = 1,
+    };
+    char *sdp = siprec_sdp_build(&opts);
+    check_contains(sdp, "m=audio 12340 RTP/SAVP 0",     "sdp:srtp m=line uses SAVP");
+    check_contains(sdp, "a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                                         "sdp:srtp a=crypto");
+    check_not_contains(sdp, "RTP/AVP",                   "sdp:srtp no plain AVP");
+    siprec_sdp_free(sdp);
+}
+
 static void test_sdp_invalid_returns_null(void) {
     /* Empty src_ip → NULL */
     {
@@ -360,6 +383,7 @@ static void test_metadata_invalid_returns_null(void) {
 int main(void) {
     test_sdp_two_track_pcmu();
     test_sdp_stereo_opus();
+    test_sdp_srtp_emission();
     test_sdp_invalid_returns_null();
 
     test_metadata_two_participants();

@@ -25,6 +25,7 @@
  * hot path).
  */
 #include "siprec_media.h"
+#include "siprec_srtp.h"
 
 #include <switch.h>
 
@@ -93,10 +94,15 @@ static int rtp_pack_and_send(
     const struct sockaddr *dst, socklen_t dst_len,
     uint8_t pt, uint32_t ssrc,
     uint16_t sequence, uint32_t timestamp,
-    const uint8_t *payload, size_t payload_len)
+    const uint8_t *payload, size_t payload_len,
+    struct siprec_srtp_session *srtp)
 {
-    uint8_t pkt[RTP_HEADER_LEN + 1500];
-    if (payload_len > sizeof(pkt) - RTP_HEADER_LEN) {
+    /* Reserve trailing room for the SRTP auth tag (10 bytes
+     * for SHA1_80) plus libsrtp's internal worst-case
+     * trailer (16 bytes is the documented upper bound). The
+     * extra padding is harmless on the plain-RTP path. */
+    uint8_t pkt[RTP_HEADER_LEN + 1500 + 16];
+    if (payload_len > 1500) {
         return -1;
     }
 
@@ -120,8 +126,20 @@ static int rtp_pack_and_send(
     pkt[11] = ssrc & 0xFF;
 
     memcpy(pkt + RTP_HEADER_LEN, payload, payload_len);
+    size_t pkt_len = RTP_HEADER_LEN + payload_len;
 
-    ssize_t n = sendto(fd, pkt, RTP_HEADER_LEN + payload_len,
+    /* SRTP-protect in place when a session is wired up. The
+     * auth tag is appended to pkt[]; libsrtp updates the
+     * length pointer. On failure we drop the packet — the
+     * recording stream stays SRTP-only, no fallback to
+     * cleartext (RFC 3711 §9.1). */
+    if (srtp) {
+        if (siprec_srtp_protect(srtp, pkt, sizeof(pkt), &pkt_len) != 0) {
+            return -1;
+        }
+    }
+
+    ssize_t n = sendto(fd, pkt, pkt_len,
         MSG_NOSIGNAL, dst, dst_len);
     if (n < 0) {
         /* sendto on a UDP socket only fails for packet-too-big
@@ -211,7 +229,8 @@ static switch_bool_t media_bug_callback(
             ctx->streams[stream_idx].ssrc,
             ctx->streams[stream_idx].sequence++,
             ctx->streams[stream_idx].timestamp,
-            encoded, sample_count);
+            encoded, sample_count,
+            ctx->streams[stream_idx].srtp);
 
         ctx->streams[stream_idx].timestamp += sample_count;
         return SWITCH_TRUE;
@@ -248,7 +267,8 @@ switch_status_t siprec_media_attach(recording_t *recording)
 
     /* One UDP socket per stream. The source port is left
      * unbound (the kernel picks an ephemeral); the SRS's SDP
-     * answer told us where to send. */
+     * answer told us where to send. SRTP context is wired up
+     * iff the invite_ctx carries a keymat for this stream. */
     mctx->stream_count = ictx->negotiated_count;
     for (size_t i = 0; i < mctx->stream_count; i++) {
         mctx->streams[i].fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -260,9 +280,29 @@ switch_status_t siprec_media_attach(recording_t *recording)
             ictx->negotiated[i].remote_ip,
             sizeof(mctx->streams[i].remote_ip));
         mctx->streams[i].remote_port = ictx->negotiated[i].remote_port;
-        mctx->streams[i].ssrc = (uint32_t)switch_micro_time_now();
+        mctx->streams[i].ssrc = (uint32_t)switch_micro_time_now() + (uint32_t)i;
         mctx->streams[i].timestamp = 0;
         mctx->streams[i].sequence = 0;
+        mctx->streams[i].srtp = NULL;
+
+        if (ictx->negotiated[i].srtp_keymat_len > 0) {
+            mctx->streams[i].srtp = siprec_srtp_session_create(
+                SIPREC_SRTP_AES_CM_128_HMAC_SHA1_80,
+                mctx->streams[i].ssrc,
+                ictx->negotiated[i].srtp_keymat,
+                ictx->negotiated[i].srtp_keymat_len);
+            if (!mctx->streams[i].srtp) {
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+                    "siprec: SRTP session-create failed for stream %zu\n", i);
+                for (size_t j = 0; j <= i; j++) {
+                    if (mctx->streams[j].srtp)
+                        siprec_srtp_session_destroy(mctx->streams[j].srtp);
+                    if (mctx->streams[j].fd > 0)
+                        close(mctx->streams[j].fd);
+                }
+                return SWITCH_STATUS_FALSE;
+            }
+        }
     }
 
     /* Attach the bug. SMBF_READ_STREAM | SMBF_WRITE_STREAM is
@@ -305,6 +345,10 @@ switch_status_t siprec_media_detach(recording_t *recording)
         mctx->bug = NULL;
     }
     for (size_t i = 0; i < mctx->stream_count; i++) {
+        if (mctx->streams[i].srtp) {
+            siprec_srtp_session_destroy(mctx->streams[i].srtp);
+            mctx->streams[i].srtp = NULL;
+        }
         if (mctx->streams[i].fd > 0) {
             close(mctx->streams[i].fd);
             mctx->streams[i].fd = -1;

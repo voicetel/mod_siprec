@@ -39,6 +39,7 @@
 #include "siprec_media.h"
 #include "siprec_metadata.h"
 #include "siprec_sdp.h"
+#include "siprec_srtp.h"
 
 static switch_status_t my_on_destroy(switch_core_session_t *session)
 {
@@ -355,13 +356,47 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
     const char *src_ip = switch_core_get_variable("local_ip_v4");
     if (!src_ip) src_ip = "127.0.0.1";
 
+    /* When the recording-server has SRTP enabled, generate a
+     * fresh per-stream master key+salt and base64-encode it
+     * for the SDP a=crypto offer. The same raw keymat is
+     * stashed on the invite_ctx so siprec_media_attach can
+     * spin up a libsrtp session that encrypts our outbound
+     * RTP with the same key the SDP advertised. */
+    uint8_t srtp_key_a[SIPREC_SRTP_AES128_KEY_SALT_LEN] = {0};
+    uint8_t srtp_key_b[SIPREC_SRTP_AES128_KEY_SALT_LEN] = {0};
+    char    srtp_b64_a[64] = {0};
+    char    srtp_b64_b[64] = {0};
+    int     srtp_on = server->srtp_enabled;
+
+    if (srtp_on) {
+        if (siprec_srtp_keymat_random(srtp_key_a, sizeof(srtp_key_a)) != 0
+            || siprec_srtp_keymat_random(srtp_key_b, sizeof(srtp_key_b)) != 0
+            || siprec_srtp_keymat_to_b64(srtp_key_a, sizeof(srtp_key_a),
+                                         srtp_b64_a, sizeof(srtp_b64_a)) != 0
+            || siprec_srtp_keymat_to_b64(srtp_key_b, sizeof(srtp_key_b),
+                                         srtp_b64_b, sizeof(srtp_b64_b)) != 0) {
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+                SWITCH_LOG_ERROR,
+                "siprec: SRTP keymat generation failed; aborting\n");
+            siprec_metadata_free(metadata_body);
+            return SWITCH_STATUS_FALSE;
+        }
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+            SWITCH_LOG_INFO,
+            "siprec: SRTP enabled; per-stream keys generated\n");
+    }
+
     const siprec_sdp_track_t sdp_tracks[2] = {
         { .label = "1", .port = 1, .pt = 0,
           .codec_name = "PCMU", .clock_rate = 8000,
-          .channels = 1, .ptime_ms = 20 },
+          .channels = 1, .ptime_ms = 20,
+          .srtp_crypto_suite = srtp_on ? "AES_CM_128_HMAC_SHA1_80" : NULL,
+          .srtp_inline_key_b64 = srtp_on ? srtp_b64_a : NULL },
         { .label = "2", .port = 1, .pt = 0,
           .codec_name = "PCMU", .clock_rate = 8000,
-          .channels = 1, .ptime_ms = 20 },
+          .channels = 1, .ptime_ms = 20,
+          .srtp_crypto_suite = srtp_on ? "AES_CM_128_HMAC_SHA1_80" : NULL,
+          .srtp_inline_key_b64 = srtp_on ? srtp_b64_b : NULL },
     };
     const char *group_labels[2] = { "1", "2" };
 
@@ -388,6 +423,23 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 
     if (inv != SWITCH_STATUS_SUCCESS) {
         return inv;
+    }
+
+    /* Stash the SRTP keymat on the invite_ctx so
+     * siprec_media_attach can derive the per-stream libsrtp
+     * sessions. Two streams, two independent keys. */
+    if (srtp_on && recording->invite_ctx) {
+        siprec_invite_ctx_t *ic = recording->invite_ctx;
+        if (ic->negotiated_count >= 1) {
+            memcpy(ic->negotiated[0].srtp_keymat, srtp_key_a,
+                sizeof(srtp_key_a));
+            ic->negotiated[0].srtp_keymat_len = sizeof(srtp_key_a);
+        }
+        if (ic->negotiated_count >= 2) {
+            memcpy(ic->negotiated[1].srtp_keymat, srtp_key_b,
+                sizeof(srtp_key_b));
+            ic->negotiated[1].srtp_keymat_len = sizeof(srtp_key_b);
+        }
     }
 
     /* siprec_invite_send populated invite_ctx->negotiated[0]

@@ -37,10 +37,19 @@ typedef struct {
 
     /* Negotiated remote RTP endpoint(s) from the 200 OK SDP.
      * Populated by parse_remote_sdp. Filled in once per
-     * stream (one per a=label in the SRC offer). */
+     * stream (one per a=label in the SRC offer).
+     *
+     * srtp_keymat / srtp_keymat_len: when non-zero length,
+     * this stream is SRTP-protected. siprec_media_attach
+     * spins up a libsrtp session per stream from the keymat
+     * we generated for the SDP offer. SRC-side keymat is
+     * sufficient because the SRC is sendonly — we never
+     * decrypt anything from the SRS. */
     struct {
         char     remote_ip[64];
         uint16_t remote_port;
+        uint8_t  srtp_keymat[64];   /* room for the largest suite */
+        size_t   srtp_keymat_len;
     } negotiated[2]; /* v1: two-stream cap */
     size_t negotiated_count;
 } siprec_invite_ctx_t;

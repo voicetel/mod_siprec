@@ -29,7 +29,7 @@ lint:
 	    --suppress=normalCheckLevelMaxBranches \
 	    --error-exitcode=1 --std=c11 --force -I . \
 	    siprec_sdp.c siprec_metadata.c siprec_test.c \
-	    siprec_invite.c siprec_media.c \
+	    siprec_invite.c siprec_media.c siprec_srtp.c \
 	    mod_siprec.c recording_session.c
 
 clean:

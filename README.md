@@ -58,6 +58,7 @@ up is the next milestone (see [`tests/README.md`](tests/README.md)).
 | [§8.5][rfc7866-8.5] `a=label:N` per stream | ✅ (post-originate re-INVITE) |
 | [§8.4][rfc7866-8.4] DTMF tone forking | ✅ (passes through audio bug) |
 | [§11.1.1][rfc7866-11.1.1] communication-failure soft-fail | ✅ (original call unaffected) |
+| [§11.2][rfc7866-11.2] SRTP for the recording RTP fork | ✅ (`srtp=true` config; libsrtp2; AES-128 HMAC-SHA1-80) |
 | [§11.3][rfc7866-11.3] SIPS transport for SRC→SRS | ✅ (`transport=tls` config) |
 | §11.1.1 SRS failover (multiple endpoints, ordered) | ✅ (multiple `<recording-server>` entries) |
 | RFC 7865 §5 `<recording>` schema | ✅ |
@@ -77,6 +78,9 @@ up is the next milestone (see [`tests/README.md`](tests/README.md)).
 [rfc7866-7.4]: https://datatracker.ietf.org/doc/html/rfc7866#section-7.4
 [rfc7866-8.4]: https://datatracker.ietf.org/doc/html/rfc7866#section-8.4
 [rfc7866-8.5]: https://datatracker.ietf.org/doc/html/rfc7866#section-8.5
+[rfc7866-11.1.1]: https://datatracker.ietf.org/doc/html/rfc7866#section-11.1.1
+[rfc7866-11.2]: https://datatracker.ietf.org/doc/html/rfc7866#section-11.2
+[rfc7866-11.3]: https://datatracker.ietf.org/doc/html/rfc7866#section-11.3
 
 ## Build
 

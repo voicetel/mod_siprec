@@ -15,6 +15,10 @@
 #include <switch.h>
 #include "mod_siprec.h"
 
+/* Forward decl — siprec_srtp.h is private to siprec_media.c so
+ * the public header doesn't pull libsrtp2 into every callsite. */
+struct siprec_srtp_session;
+
 typedef struct siprec_media_ctx {
     /* The bug attached to the original session. NULL when not
      * yet attached or after detach. */
@@ -22,7 +26,11 @@ typedef struct siprec_media_ctx {
 
     /* The RTP socket (UDP) we send tapped audio over. One
      * socket per stream; v1 caps at 2 streams (read + write
-     * directions of the original 2-leg call). */
+     * directions of the original 2-leg call).
+     *
+     * srtp is non-NULL when this stream is SRTP-protected.
+     * Encryption happens after RTP framing and before sendto;
+     * the buffer carries the SRTP auth tag appended in place. */
     struct {
         int        fd;
         char       remote_ip[64];
@@ -30,6 +38,7 @@ typedef struct siprec_media_ctx {
         uint32_t   ssrc;
         uint32_t   timestamp;
         uint16_t   sequence;
+        struct siprec_srtp_session *srtp;
     } streams[2];
     size_t stream_count;
 

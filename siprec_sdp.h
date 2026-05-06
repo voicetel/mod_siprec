@@ -47,6 +47,17 @@ typedef struct {
 
     /* ptime in milliseconds. 20ms is the carrier standard. */
     uint8_t ptime_ms;
+
+    /* RFC 7866 §11.2 / RFC 4568: when set, this stream is
+     * SRTP-protected. The m= line uses RTP/SAVP (instead of
+     * RTP/AVP) and an a=crypto attribute is emitted with the
+     * key material. NULL → plain RTP/AVP. */
+    const char *srtp_crypto_suite;   /* e.g. "AES_CM_128_HMAC_SHA1_80" */
+
+    /* base64-encoded master key + master salt, 40 chars for
+     * a 30-byte AES_CM_128_HMAC_SHA1_80 input. NULL when
+     * srtp_crypto_suite is NULL. */
+    const char *srtp_inline_key_b64;
 } siprec_sdp_track_t;
 
 typedef struct {

@@ -51,6 +51,14 @@ struct recording_server {
      * Default ("udp" / NULL) keeps the v1 plain-UDP path. */
     char *transport;
 
+    /* RFC 7866 §11.2 / RFC 4568: when nonzero, the recording
+     * leg's RTP fork is SRTP-encrypted. The SDP advertises
+     * RTP/SAVP + a=crypto, and siprec_media encrypts each
+     * outbound RTP packet via libsrtp2. Always paired with
+     * transport=tls in production — otherwise the SRTP key
+     * travels in cleartext SDP. */
+    int srtp_enabled;
+
     switch_memory_pool_t *pool;
 
     /* Forward-pointer for the next entry in the failover

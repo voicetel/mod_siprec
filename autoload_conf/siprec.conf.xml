@@ -59,6 +59,18 @@
              values disable digest auth. -->
         <param name="username" value=""/>
         <param name="password" value=""/>
+
+        <!-- SRTP for the recording leg's RTP fork (RFC 7866
+             §11.2 / RFC 4568). Generates a fresh AES-128
+             master key + salt per stream, advertises it
+             inline in the SDP a=crypto attribute, and
+             encrypts every outbound RTP packet via libsrtp2
+             before sendto. ALWAYS pair with transport=tls
+             — otherwise the SRTP key travels in cleartext
+             SDP and the protection is theatre.
+
+             v1 supports AES_CM_128_HMAC_SHA1_80 only. -->
+        <param name="srtp" value="false"/>
       </settings>
     </recording-server>
 
