@@ -148,13 +148,19 @@ switch_status_t siprec_invite_send(
     recording_t *recording,
     const char *sofia_profile,
     const char *srs_uri,
-    const char *sdp_body,         /* unused in v1: sofia auto-gens */
+    const char *sdp_body,         /* reserved; see header docs */
     const char *metadata_body)
 {
     if (!recording || !sofia_profile || !srs_uri || !metadata_body) {
         return SWITCH_STATUS_FALSE;
     }
-    (void)sdp_body; /* reserved for v1.1 strict-RFC SDP override */
+    /* sdp_body is reserved for the future "set local SDP
+     * before originate" path that would inject a=label per
+     * stream into the initial offer (RFC 7866 §8.5). The
+     * post-originate re-INVITE that previously consumed it
+     * was removed because its body had port=1 placeholders
+     * that the SRS could never accept. */
+    (void)sdp_body;
 
     siprec_invite_ctx_t *ctx = switch_core_alloc(recording->pool, sizeof(*ctx));
     memset(ctx, 0, sizeof(*ctx));

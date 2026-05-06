@@ -77,9 +77,15 @@ typedef struct siprec_invite_ctx {
  *                       variable; never hardcoded.
  *   srs_uri            — SIP URI of the SRS, e.g.
  *                       "sip:srs@127.0.0.1:5070"
- *   sdp_body           — pre-built SDP from siprec_sdp_build
+ *   sdp_body           — RESERVED. Currently ignored. Will
+ *                       carry a pre-built SDP override once
+ *                       a "set local SDP before originate"
+ *                       path through mod_sofia is wired —
+ *                       that's the prerequisite for emitting
+ *                       a=label:N per stream (RFC 7866 §8.5)
+ *                       and for SRTP a=crypto in the offer.
  *   metadata_body      — pre-built XML from
- *                       siprec_metadata_build
+ *                       siprec_metadata_build (REQUIRED).
  *
  * Returns SWITCH_STATUS_SUCCESS on dispatch (the actual
  * 200 OK arrives async — caller polls recording->state or
@@ -90,19 +96,17 @@ typedef struct siprec_invite_ctx {
  * The recording-leg call is dispatched as a sofia originate
  * with the metadata XML attached via the documented FS
  * `sip_multipart` channel variable (see process_mp() in
- * sofia_media.c). mod_sofia auto-generates the SDP for the
- * outbound leg and combines it with our metadata into the
- * multipart/mixed body.
- *
- * sdp_body argument is reserved for v1.1 (strict-RFC SDP
- * override with explicit a=label per stream) — v1 leaves it
- * NULL and lets sofia generate the SDP.
+ * sofia_media.c) passed through the originate's ovars to
+ * avoid the brace-grammar parsing of the dial-string.
+ * mod_sofia auto-generates the SDP for the outbound leg and
+ * combines it with our metadata into the multipart/mixed
+ * body.
  */
 switch_status_t siprec_invite_send(
     recording_t *recording,
     const char *sofia_profile,
     const char *srs_uri,
-    const char *sdp_body,         /* may be NULL in v1 */
+    const char *sdp_body,         /* reserved; pass NULL */
     const char *metadata_body);
 
 /* siprec_invite_send_failover: walk a chain of recording_server
@@ -124,7 +128,7 @@ switch_status_t siprec_invite_send_failover(
     recording_t *recording,
     const char *sofia_profile,
     const struct recording_server *first,
-    const char *sdp_body,         /* may be NULL */
+    const char *sdp_body,         /* reserved; pass NULL */
     const char *metadata_body);
 
 /* siprec_invite_send_bye: tear down the recording leg.
