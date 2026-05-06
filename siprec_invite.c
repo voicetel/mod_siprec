@@ -256,11 +256,17 @@ switch_status_t siprec_invite_send(
         return SWITCH_STATUS_FALSE;
     }
 
-    ctx->recording_session = new_session;
+    /* Stash the UUID before sofia gets a chance to tear the
+     * session down. switch_core_session_get_uuid is safe to
+     * call on the locked session; the resulting string is
+     * pool-bound to that session and would dangle once we
+     * unlock — so we copy it into the recording's pool. We
+     * intentionally DO NOT store new_session itself; every
+     * future caller goes through switch_core_session_locate. */
     switch_copy_string(ctx->recording_uuid,
         switch_core_session_get_uuid(new_session),
         sizeof(ctx->recording_uuid));
-    recording->invite_ctx  = ctx;
+    recording->invite_ctx = ctx;
 
     /* Pull the negotiated remote endpoints. Preferred path:
      * parse the full SDP from sip_remote_sdp_str so each
@@ -427,15 +433,13 @@ switch_status_t siprec_invite_send_bye(recording_t *recording)
         return SWITCH_STATUS_FALSE;
     }
 
-    /* Locate by the stashed UUID rather than dereferencing
-     * ctx->recording_session — sofia / FS core may have torn
-     * the session down already (SRS-side BYE arrived first,
-     * leg 4xx'd out). switch_core_session_locate returns NULL
-     * with no side effects when the session is gone. */
+    /* Locate by the stashed UUID. switch_core_session_locate
+     * returns NULL with no side effects when the session is
+     * gone (SRS-side BYE arrived first, leg 4xx'd out, etc.) —
+     * makes idempotency trivial. */
     switch_core_session_t *s =
         switch_core_session_locate(ctx->recording_uuid);
     if (!s) {
-        ctx->recording_session = NULL;
         return SWITCH_STATUS_SUCCESS;
     }
 
@@ -443,7 +447,9 @@ switch_status_t siprec_invite_send_bye(recording_t *recording)
     switch_channel_hangup(ch, SWITCH_CAUSE_NORMAL_CLEARING);
     switch_core_session_rwunlock(s);
 
-    ctx->recording_session = NULL;
+    /* Mark the UUID consumed so a subsequent BYE / reinvite
+     * short-circuits without paying the locate cost. */
+    ctx->recording_uuid[0] = '\0';
     return SWITCH_STATUS_SUCCESS;
 }
 
@@ -482,7 +488,7 @@ switch_status_t siprec_invite_reinvite(
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
             "siprec: re-INVITE skipped — recording leg %s is gone\n",
             ctx->recording_uuid);
-        ctx->recording_session = NULL;
+        ctx->recording_uuid[0] = '\0';
         return SWITCH_STATUS_FALSE;
     }
 

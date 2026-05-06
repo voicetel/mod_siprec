@@ -24,19 +24,21 @@
  * mod_siprec.h's forward declaration `struct siprec_invite_ctx`
  * resolves to the same type as `siprec_invite_ctx_t`. */
 typedef struct siprec_invite_ctx {
-    /* Outbound dialog session created by switch_ivr_originate.
-     * NULL until INVITE dispatched. The pointer is held without
-     * a refcount once siprec_invite_send returns — never deref
-     * it directly; use recording_uuid + switch_core_session_locate
-     * so we can detect a tear-down by the SRS or the FS core. */
-    switch_core_session_t *recording_session;
-
-    /* UUID of recording_session, captured at originate time
-     * and held across the session's lifetime. Used by every
-     * caller that needs to act on the recording leg
+    /* UUID of the outbound recording-leg session, captured at
+     * originate time and held across the session's lifetime.
+     *
+     * This is the ONLY way to act on the recording leg. The
+     * raw switch_core_session_t* that switch_ivr_originate
+     * returned is intentionally NOT stored here — once
+     * originate's rwunlock returns, we hold no refcount, so
+     * sofia / FS-core can destroy the session out from under
+     * us at any moment. Every consumer
      * (siprec_invite_send_bye, siprec_invite_reinvite,
-     * pause/resume) so they can switch_core_session_locate
-     * safely instead of dereferencing the bare pointer. */
+     * pause/resume) goes through switch_core_session_locate
+     * which returns NULL if the session is already gone.
+     *
+     * 80 bytes is comfortable margin over FS's 36-char UUID
+     * format (8-4-4-4-12 + NUL). */
     char recording_uuid[80];
 
     /* Negotiated remote RTP endpoint(s) from the 200 OK SDP.
