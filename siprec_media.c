@@ -27,6 +27,13 @@
 #include "siprec_media.h"
 #include "siprec_srtp.h"
 
+/* siprec_invite.h declares siprec_invite_ctx_t (the type the
+ * media path reads negotiated[i].remote_ip / srtp_keymat from
+ * during attach). siprec_media.h only forward-declares the
+ * struct so the public header stays light; the .c needs the
+ * full definition. */
+#include "siprec_invite.h"
+
 #include <switch.h>
 
 #include <arpa/inet.h>
