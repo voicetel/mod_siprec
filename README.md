@@ -125,38 +125,15 @@ Reload:
 fs_cli -x 'reload mod_siprec'
 ```
 
-### Standalone unit tests + lint + sanitizers (no FS required)
+### Standalone unit tests + lint (no FS required)
 
 The SDP and metadata builders are pure C and exercised by a
-standalone test target. Five analysis layers, each
-independently runnable:
+standalone test target:
 
 ```sh
-make -f Makefile.test test       # strict-warnings build + run (79 / 79)
-make -f Makefile.test lint       # cppcheck --enable=all --check-level=exhaustive
-make -f Makefile.test asan       # AddressSanitizer + UBSan + LeakSanitizer
-make -f Makefile.test analyzer   # gcc -fanalyzer over the builders
-make -f Makefile.test tidy       # clang-tidy (default checks, warnings-as-errors)
-make -f Makefile.test all-checks # all of the above
+make -f Makefile.test test    # 77 / 77 assertions
+make -f Makefile.test lint    # cppcheck --enable=all clean
 ```
-
-The strict-warnings build uses `-Wall -Wextra -Wpedantic
--Werror -O2 -g -std=c11`. The ASAN run sets
-`UBSAN_OPTIONS=halt_on_error=1` and `ASAN_OPTIONS=
-detect_leaks=1:halt_on_error=1` so any sanitizer report
-fails the build immediately rather than passing through with
-diagnostics.
-
-The builders use the C11 Annex K bounds-checked stdlib
-(`memcpy_s`, `vsnprintf_s`) provided by [libsafec][libsafec]
-— `apt install libsafec-dev` (Debian/Ubuntu). The `_s`
-variants satisfy `clang-tidy`'s
-`clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling`
-check directly; no per-call `// NOLINT` comments and no
-config-level suppressions. clang-tidy itself ships in
-`clang-tidy` on Ubuntu (`apt install clang-tidy`).
-
-[libsafec]: https://github.com/rurban/safeclib
 
 ## Configuration
 
