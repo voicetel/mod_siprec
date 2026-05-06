@@ -237,10 +237,19 @@ switch_status_t siprec_invite_send(
      * would CS_HANGUP since nothing else is acting on it), giving
      * mod_siprec_media a stable bug-host until siprec_invite_send_bye
      * is called at recording teardown. */
+    /* bypass_media=true: tell sofia to skip switch_rtp setup on
+     * this recording leg. FS's media negotiator otherwise rejects
+     * the SRS's RFC-7866-compliant `a=recvonly` answer (against
+     * sofia's auto-generated `a=sendrecv` offer) with cause
+     * INCOMPATIBLE_DESTINATION (sends ACK, then BYE 2 ms later).
+     * mod_siprec's own RTP fork in siprec_media.c opens its own
+     * UDP socket and sends to the negotiated SRS endpoint, so we
+     * never use FS's RTP machinery on this leg anyway. */
     char dial_string[512];
     int dn = switch_snprintf(dial_string, sizeof(dial_string),
         "{ignore_early_media=true,"
         "hangup_after_bridge=false,"
+        "bypass_media=true,"
         "absolute_codec_string='PCMU,PCMA'"
         "}sofia/%s/%s",
         sofia_profile, srs_uri);
