@@ -148,12 +148,14 @@ static switch_status_t switch_xml_config_parse_module_recording_servers(const ch
 static switch_status_t do_config(switch_bool_t reload)
 {
 	if (switch_xml_config_parse_module_settings("siprec.conf", reload, general_instructions) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "Could not open siprec.conf\n");
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT,
+			"siprec: could not parse <settings> in siprec.conf\n");
 		return SWITCH_STATUS_FALSE;
 	}
 
 	if (switch_xml_config_parse_module_recording_servers("siprec.conf", reload) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "Could not open siprec.conf\n");
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT,
+			"siprec: could not parse <recording-servers> in siprec.conf\n");
 		return SWITCH_STATUS_FALSE;
 	}
 
