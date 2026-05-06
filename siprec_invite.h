@@ -20,8 +20,10 @@
 /* Per-recording SIP context. Lives inside the recording_t
  * pool. NULL on entry to siprec_invite_send; populated when
  * 200 OK arrives from the SRS so subsequent BYE / re-INVITE
- * has the dialog tags it needs. */
-typedef struct {
+ * has the dialog tags it needs. The struct is named so
+ * mod_siprec.h's forward declaration `struct siprec_invite_ctx`
+ * resolves to the same type as `siprec_invite_ctx_t`. */
+typedef struct siprec_invite_ctx {
     /* Outbound dialog session created by switch_ivr_originate.
      * Lifetime: matches the recording_t. NULL until INVITE
      * dispatched. */

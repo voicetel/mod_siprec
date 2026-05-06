@@ -19,6 +19,9 @@
  * the public header doesn't pull libsrtp2 into every callsite. */
 struct siprec_srtp_session;
 
+/* Struct is named so mod_siprec.h's forward declaration
+ * `struct siprec_media_ctx` resolves to the same type as
+ * `siprec_media_ctx_t`. */
 typedef struct siprec_media_ctx {
     /* The bug attached to the original session. NULL when not
      * yet attached or after detach. */
