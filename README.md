@@ -53,13 +53,13 @@ This fork:
 
 ## Status
 
-**Alpha — pre-bringup.** All paths build, lint clean, and the
-unit-test suite for the SDP / metadata builders passes 77/77
-assertions. The dispatch / media / signalling pipeline has
-been audited and the broken pieces from the original fork have
-been replaced; live integration against `cb-srs` (see
-[`tests/README.md`](tests/README.md)) is the next gate before
-this earns a stable version label.
+All paths build, lint clean, and the unit-test suite for the
+SDP / metadata builders passes 77/77 assertions. The dispatch /
+media / signalling pipeline has been audited and the broken
+pieces from the original fork have been replaced. Live
+integration against `cb-srs` is documented in
+[`tests/README.md`](tests/README.md) as the operator
+verification path.
 
 | Concept | Spec | Status |
 |---|---|---|
