@@ -76,18 +76,20 @@ typedef struct {
      * Stays stable across re-INVITEs. RFC 7865 §5. */
     const char *session_id;
 
-    /* group_id — RFC 7865 §5 — groups participants of the same
-     * logical conversation. For a 1-call recording, all
-     * participants share one group. NULL omits the <group>.
-     * When set, <session> also gains a group_ref="<group_id>"
-     * attribute per RFC 7865 §5 to bind the session to its
-     * group. */
+    /* group_id — RFC 7865 Appendix A grouptype — groups
+     * participants of the same logical conversation. For a
+     * 1-call recording, all participants share one group.
+     * NULL omits the <group>. When set, <session> also gains
+     * a <group-ref> child (RFC 7865 sessiontype) binding the
+     * session to its group. */
     const char *group_id;
 
-    /* ISO-8601 timestamp, e.g. "2026-05-06T03:00:00Z". Placed
-     * inside <session><associate-time>; if group_id is set,
-     * also placed inside <group><associate-time>. NULL omits
-     * both. */
+    /* ISO-8601 timestamp, e.g. "2026-05-06T03:00:00Z".
+     * Emitted as:
+     *   <session>'s <start-time> child
+     *   <group>'s <associate-time> child (when group_id set)
+     *   <participantsessionassoc>'s <associate-time> child
+     * NULL omits everywhere. */
     const char *associate_time_utc;
 
     /* RFC 7865 §5.1 <datamode>. Default (zero value) is

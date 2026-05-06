@@ -253,11 +253,18 @@ static void test_metadata_two_participants(void) {
     /* group has body because associate_time_utc is set */
     check_contains(xml, "<group group_id=\"urn:uuid:grp-xyz\">",
                                                                      "meta:group with body");
-    /* session carries group_ref binding to its group */
-    check_contains(xml, "<session session_id=\"urn:uuid:sess-abc\" group_ref=\"urn:uuid:grp-xyz\">",
-                                                                     "meta:session open with group_ref");
-    check_contains(xml, "<associate-time>2026-05-06T03:00:00Z</associate-time>",
-                                                                     "meta:associate-time");
+    /* RFC 7865 Appendix A sessiontype: session_id is the only
+     * attribute, group binding is via <group-ref> child, the
+     * timestamp is <start-time>. The historic group_ref attr
+     * and <associate-time> child were schema-non-conformant. */
+    check_contains(xml, "<session session_id=\"urn:uuid:sess-abc\">",
+                                                                     "meta:session open (session_id only)");
+    check_not_contains(xml, "<session session_id=\"urn:uuid:sess-abc\" group_ref=",
+                                                                     "meta:session no group_ref attr");
+    check_contains(xml, "<group-ref>urn:uuid:grp-xyz</group-ref>",
+                                                                     "meta:session has <group-ref> child");
+    check_contains(xml, "<start-time>2026-05-06T03:00:00Z</start-time>",
+                                                                     "meta:session has <start-time>");
     check_contains(xml, "</session>",                                "meta:session close");
     check_contains(xml, "<participant participant_id=\"urn:uuid:p-caller\">",
                                                                      "meta:participant alice");
@@ -286,12 +293,13 @@ static void test_metadata_two_participants(void) {
     check_not_contains(xml, "<stream stream_id=\"urn:uuid:s-1\" session_id=\"urn:uuid:sess-abc\"/>",
                                                                      "meta:stream not self-closed");
 
-    /* RFC 7865 §5: <session> binds to <group> via group_ref */
-    check_contains(xml, "group_ref=\"urn:uuid:grp-xyz\"",            "meta:session group_ref");
-
     /* <group> with associate-time gets a body */
     check_contains(xml, "<group group_id=\"urn:uuid:grp-xyz\">",     "meta:group with body open");
     check_contains(xml, "</group>",                                   "meta:group close");
+    /* <group> uses <associate-time>, distinct from <session>'s
+     * <start-time>; both are present but in different parents. */
+    check_contains(xml, "<associate-time>2026-05-06T03:00:00Z</associate-time>",
+                                                                     "meta:group has <associate-time>");
 
     siprec_metadata_free(xml);
 }

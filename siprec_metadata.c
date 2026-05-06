@@ -190,38 +190,48 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
         }
     }
 
-    /* <session session_id="..." [group_ref="..."]> — wraps the
-     * session-scoped elements. group_ref binds the session to
-     * its group (RFC 7865 §5). */
+    /* <session session_id="..."> — only attribute is
+     * session_id (RFC 7865 Appendix A sessiontype).
+     *
+     * Children appear in schema order:
+     *   <sipSessionID>     — omitted (we don't track it).
+     *   <reason>           — opts->session_reason.
+     *   <group-ref>        — opts->group_id (NB: child element
+     *                        with hyphen, NOT a group_ref
+     *                        attribute).
+     *   <start-time>       — opts->associate_time_utc.
+     *
+     * The session has no <associate-time> element in the
+     * schema; that name belongs to <group> and the assoc
+     * elements. <session> uses <start-time> / <stop-time>
+     * instead. */
     sb_appendf(&sb, "  <session session_id=\"");
     xml_escape_into(&sb, opts->session_id);
     sb_appendf(&sb, "\"");
 
-    if (opts->group_id && *opts->group_id) {
-        sb_appendf(&sb, " group_ref=\"");
-        xml_escape_into(&sb, opts->group_id);
-        sb_appendf(&sb, "\"");
-    }
-
-    /* If we have nothing to put inside <session>, render as a
-     * self-closing element. Otherwise open + close. */
     int session_has_body =
-        (opts->associate_time_utc && *opts->associate_time_utc) ||
-        (opts->session_reason && *opts->session_reason);
+        (opts->session_reason && *opts->session_reason) ||
+        (opts->group_id && *opts->group_id) ||
+        (opts->associate_time_utc && *opts->associate_time_utc);
 
     if (!session_has_body) {
         sb_appendf(&sb, "/>\r\n");
     } else {
         sb_appendf(&sb, ">\r\n");
-        if (opts->associate_time_utc && *opts->associate_time_utc) {
-            sb_appendf(&sb, "    <associate-time>");
-            xml_escape_into(&sb, opts->associate_time_utc);
-            sb_appendf(&sb, "</associate-time>\r\n");
-        }
         if (opts->session_reason && *opts->session_reason) {
             sb_appendf(&sb, "    <reason>");
             xml_escape_into(&sb, opts->session_reason);
             sb_appendf(&sb, "</reason>\r\n");
+        }
+        if (opts->group_id && *opts->group_id) {
+            sb_appendf(&sb, "    <group-ref>");
+            xml_escape_into(&sb, opts->group_id);
+            sb_appendf(&sb, "</group-ref>\r\n");
+        }
+        if (opts->associate_time_utc && *opts->associate_time_utc) {
+            sb_appendf(&sb, "    <start-time>");
+            xml_escape_into(&sb, opts->associate_time_utc);
+            sb_appendf(&sb, "</start-time>\r\n");
         }
         sb_appendf(&sb, "  </session>\r\n");
     }
