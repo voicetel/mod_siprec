@@ -75,12 +75,7 @@ _Static_assert(
  */
 static int parse_remote_sdp_streams(
     const char *sdp,
-    struct {
-        char     remote_ip[64];
-        uint16_t remote_port;
-        uint8_t  srtp_keymat[64];
-        size_t   srtp_keymat_len;
-    } *out,
+    siprec_negotiated_t *out,
     size_t out_max)
 {
     if (!sdp || !out || out_max == 0) return 0;

@@ -34,6 +34,20 @@
  * not a constant tweak. */
 #define SIPREC_MAX_STREAMS 2
 
+/* Per-stream negotiated remote endpoint state. Lives inside
+ * siprec_invite_ctx_t.negotiated[] and is also the row type
+ * parse_remote_sdp_streams writes into. The struct is named
+ * (rather than anonymous in both places) because two textually-
+ * separate anonymous structs are nominally distinct types in
+ * C even when their members match — a named tag is the only
+ * way to share the type across translation units. */
+typedef struct siprec_negotiated_s {
+    char     remote_ip[64];
+    uint16_t remote_port;
+    uint8_t  srtp_keymat[64];   /* room for the largest suite */
+    size_t   srtp_keymat_len;
+} siprec_negotiated_t;
+
 /* Per-recording SIP context. Lives inside the recording_t
  * pool. NULL on entry to siprec_invite_send; populated when
  * 200 OK arrives from the SRS so subsequent BYE / re-INVITE
@@ -68,12 +82,7 @@ typedef struct siprec_invite_ctx {
      * we generated for the SDP offer. SRC-side keymat is
      * sufficient because the SRC is sendonly — we never
      * decrypt anything from the SRS. */
-    struct {
-        char     remote_ip[64];
-        uint16_t remote_port;
-        uint8_t  srtp_keymat[64];   /* room for the largest suite */
-        size_t   srtp_keymat_len;
-    } negotiated[SIPREC_MAX_STREAMS];
+    siprec_negotiated_t negotiated[SIPREC_MAX_STREAMS];
     size_t negotiated_count;
 } siprec_invite_ctx_t;
 
