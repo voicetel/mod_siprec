@@ -118,11 +118,11 @@ static int rtp_pack_and_send(
     const uint8_t *payload, size_t payload_len,
     struct siprec_srtp_session *srtp)
 {
-    /* Reserve trailing room for the SRTP auth tag (10 bytes
-     * for SHA1_80) plus libsrtp's internal worst-case
-     * trailer (16 bytes is the documented upper bound). The
-     * extra padding is harmless on the plain-RTP path. */
-    uint8_t pkt[RTP_HEADER_LEN + 1500 + 16];
+    /* Reserve trailing room for the SRTP auth tag + any
+     * libsrtp-internal trailer, sized via the public macro
+     * mirrored from libsrtp's SRTP_MAX_TRAILER_LEN. Harmless
+     * margin on the plain-RTP path. */
+    uint8_t pkt[RTP_HEADER_LEN + 1500 + SIPREC_SRTP_MAX_TRAILER_LEN];
     if (payload_len > 1500) {
         return -1;
     }

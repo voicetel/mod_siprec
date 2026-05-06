@@ -123,6 +123,13 @@ struct siprec_srtp_session {
     siprec_srtp_suite_t suite;
 };
 
+/* Compile-time guard: keep SIPREC_SRTP_MAX_TRAILER_LEN in
+ * lockstep with libsrtp2's own definition. If this assertion
+ * ever fires after a libsrtp upgrade, raise the public macro
+ * to match. */
+_Static_assert(SIPREC_SRTP_MAX_TRAILER_LEN >= SRTP_MAX_TRAILER_LEN,
+    "SIPREC_SRTP_MAX_TRAILER_LEN must cover libsrtp's SRTP_MAX_TRAILER_LEN");
+
 static int srtp_initialised = 0;
 
 int siprec_srtp_init(void)

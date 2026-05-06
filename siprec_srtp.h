@@ -31,6 +31,15 @@ typedef enum {
 /* Total master-key+salt bytes for AES_CM_128_HMAC_SHA1_80. */
 #define SIPREC_SRTP_AES128_KEY_SALT_LEN 30
 
+/* Worst-case trailer libsrtp may append to a packet during
+ * srtp_protect (auth tag + MKI etc). libsrtp2's own
+ * SRTP_MAX_TRAILER_LEN is 144 across the suites it supports;
+ * we mirror it here so siprec_media's packet buffer can size
+ * itself without pulling srtp2/srtp.h into every includer.
+ * The compile-time check inside siprec_srtp.c keeps the two
+ * definitions in lockstep. */
+#define SIPREC_SRTP_MAX_TRAILER_LEN 144
+
 /* siprec_srtp_keymat_random: fill buf with cryptographically-
  * strong random key material for a fresh SRTP context. Returns
  * 0 on success, non-zero on failure (no /dev/urandom etc.).
