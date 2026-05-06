@@ -59,49 +59,65 @@ siprec_media.h
 
 ### Phase 2 — SIP signaling
 
-- [ ] `siprec_invite.c` — send the INVITE via sofia-sip's nua API.
-      The INVITE goes out from FS on the sofia profile that owns the
-      original call (so the recording leg shares the same socket /
-      same `From:` realm). Use NUA tags:
-      - `NUTAG_URL("sip:srs@host:port")`
-      - `SIPTAG_REQUIRE_STR("siprec")`
-      - `SOATAG_USER_SDP_STR(sdp)` for the SDP-half body
-      - `SIPTAG_PAYLOAD_STR(multipart_body)` — full multipart body
-      - `SIPTAG_CONTENT_TYPE_STR("multipart/mixed; boundary=\"BOUNDARY\"")`
-- [ ] Handle 200 OK: parse remote SDP, extract negotiated RTP
-      port/IP, pass to media layer.
-- [ ] Handle 4xx/5xx: log + soft-fail (the original call MUST
-      continue uninterrupted — RFC 7866 §11.1.1).
-- [ ] Handle BYE-from-SRS: tear down media bug, free pool.
+- [x] `siprec_invite.c` — issue the INVITE via FreeSWITCH's
+      `switch_ivr_originate` against the same sofia profile carrying
+      the original call. The multipart body (sdp + metadata) is
+      attached via the `sip_invite_body` and `sip_invite_content_type`
+      channel variables; `sip_h_Require=siprec` adds the RFC 7866
+      Require header.
+- [x] BYE: `siprec_invite_send_bye` hangs up the recording-leg
+      session via `switch_channel_hangup(NORMAL_CLEARING)`. Sofia
+      emits the BYE; idempotent — second call after teardown is a
+      no-op.
+- [ ] re-INVITE: `siprec_invite_reinvite` returns
+      `SWITCH_STATUS_NOTIMPL` for v1; needed for pause/resume
+      (Phase 4 follow-up).
+- [ ] **`TODO(field-test)`**: confirm `sip_invite_body` is the
+      correct channel-variable name on the deployed mod_sofia build;
+      the v1.10.x source greps return both `sip_invite_body` and
+      `sip_multipart_body`.
 
 ### Phase 3 — media tap & RTP fork
 
-- [ ] `siprec_media.c` — `switch_core_media_bug_add()` on the
-      original session with `SMBF_READ_STREAM | SMBF_WRITE_STREAM`
-      (or `SMBF_TAP_NATIVE_READ | SMBF_TAP_NATIVE_WRITE` to
-      pre-mix on the source side; RFC 7866 §7.4 requires
-      `sendonly` to the SRS so we never expect inbound RTP from
-      it). Frames are forwarded via a raw RTP socket bound at
-      INVITE-negotiation time.
-- [ ] Honour codec passthrough: if the original leg is PCMU/8000,
-      forward the same payload type without transcoding.
-- [ ] Handle DTMF: per RFC 7866 §8.4, DTMF (RFC 2833) frames
-      MAY be forked. Pass through transparently.
+- [x] `siprec_media.c` — `switch_core_media_bug_add()` with
+      `SMBF_READ_REPLACE | SMBF_WRITE_REPLACE`. Frames captured from
+      both directions; encoded as PCMU (or PCMA when the original
+      leg negotiated payload type 8); packetised as RFC 3550 RTP
+      headers; sent via UDP to the SRS endpoint discovered from the
+      200-OK SDP.
+- [x] Codec passthrough: `read_codec->ianacode` selects PCMU/PCMA
+      at attach time. v1 assumes 8 kHz mono 20 ms ptime — matches
+      the carrier-side default.
+- [ ] DTMF tone forking (RFC 7866 §8.4) — passes through
+      transparently because the media bug receives whatever the
+      channel pipeline produces; explicit RFC 2833 packetisation
+      would be the v1.1 enhancement.
+- [ ] **`TODO(field-test)`**: validate `SMBF_READ_REPLACE |
+      SMBF_WRITE_REPLACE` is the right abc_type for L16 frame
+      delivery on the deployed FS build; some builds prefer
+      `SMBF_READ_STREAM | SMBF_WRITE_STREAM`.
 
 ### Phase 4 — lifecycle integration
 
-- [ ] Channel state-handler `on_destroy` sends BYE (already
-      stubbed in recording_session.c; needs wiring through
-      siprec_invite_send_bye).
-- [ ] `siprec_pause` / `siprec_resume` apps — re-INVITE with
-      `a=inactive` / `a=sendonly` per RFC 7866 §6.4.
-- [ ] `siprec_update` API command — re-INVITE with updated
-      metadata XML when participants change (e.g. transfer,
-      conference-add).
+- [x] `stop_recording_session` now drives the full teardown:
+      `siprec_media_detach` (removes bug + closes UDP sockets) →
+      `siprec_invite_send_bye` (BYE on recording dialog) → mutex /
+      pool free.
+- [x] `start_recording_session` builds the SDP + metadata, calls
+      `siprec_invite_send`, parses the 200-OK remote_media_ip /
+      remote_media_port, then `siprec_media_attach`.
+- [ ] State-handler `on_destroy` is declared in
+      `recording_session.c` but not yet bound. Needs
+      `switch_channel_add_state_handler(channel, &state_handlers)`
+      inside `start_recording_session` after the recording leg
+      is up, so the bug + dialog are reaped automatically on
+      hangup of the original call.
+- [ ] `siprec_pause` / `siprec_resume` apps — gated on
+      `siprec_invite_reinvite`. Deferred to v1.1.
 
 ### Phase 5 — config
 
-- [ ] `siprec.conf.xml` schema:
+- [x] `autoload_conf/siprec.conf.xml` schema:
       ```xml
       <configuration name="siprec.conf">
         <recording-servers>
@@ -120,12 +136,21 @@ siprec_media.h
 
 ### Phase 6 — testing
 
-- [ ] Unit tests for `siprec_sdp.c` (does the output match
-      RFC 7866 §7 examples byte-for-byte?).
-- [ ] Unit tests for `siprec_metadata.c` (does the XML validate
-      against RFC 7865 §5 schema?).
-- [ ] Integration test against `cb-srs` (Voicetel's Go SRS at
-      `tests/srs/`).
+- [x] Unit tests for `siprec_sdp.c` — 21 assertions covering
+      RFC 7866 §7 line shape, mono vs stereo rtpmap, validation
+      reject paths.
+- [x] Unit tests for `siprec_metadata.c` — 22 assertions
+      covering schema-element ordering, attribute presence, XML
+      escaping of caller-supplied content (no entity injection).
+- [x] `tests/README.md` — operator-facing field-test checklist
+      mapping each `TODO(field-test)` source marker to a concrete
+      verification step (wireshark / sofia loglevel / fs_cli probe).
+- [ ] Live integration against `cb-srs` — run
+      `siprec-start-stop.xml` from callBroadcast's TwiML suite
+      with mod_siprec built from this fork; the suite already
+      checks for `EXECUTE.*siprec\(` in the journal and
+      `[twiml] <uuid>: done`. Move from FAIL to PASS once the
+      `TODO(field-test)` items are closed.
 
 ## Non-goals (deferred)
 

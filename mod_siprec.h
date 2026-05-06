@@ -47,6 +47,12 @@ struct recording_server {
 };
 typedef struct recording_server recording_server_t;
 
+/* Forward declarations for components defined elsewhere. The
+ * recording_t holds opaque pointers to them so the header
+ * doesn't pull in unrelated headers. */
+struct siprec_invite_ctx;
+struct siprec_media_ctx;
+
 struct recording {
     char *key;
     char *uuid;
@@ -57,6 +63,15 @@ struct recording {
     recording_server_t *server;
     switch_memory_pool_t *pool;
     int running;
+
+    /* SIP signalling context — populated by siprec_invite_send.
+     * Owns the recording-leg session pointer + dialog
+     * negotiation state. NULL until siprec_invite_send fires. */
+    struct siprec_invite_ctx *invite_ctx;
+
+    /* Media-bug + RTP-fork context — populated by
+     * siprec_media_attach. NULL until media is wired. */
+    struct siprec_media_ctx *media_ctx;
 };
 typedef struct recording recording_t;
 
