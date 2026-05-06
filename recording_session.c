@@ -31,15 +31,12 @@
  */
 #include <switch.h>
 
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include <time.h>
 
 #include "mod_siprec.h"
 #include "recording_session.h"
 #include "siprec_invite.h"
 #include "siprec_media.h"
-#include "siprec_sdp.h"
 #include "siprec_metadata.h"
 
 static switch_status_t my_on_destroy(switch_core_session_t *session)
@@ -51,7 +48,12 @@ static switch_status_t my_on_destroy(switch_core_session_t *session)
     return SWITCH_STATUS_SUCCESS;
 }
 
-static switch_state_handler_table_t state_handlers  __attribute__((unused)) = {
+/* state_handlers gets attached to the original call's channel
+ * inside start_recording_session via switch_channel_add_state_handler.
+ * SSH_FLAG_STICKY keeps the handler bound across dialplan
+ * transfers so a recording started during the IVR phase still
+ * fires on_destroy when the bridged leg hangs up. */
+static switch_state_handler_table_t state_handlers = {
     /*.on_init */ NULL,
     /*.on_routing */ NULL,
     /*.on_execute */ NULL,
@@ -127,49 +129,13 @@ switch_status_t stop_recording_session(switch_core_session_t *session)
     return SWITCH_STATUS_SUCCESS;
 }
 
-/* ──────────────────────────────────────────────────────────── *
- * Helpers for INVITE-time SDP / metadata construction         *
- * ──────────────────────────────────────────────────────────── */
-
-/* allocate_rtp_port: pick a unique UDP port for the SRC's
- * outbound stream. v1 uses an ephemeral kernel-assigned port
- * by binding then querying — but mod_siprec's RTP socket is
- * unbound (kernel picks source on first sendto). For the SDP
- * we therefore reserve a port per stream by binding probe
- * sockets and reading their getsockname().
- *
- * TODO(field-test): on a busy host the bind/query/close
- * pattern races other RTP listeners. Production deployments
- * should hand mod_siprec a dedicated RTP port range via
- * siprec.conf and allocate within it.
+/* SDP/RTP port allocation is delegated to mod_sofia. The
+ * outbound recording leg is a normal sofia originate, so the
+ * profile's rtp-port-min/-max range provides the source port
+ * and `local_ip_v4` selects the bind address. We don't open
+ * a socket from this module — siprec_media's UDP fork sends
+ * to the SRS-side endpoint reported in the 200-OK answer.
  */
-static uint16_t allocate_rtp_port(void)
-{
-    int s = socket(AF_INET, SOCK_DGRAM, 0);
-    if (s < 0) return 0;
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = 0; /* kernel picks */
-
-    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        close(s);
-        return 0;
-    }
-
-    socklen_t slen = sizeof(addr);
-    if (getsockname(s, (struct sockaddr *)&addr, &slen) < 0) {
-        close(s);
-        return 0;
-    }
-
-    uint16_t port = ntohs(addr.sin_port);
-    close(s); /* releases the port; race with the actual bind
-               * below is the TODO(field-test) above. */
-    return port;
-}
 
 switch_status_t start_recording_session(switch_core_session_t *session, const char *recording_server_name)
 {
@@ -256,50 +222,16 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
      * RFC 7866 INVITE dispatch                                *
      * ──────────────────────────────────────────────────────── */
 
-    /* Pick the SRC's external IP. v1 uses the FS local_ip_v4
-     * variable (set by mod_sofia at startup); a future
-     * version may take this from siprec.conf per recording-
-     * server entry so multi-homed boxes can scope the RTP
-     * source to a specific interface. */
-    const char *src_ip = switch_core_get_variable("local_ip_v4");
-    if (!src_ip) src_ip = "127.0.0.1";
-
-    /* Build the SDP with two streams (read + write directions
-     * of the original 2-leg call). PCMU is the carrier
-     * default; the SRS answer may downgrade. */
-    uint16_t port_a = allocate_rtp_port();
-    uint16_t port_b = allocate_rtp_port();
-
-    siprec_sdp_track_t tracks[2] = {
-        { .label = "1", .port = port_a, .pt = 0,
-          .codec_name = "PCMU", .clock_rate = 8000,
-          .channels = 1, .ptime_ms = 20 },
-        { .label = "2", .port = port_b, .pt = 0,
-          .codec_name = "PCMU", .clock_rate = 8000,
-          .channels = 1, .ptime_ms = 20 },
-    };
-    const char *group_labels[] = { "1", "2" };
-
-    siprec_sdp_options_t sopts = {
-        .src_ip          = src_ip,
-        .session_id      = (uint64_t)switch_epoch_time_now(NULL),
-        .session_version = 1,
-        .tracks          = tracks,
-        .track_count     = 2,
-        .group_labels    = group_labels,
-        .group_label_count = 2,
-    };
-    char *sdp_body = siprec_sdp_build(&sopts);
-    if (!sdp_body) {
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
-            SWITCH_LOG_ERROR, "siprec: SDP build failed\n");
-        return SWITCH_STATUS_FALSE;
-    }
-
-    /* Build the metadata XML. v1 records both legs as a
-     * single participant (the FS-driven session); a richer
-     * implementation would discover the carrier-side and
-     * customer-side AORs from channel variables. */
+    /* v1 records the call as a single participant (the
+     * FS-driven session). The participant's AOR comes from
+     * the original leg's sip_from_uri so the SRS can
+     * correlate the recording with billing / CDR data;
+     * unknown senders fall back to a sentinel.
+     *
+     * Strict-RFC interop (separate <participant> per leg
+     * with cross-referenced <send> / <recv> streams) is the
+     * v1.1 enhancement gated on multi-stream SDP-override
+     * support in mod_sofia. */
     siprec_metadata_participant_t parts[1] = {
         { .participant_id = uuid,
           .aor = switch_channel_get_variable(
@@ -309,25 +241,31 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
     };
     if (!parts[0].aor) parts[0].aor = "sip:unknown@unknown";
 
-    siprec_metadata_stream_t streams[2] = {
+    siprec_metadata_stream_t streams_arr[1] = {
         { .stream_id = "stream-1", .mode = SIPREC_STREAM_SEND,
-          .participant_idx = 0 },
-        { .stream_id = "stream-2", .mode = SIPREC_STREAM_SEND,
           .participant_idx = 0 },
     };
 
+    char associate_time[64] = {0};
+    {
+        time_t now = time(NULL);
+        struct tm tm_utc;
+        gmtime_r(&now, &tm_utc);
+        strftime(associate_time, sizeof(associate_time),
+            "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+    }
+
     siprec_metadata_options_t mopts = {
-        .session_id   = uuid,
-        .group_id     = uuid,
-        .associate_time_utc = NULL, /* TODO: ISO-8601 now */
-        .participants = parts,
+        .session_id        = uuid,
+        .group_id          = uuid,
+        .associate_time_utc = associate_time,
+        .participants      = parts,
         .participant_count = 1,
-        .streams = streams,
-        .stream_count = 2,
+        .streams           = streams_arr,
+        .stream_count      = 1,
     };
     char *metadata_body = siprec_metadata_build(&mopts);
     if (!metadata_body) {
-        siprec_sdp_free(sdp_body);
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
             SWITCH_LOG_ERROR, "siprec: metadata build failed\n");
         return SWITCH_STATUS_FALSE;
@@ -347,48 +285,30 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
         "sofia_profile_name");
     if (!profile) profile = "voicetel";
 
+    /* sdp_body argument is reserved for v1.1 (strict-RFC SDP
+     * override with a=label per stream). v1 lets mod_sofia
+     * auto-generate the SDP — see siprec_invite_send. */
     switch_status_t inv = siprec_invite_send(
-        recording, profile, srs_uri, sdp_body, metadata_body);
+        recording, profile, srs_uri, /*sdp_body*/ NULL, metadata_body);
 
-    siprec_sdp_free(sdp_body);
     siprec_metadata_free(metadata_body);
 
     if (inv != SWITCH_STATUS_SUCCESS) {
-        return inv; /* recording remains in the hash; the next
-                     * stop_recording_session pass will clean
-                     * up the recording_t. */
+        return inv;
     }
 
-    /* Once the INVITE has been ACKed (switch_ivr_originate
-     * blocked until 200 OK) the new_session has the
-     * negotiated remote endpoint in its channel variables.
-     * Read them back for the media tap.
-     *
-     * TODO(field-test): on a successful 200, sofia exposes
-     * remote_media_ip / remote_media_port. For two streams
-     * we'd need per-stream variables — verify these are
-     * exposed by the FS build, otherwise parse the saved
-     * remote SDP from sip_remote_sdp_str and pull each
-     * m=audio's port. */
-    if (recording->invite_ctx
-        && recording->invite_ctx->recording_session) {
-        switch_core_session_t *rs = recording->invite_ctx->recording_session;
-        switch_channel_t *rch = switch_core_session_get_channel(rs);
-        const char *rip = switch_channel_get_variable(rch, "remote_media_ip");
-        const char *rport = switch_channel_get_variable(rch, "remote_media_port");
-        if (rip && rport) {
-            switch_copy_string(recording->invite_ctx->negotiated[0].remote_ip,
-                rip, sizeof(recording->invite_ctx->negotiated[0].remote_ip));
-            recording->invite_ctx->negotiated[0].remote_port =
-                (uint16_t)atoi(rport);
-            recording->invite_ctx->negotiated_count = 1;
-            /* Stream 2 negotiated_count remains 0 until we
-             * parse a per-stream remote SDP — TODO above. */
-        }
-    }
-
-    /* Attach the media bug. */
+    /* siprec_invite_send populated invite_ctx->negotiated[0]
+     * from the recording leg's remote_media_ip/port. Hand
+     * that off to siprec_media_attach to wire the bug + RTP
+     * fork. */
     siprec_media_attach(recording);
+
+    /* Bind the on_destroy state-handler so caller-side hangup
+     * automatically tears down the recording. Without this
+     * the recording_t survives the original call's destroy
+     * cycle and only gets reaped at module shutdown. */
+    switch_channel_add_state_handler(
+        switch_core_session_get_channel(session), &state_handlers);
 
     return SWITCH_STATUS_SUCCESS;
 }

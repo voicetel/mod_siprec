@@ -59,61 +59,61 @@ siprec_media.h
 
 ### Phase 2 — SIP signaling
 
-- [x] `siprec_invite.c` — issue the INVITE via FreeSWITCH's
-      `switch_ivr_originate` against the same sofia profile carrying
-      the original call. The multipart body (sdp + metadata) is
-      attached via the `sip_invite_body` and `sip_invite_content_type`
-      channel variables; `sip_h_Require=siprec` adds the RFC 7866
-      Require header.
+- [x] `siprec_invite.c` — issues the INVITE via
+      `switch_ivr_originate` against the same sofia profile
+      carrying the original call. The metadata XML is attached via
+      the documented `sip_multipart` channel variable
+      (`process_mp` in sofia_media.c parses `<Content-Type>:~<extra-headers>\r\n<body>`
+      and assembles `multipart/mixed` with the auto-generated SDP
+      as part 1, our metadata as part 2). `sip_h_Require=siprec`
+      adds the RFC 7866 §6.1 Require header.
 - [x] BYE: `siprec_invite_send_bye` hangs up the recording-leg
       session via `switch_channel_hangup(NORMAL_CLEARING)`. Sofia
-      emits the BYE; idempotent — second call after teardown is a
-      no-op.
-- [ ] re-INVITE: `siprec_invite_reinvite` returns
-      `SWITCH_STATUS_NOTIMPL` for v1; needed for pause/resume
-      (Phase 4 follow-up).
-- [ ] **`TODO(field-test)`**: confirm `sip_invite_body` is the
-      correct channel-variable name on the deployed mod_sofia build;
-      the v1.10.x source greps return both `sip_invite_body` and
-      `sip_multipart_body`.
+      emits the BYE; idempotent — locate-by-UUID guards against
+      double-tear-down.
+- [x] re-INVITE: `siprec_invite_reinvite` pushes the updated
+      metadata as a fresh `sip_multipart` entry and drives the
+      re-INVITE via `SWITCH_MESSAGE_INDICATE_MEDIA_REDIRECT`.
+      mod_sofia's handler (mod_sofia.c:1650) calls
+      `switch_core_media_set_local_sdp` + `sofia_glue_do_invite`
+      to emit on the existing dialog.
 
 ### Phase 3 — media tap & RTP fork
 
-- [x] `siprec_media.c` — `switch_core_media_bug_add()` with
-      `SMBF_READ_REPLACE | SMBF_WRITE_REPLACE`. Frames captured from
-      both directions; encoded as PCMU (or PCMA when the original
-      leg negotiated payload type 8); packetised as RFC 3550 RTP
-      headers; sent via UDP to the SRS endpoint discovered from the
-      200-OK SDP.
+- [x] `siprec_media.c` — `switch_core_media_bug_add()` with the
+      observe-only `SMBF_READ_STREAM | SMBF_WRITE_STREAM` flag set
+      (the canonical pattern from `record_callback` in
+      switch_ivr_async.c). Callback handles `SWITCH_ABC_TYPE_READ`
+      / `_WRITE` and pulls each frame via
+      `switch_core_media_bug_read(bug, &frame, SWITCH_FALSE)`.
 - [x] Codec passthrough: `read_codec->ianacode` selects PCMU/PCMA
-      at attach time. v1 assumes 8 kHz mono 20 ms ptime — matches
-      the carrier-side default.
+      at attach time. v1 assumes 8 kHz mono 20 ms ptime.
+- [x] RTP framing: inline G.711 encoders (l16_to_ulaw /
+      l16_to_alaw) + RFC 3550 RTP header packing. One UDP socket
+      per stream; SSRC seeded from `switch_micro_time_now`,
+      sequence + timestamp incremented in lock-step with each
+      frame.
 - [ ] DTMF tone forking (RFC 7866 §8.4) — passes through
-      transparently because the media bug receives whatever the
-      channel pipeline produces; explicit RFC 2833 packetisation
-      would be the v1.1 enhancement.
-- [ ] **`TODO(field-test)`**: validate `SMBF_READ_REPLACE |
-      SMBF_WRITE_REPLACE` is the right abc_type for L16 frame
-      delivery on the deployed FS build; some builds prefer
-      `SMBF_READ_STREAM | SMBF_WRITE_STREAM`.
+      transparently via the bug's read path; explicit RFC 2833
+      passthrough is the v1.1 enhancement.
 
 ### Phase 4 — lifecycle integration
 
-- [x] `stop_recording_session` now drives the full teardown:
+- [x] `stop_recording_session` drives the ordered teardown:
       `siprec_media_detach` (removes bug + closes UDP sockets) →
       `siprec_invite_send_bye` (BYE on recording dialog) → mutex /
       pool free.
-- [x] `start_recording_session` builds the SDP + metadata, calls
-      `siprec_invite_send`, parses the 200-OK remote_media_ip /
-      remote_media_port, then `siprec_media_attach`.
-- [ ] State-handler `on_destroy` is declared in
-      `recording_session.c` but not yet bound. Needs
-      `switch_channel_add_state_handler(channel, &state_handlers)`
-      inside `start_recording_session` after the recording leg
-      is up, so the bug + dialog are reaped automatically on
-      hangup of the original call.
-- [ ] `siprec_pause` / `siprec_resume` apps — gated on
-      `siprec_invite_reinvite`. Deferred to v1.1.
+- [x] `start_recording_session` builds the metadata XML, dispatches
+      the INVITE via `siprec_invite_send`, then attaches the media
+      bug with `siprec_media_attach`.
+- [x] State-handler bound: `switch_channel_add_state_handler(
+      channel, &state_handlers)` runs at the end of
+      `start_recording_session`, so caller-side hangup of the
+      original call automatically tears down the recording.
+- [ ] `siprec_pause` / `siprec_resume` apps — wire dialplan
+      entry points to `siprec_invite_reinvite` with a flipped
+      direction attribute. v1.1 deliverable; the underlying
+      `siprec_invite_reinvite` is implemented and ready.
 
 ### Phase 5 — config
 

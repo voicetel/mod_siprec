@@ -65,20 +65,21 @@ typedef struct {
  * profile not loaded.
  *
  * The recording-leg call is dispatched as a sofia originate
- * with the multipart body attached via the FS-internal
- * `sip_multipart_body` channel variable. The Require: siprec
- * and Content-Disposition headers are added the same way.
+ * with the metadata XML attached via the documented FS
+ * `sip_multipart` channel variable (see process_mp() in
+ * sofia_media.c). mod_sofia auto-generates the SDP for the
+ * outbound leg and combines it with our metadata into the
+ * multipart/mixed body.
  *
- * TODO(field-test): the exact channel-variable name FS
- * expects for multipart-body insertion needs verification on
- * a live build. The fallback path uses
- * switch_core_session_message to inject post-originate.
+ * sdp_body argument is reserved for v1.1 (strict-RFC SDP
+ * override with explicit a=label per stream) — v1 leaves it
+ * NULL and lets sofia generate the SDP.
  */
 switch_status_t siprec_invite_send(
     recording_t *recording,
     const char *sofia_profile,
     const char *srs_uri,
-    const char *sdp_body,
+    const char *sdp_body,         /* may be NULL in v1 */
     const char *metadata_body);
 
 /* siprec_invite_send_bye: tear down the recording leg.
@@ -93,16 +94,20 @@ switch_status_t siprec_invite_send(
 switch_status_t siprec_invite_send_bye(recording_t *recording);
 
 /* siprec_invite_reinvite: send a re-INVITE on the existing
- * recording dialog with an updated SDP and metadata body.
- * Used for pause/resume (RFC 7866 §6.4) and for participant
- * updates (transfer, conference add/remove).
+ * recording dialog with an updated SDP and (optional)
+ * metadata body. Used for pause/resume (RFC 7866 §6.4) and
+ * for participant updates (transfer, conference add/remove).
  *
  * The new SDP MUST keep the same a=label values for streams
  * that are continuing — RFC 7866 §6.4 §8.5.
  *
- * TODO(field-test): re-INVITE requires session_send_event
- * with a sip-renegotiate cause. Implementation stubbed for
- * v1; pause/resume is a Phase 4 deliverable.
+ * Implementation: pushes a fresh sip_multipart entry for the
+ * metadata (when supplied), then drives a re-INVITE via
+ * SWITCH_MESSAGE_INDICATE_MEDIA_REDIRECT — mod_sofia's
+ * handler at mod_sofia.c:1650 calls
+ * switch_core_media_set_local_sdp followed by
+ * sofia_glue_do_invite, emitting the re-INVITE on the
+ * existing dialog.
  */
 switch_status_t siprec_invite_reinvite(
     recording_t *recording,

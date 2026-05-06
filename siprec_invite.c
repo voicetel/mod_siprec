@@ -1,166 +1,137 @@
 /*
  * siprec_invite.c — SIP signalling for the recording dialog.
  *
- * The recording leg is a fresh SIP INVITE dialog dispatched
- * out the same sofia profile as the original call. We rely on
- * mod_sofia for the transport (UDP/TCP/TLS, NAT mapping, etc.)
- * — re-implementing a SIP UAC inside a recording-only module
- * would duplicate every piece of mod_sofia's state machine.
+ * The recording leg is a fresh outbound INVITE issued via
+ * `switch_ivr_originate` against the same sofia profile that
+ * carries the original call. Re-using mod_sofia's UAC machinery
+ * keeps NAT handling, TLS policy, source-IP selection, and RTP
+ * port allocation consistent with the original leg, and avoids
+ * a second SIP stack inside the same FreeSWITCH process.
  *
- * The custom multipart MIME body (RFC 7866 §6.1.2) is the one
- * deviation from a stock outbound originate. We attach it via
- * channel variables that mod_sofia consults when building the
- * outgoing INVITE.
+ * Multipart MIME body
+ *
+ * mod_sofia composes the outgoing INVITE body in
+ * sofia_media_get_multipart (sofia_media.c). When at least one
+ * `sip_multipart` channel variable is set on the originated
+ * leg, mod_sofia builds a multipart/mixed body whose first
+ * part is the auto-generated SDP and whose subsequent parts
+ * come from each `sip_multipart` value. We use that mechanism
+ * to attach the RFC 7865 metadata XML.
+ *
+ * Each `sip_multipart` value uses the FS-internal grammar:
+ *
+ *     <Content-Type>:<body>            — body inserted as-is
+ *     <Content-Type>:~<extra-headers>\r\n<body>
+ *                                      — body PLUS additional
+ *                                        per-part headers
+ *
+ * (See process_mp() in sofia_media.c.)  We use the second form
+ * to attach `Content-Disposition: recording-session` per
+ * RFC 7866 §6.1.2.
+ *
+ * SDP shape
+ *
+ * The SDP that mod_sofia auto-generates for an outbound-only
+ * leg already includes `a=sendonly` (RFC 7866 §7.4) because
+ * the leg has no inbound media path. It does NOT yet emit
+ * `a=label:N` per stream — that is a strict RFC 7866 §8.5
+ * requirement for the labelled-stream xref. Recording servers
+ * we ship with (cb-srs) accept the unlabelled form; strict-
+ * peer interop requires the v1.1 follow-up that overrides
+ * `local_sdp_str` via SWITCH_MESSAGE_INDICATE_MEDIA_REDIRECT.
  */
 #include "siprec_invite.h"
 
 #include <switch.h>
 
-/* ──────────────────────────────────────────────────────────── *
- * Helpers                                                     *
- * ──────────────────────────────────────────────────────────── */
-
-/* boundary_make: produce a 32-hex-character MIME boundary
- * derived from the recording's UUID + timestamp. The boundary
- * MUST be unique within the message; reusing the recording
- * UUID guarantees this without burning entropy on rand. */
-static char *boundary_make(switch_memory_pool_t *pool, const char *uuid)
-{
-    /* Truncate UUID-with-hyphens to 32 hex chars; that's well
-     * within the 70-char boundary limit (RFC 2046 §5.1.1). */
-    char buf[64];
-    int  i = 0, j = 0;
-    while (uuid[i] && j < 32) {
-        if (uuid[i] != '-') {
-            buf[j++] = uuid[i];
-        }
-        i++;
-    }
-    buf[j] = '\0';
-    return switch_core_strdup(pool, buf);
-}
-
-/* multipart_assemble: glue the SDP and metadata sub-bodies
- * into a multipart/mixed body per RFC 2046 §5.1.1.
- *
- * Layout:
- *   --<boundary>
- *   Content-Type: application/sdp
- *   Content-Disposition: session;handling=required
- *
- *   <sdp_body>
- *   --<boundary>
- *   Content-Type: application/rs-metadata+xml
- *   Content-Disposition: recording-session
- *
- *   <metadata_body>
- *   --<boundary>--
- *
- * Content-Disposition values per RFC 7866 §6.1.2.
+/* multipart_value: build the `<Content-Type>:~<headers>\r\n<body>`
+ * string mod_sofia's process_mp() expects. The leading `~` opts
+ * us into the extra-headers form so we can attach
+ * Content-Disposition without re-spelling the content-type.
  */
-static char *multipart_assemble(
+static char *multipart_value(
     switch_memory_pool_t *pool,
-    const char *boundary,
-    const char *sdp_body,
-    const char *metadata_body)
+    const char *content_type,
+    const char *content_disposition,
+    const char *body)
 {
-    if (!boundary || !sdp_body || !metadata_body) {
-        return NULL;
-    }
+    if (!content_type || !body) return NULL;
 
-    /* Conservative size: lengths + ~256 bytes of framing. */
-    size_t cap = strlen(sdp_body) + strlen(metadata_body)
-               + (strlen(boundary) * 4) + 512;
+    size_t cap = strlen(content_type) + strlen(body)
+               + (content_disposition ? strlen(content_disposition) : 0)
+               + 128;
     char *buf = switch_core_alloc(pool, cap);
     if (!buf) return NULL;
 
-    int n = switch_snprintf(buf, cap,
-        "--%s\r\n"
-        "Content-Type: application/sdp\r\n"
-        "Content-Disposition: session;handling=required\r\n"
-        "\r\n"
-        "%s\r\n"
-        "--%s\r\n"
-        "Content-Type: application/rs-metadata+xml\r\n"
-        "Content-Disposition: recording-session\r\n"
-        "\r\n"
-        "%s\r\n"
-        "--%s--\r\n",
-        boundary, sdp_body, boundary, metadata_body, boundary);
-
-    if (n <= 0 || (size_t)n >= cap) {
-        return NULL;
+    if (content_disposition) {
+        switch_snprintf(buf, cap,
+            "%s:~Content-Disposition: %s\r\n\r\n%s",
+            content_type, content_disposition, body);
+    } else {
+        switch_snprintf(buf, cap, "%s:%s", content_type, body);
     }
     return buf;
 }
-
-/* ──────────────────────────────────────────────────────────── *
- * INVITE dispatch                                             *
- * ──────────────────────────────────────────────────────────── */
 
 switch_status_t siprec_invite_send(
     recording_t *recording,
     const char *sofia_profile,
     const char *srs_uri,
-    const char *sdp_body,
+    const char *sdp_body,         /* unused in v1: sofia auto-gens */
     const char *metadata_body)
 {
-    if (!recording || !sofia_profile || !srs_uri || !sdp_body || !metadata_body) {
+    if (!recording || !sofia_profile || !srs_uri || !metadata_body) {
         return SWITCH_STATUS_FALSE;
     }
+    (void)sdp_body; /* reserved for v1.1 strict-RFC SDP override */
 
     siprec_invite_ctx_t *ctx = switch_core_alloc(recording->pool, sizeof(*ctx));
     memset(ctx, 0, sizeof(*ctx));
 
-    /* Build boundary + assembled body. Both live in the
-     * recording pool so they survive until the leg dialog
-     * tears down. */
-    ctx->sent_boundary = boundary_make(recording->pool, recording->uuid);
-    ctx->sent_sdp      = switch_core_strdup(recording->pool, sdp_body);
-    ctx->sent_body     = multipart_assemble(recording->pool,
-        ctx->sent_boundary, sdp_body, metadata_body);
-
-    if (!ctx->sent_body) {
+    /* Allocate the metadata multipart value into the recording
+     * pool — it has to outlive the originate call (sofia reads
+     * the channel var as the INVITE goes out). */
+    char *mp_metadata = multipart_value(recording->pool,
+        "application/rs-metadata+xml", "recording-session", metadata_body);
+    if (!mp_metadata) {
         return SWITCH_STATUS_FALSE;
     }
+    ctx->sent_body = mp_metadata;
 
-    /* Originate dial-string. We target the SRS URI through the
-     * named profile so that the From: domain, NAT handling,
-     * and TLS policy of the original call carry over.
+    /* Originate variables. The {curly-brace} prefix sets per-
+     * leg channel variables before dial.
      *
-     * The {curly-bracket} prefix sets channel variables on the
-     * outgoing leg before dial. mod_sofia consults these when
-     * composing the INVITE:
+     *   sip_multipart    — appended as a multipart MIME part
+     *                      after the SDP (see sofia_media.c).
+     *   sip_h_Require    — RFC 7866 §6.1: SRS MUST 421 if it
+     *                      doesn't support the siprec extension.
+     *   absolute_codec_string — pin codecs so the leg's auto-
+     *                      generated SDP is predictable
+     *                      (PCMU/PCMA only at the carrier rate).
+     *   ignore_early_media — don't progress media on 1xx; we
+     *                      only care about 200 OK.
+     *   hangup_after_bridge=false — recording leg lives until
+     *                      we BYE it explicitly on caller-side
+     *                      hangup, not when the bridge breaks.
      *
-     *   sip_h_Require=siprec
-     *     RFC 7866 §6.1: SRC MUST include this Require.
-     *
-     *   sip_h_Content-Type=multipart/mixed; boundary=<b>
-     *     overrides the default application/sdp.
-     *
-     *   sip_invite_body=<full body>
-     *     mod_sofia substitutes this in place of the SDP it
-     *     would normally generate.
-     *
-     * TODO(field-test): the exact name `sip_invite_body` may
-     * be `sip_multipart_body` or similar; verify on a live
-     * mod_sofia build. The 1.10.x source greps return both
-     * spellings; pick whichever the local build uses.
+     * Trailing app: park() keeps the leg alive after answer.
+     * Without it the leg drops the moment the originate
+     * returns and the media bug has nothing to forward to.
      */
-    char dial_string[1024];
+    char dial_string[2048];
     int dn = switch_snprintf(dial_string, sizeof(dial_string),
         "{ignore_early_media=true,"
+        "hangup_after_bridge=false,"
         "sip_h_Require=siprec,"
-        "sip_h_Content-Disposition=session;handling=required,"
-        "sip_invite_content_type=multipart/mixed; boundary=%s,"
-        "sip_invite_body=%s,"
-        "absolute_codec_string=PCMU,PCMA"
-        "}sofia/%s/%s",
-        ctx->sent_boundary, ctx->sent_body, sofia_profile, srs_uri);
+        "sip_multipart=%s,"
+        "absolute_codec_string='PCMU,PCMA',"
+        "originate_timeout=15"
+        "}sofia/%s/%s &park()",
+        mp_metadata, sofia_profile, srs_uri);
 
     if (dn <= 0 || (size_t)dn >= sizeof(dial_string)) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
-            "siprec: dial-string overflow (need a larger dial-string buffer)\n");
+            "siprec: dial-string overflow (metadata too large for inline var)\n");
         return SWITCH_STATUS_FALSE;
     }
 
@@ -168,11 +139,11 @@ switch_status_t siprec_invite_send(
     switch_call_cause_t    cause       = SWITCH_CAUSE_NONE;
 
     switch_status_t st = switch_ivr_originate(
-        /*session*/      NULL,            /* not bridged to caller */
+        /*session*/      NULL,
         /*new_session*/  &new_session,
         /*cause*/        &cause,
         /*bridgeto*/     dial_string,
-        /*timelimit*/    30,              /* seconds */
+        /*timelimit*/    20,
         /*table*/        NULL,
         /*cid_name*/     "siprec",
         /*cid_num*/      "siprec",
@@ -192,20 +163,30 @@ switch_status_t siprec_invite_send(
     ctx->recording_session = new_session;
     recording->invite_ctx  = ctx;
 
-    /* Drop the immediate session reference now that we've
-     * stashed it in the recording struct. The session itself
-     * lives until BYE; the originate caller owns one ref that
-     * we no longer need. */
+    /* Pull the negotiated remote endpoint off the recording
+     * leg's channel vars — sofia populates these once 200 OK
+     * arrives. v1 supports a single audio stream, so one
+     * negotiated entry is all we need. Multi-stream support
+     * needs us to parse `sip_remote_sdp_str`; deferred to v1.1.
+     */
+    switch_channel_t *rch = switch_core_session_get_channel(new_session);
+    const char *rip   = switch_channel_get_variable(rch, "remote_media_ip");
+    const char *rport = switch_channel_get_variable(rch, "remote_media_port");
+    if (rip && rport) {
+        switch_copy_string(ctx->negotiated[0].remote_ip, rip,
+            sizeof(ctx->negotiated[0].remote_ip));
+        ctx->negotiated[0].remote_port = (uint16_t)atoi(rport);
+        ctx->negotiated_count = 1;
+    }
+
     switch_core_session_rwunlock(new_session);
 
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,
-        "siprec: INVITE dispatched to %s\n", srs_uri);
+        "siprec: INVITE to %s answered, remote=%s:%u\n",
+        srs_uri, ctx->negotiated[0].remote_ip,
+        (unsigned)ctx->negotiated[0].remote_port);
     return SWITCH_STATUS_SUCCESS;
 }
-
-/* ──────────────────────────────────────────────────────────── *
- * BYE                                                         *
- * ──────────────────────────────────────────────────────────── */
 
 switch_status_t siprec_invite_send_bye(recording_t *recording)
 {
@@ -217,10 +198,9 @@ switch_status_t siprec_invite_send_bye(recording_t *recording)
         return SWITCH_STATUS_FALSE;
     }
 
-    /* Idempotent: locate the session by UUID so a second
-     * BYE-attempt after the channel is already gone fails
-     * cleanly with status FALSE rather than dereferencing a
-     * freed pointer. */
+    /* locate-by-UUID guarantees we don't deref a session that
+     * sofia has already torn down (e.g. SRS-side BYE arrived
+     * first or the leg already 4xx'd out). */
     const char *uuid = switch_core_session_get_uuid(ctx->recording_session);
     switch_core_session_t *s = switch_core_session_locate(uuid);
     if (!s) {
@@ -237,7 +217,15 @@ switch_status_t siprec_invite_send_bye(recording_t *recording)
 }
 
 /* ──────────────────────────────────────────────────────────── *
- * re-INVITE                                                   *
+ * re-INVITE for pause / resume.                              *
+ *                                                              *
+ * RFC 7866 §6.4: pause/resume is signalled by a re-INVITE that *
+ * flips the SDP direction attribute (a=inactive ⇄ a=sendonly). *
+ * In FS, we drive that by sending the channel a               *
+ * SWITCH_MESSAGE_INDICATE_MEDIA_REDIRECT message with the new  *
+ * SDP body — mod_sofia's handler at mod_sofia.c:1650 picks it  *
+ * up via switch_core_media_set_local_sdp + sofia_glue_do_invite *
+ * and emits the re-INVITE on the existing dialog.             *
  * ──────────────────────────────────────────────────────────── */
 
 switch_status_t siprec_invite_reinvite(
@@ -245,14 +233,39 @@ switch_status_t siprec_invite_reinvite(
     const char *new_sdp,
     const char *new_metadata)
 {
-    /* TODO(phase-4): generate a re-INVITE event via
-     * switch_core_session_message with the
-     * SWITCH_MESSAGE_INDICATE_RECOVERY_REFRESH hook. The
-     * sofia stack picks up the channel-variable changes and
-     * sends the re-INVITE. Pause/resume is the v1.1
-     * deliverable. */
-    (void)recording;
-    (void)new_sdp;
-    (void)new_metadata;
-    return SWITCH_STATUS_NOTIMPL;
+    if (!recording || !recording->invite_ctx) return SWITCH_STATUS_FALSE;
+    siprec_invite_ctx_t *ctx = recording->invite_ctx;
+    if (!ctx->recording_session || !new_sdp) return SWITCH_STATUS_FALSE;
+
+    /* The metadata XML on a re-INVITE carries
+     * <datamode>partial</datamode> per RFC 7865 §5.1 — the
+     * caller is responsible for that distinction; we just
+     * thread it through as a multipart channel variable so
+     * sofia reads it on the next INVITE. */
+    if (new_metadata) {
+        char *mp = multipart_value(recording->pool,
+            "application/rs-metadata+xml", "recording-session",
+            new_metadata);
+        if (mp) {
+            switch_channel_t *ch = switch_core_session_get_channel(
+                ctx->recording_session);
+            switch_channel_set_variable_var_check(ch,
+                "sip_multipart", mp, SWITCH_FALSE);
+        }
+    }
+
+    /* Send the message that triggers the re-INVITE. */
+    switch_core_session_message_t msg = { 0 };
+    msg.message_id   = SWITCH_MESSAGE_INDICATE_MEDIA_REDIRECT;
+    msg.string_arg   = (char *)new_sdp;
+    msg.from         = __FILE__;
+
+    switch_status_t st = switch_core_session_receive_message(
+        ctx->recording_session, &msg);
+
+    if (st != SWITCH_STATUS_SUCCESS) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+            "siprec: re-INVITE failed status=%d\n", (int)st);
+    }
+    return st;
 }

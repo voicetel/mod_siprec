@@ -149,27 +149,35 @@ static switch_bool_t media_bug_callback(
          * siprec_media_detach. */
         return SWITCH_TRUE;
 
-    case SWITCH_ABC_TYPE_READ_REPLACE:
-    case SWITCH_ABC_TYPE_WRITE_REPLACE: {
-        /* TODO(field-test): the exact frame-fetch API depends
-         * on which abc_type the bug was registered with. For
-         * SMBF_READ_STREAM | SMBF_WRITE_STREAM:
-         *   switch_frame_t *f = switch_core_media_bug_get_read_replace_frame(bug);
-         * Assume read direction stream[0], write direction
-         * stream[1]. Adjust on first live test. */
-        switch_frame_t *f = (type == SWITCH_ABC_TYPE_READ_REPLACE)
-            ? switch_core_media_bug_get_read_replace_frame(bug)
-            : switch_core_media_bug_get_write_replace_frame(bug);
+    case SWITCH_ABC_TYPE_READ:
+    case SWITCH_ABC_TYPE_WRITE: {
+        /* Pull a frame copy from the bug's queue. SMBF_*_STREAM
+         * (observe-only) is the canonical recording pattern;
+         * the frame returned here is L16 mono at the channel's
+         * native rate (8 kHz for our PCMU-only carrier leg).
+         * fill=FALSE means we don't synthesise silence on
+         * underrun — drop the slot if no frame is ready.
+         */
+        switch_frame_t  frame;
+        uint8_t         frame_buf[SWITCH_RECOMMENDED_BUFFER_SIZE];
 
-        if (!f || !f->data || f->datalen == 0) return SWITCH_TRUE;
+        memset(&frame, 0, sizeof(frame));
+        frame.data    = frame_buf;
+        frame.buflen  = sizeof(frame_buf);
 
-        size_t stream_idx = (type == SWITCH_ABC_TYPE_READ_REPLACE) ? 0 : 1;
+        if (switch_core_media_bug_read(bug, &frame, SWITCH_FALSE)
+            != SWITCH_STATUS_SUCCESS) {
+            return SWITCH_TRUE;
+        }
+        if (!frame.data || frame.datalen == 0) {
+            return SWITCH_TRUE;
+        }
+
+        size_t stream_idx = (type == SWITCH_ABC_TYPE_READ) ? 0 : 1;
         if (stream_idx >= ctx->stream_count) return SWITCH_TRUE;
 
-        /* Frame data is L16 mono 8 kHz — 2 bytes per sample,
-         * 160 samples per 20ms frame. */
-        const int16_t *samples = (const int16_t *)f->data;
-        size_t         sample_count = f->datalen / 2;
+        const int16_t *samples      = (const int16_t *)frame.data;
+        size_t         sample_count = frame.datalen / 2;
 
         uint8_t encoded[1500];
         if (sample_count > sizeof(encoded)) {
@@ -257,11 +265,12 @@ switch_status_t siprec_media_attach(recording_t *recording)
         mctx->streams[i].sequence = 0;
     }
 
-    /* Attach the bug. SMBF_READ_STREAM | SMBF_WRITE_STREAM
-     * gives us both directions of the original call;
-     * SMBF_READ_REPLACE / WRITE_REPLACE versions deliver the
-     * frame in the structure expected by the
-     * get_read_replace_frame / get_write_replace_frame API.
+    /* Attach the bug. SMBF_READ_STREAM | SMBF_WRITE_STREAM is
+     * the observe-only pattern used by session_record: the
+     * callback receives SWITCH_ABC_TYPE_READ / WRITE events
+     * and fetches a frame via switch_core_media_bug_read.
+     * (REPLACE flags are for codepaths that modify the in-
+     * flight stream — not what SIPREC needs.)
      */
     switch_status_t st = switch_core_media_bug_add(
         recording->session,
@@ -270,7 +279,7 @@ switch_status_t siprec_media_attach(recording_t *recording)
         media_bug_callback,
         mctx,
         0,    /* stop_time = 0 (never) */
-        SMBF_READ_REPLACE | SMBF_WRITE_REPLACE,
+        SMBF_READ_STREAM | SMBF_WRITE_STREAM,
         &mctx->bug);
 
     if (st != SWITCH_STATUS_SUCCESS) {
