@@ -222,28 +222,61 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
      * RFC 7866 INVITE dispatch                                *
      * ──────────────────────────────────────────────────────── */
 
-    /* v1 records the call as a single participant (the
-     * FS-driven session). The participant's AOR comes from
-     * the original leg's sip_from_uri so the SRS can
-     * correlate the recording with billing / CDR data;
-     * unknown senders fall back to a sentinel.
+    /* v1.1: model the bridged call as two participants —
+     * caller (sip_from_uri) and callee (sip_to_uri / dialed
+     * destination_number) — with one stream per direction.
+     * The recording leg still carries one m=audio (mono mix
+     * of both directions) until the strict-RFC SDP override
+     * lands in v2; the metadata XML, however, gives the SRS
+     * the per-participant cross-reference structure RFC 7865
+     * recommends.
      *
-     * Strict-RFC interop (separate <participant> per leg
-     * with cross-referenced <send> / <recv> streams) is the
-     * v1.1 enhancement gated on multi-stream SDP-override
-     * support in mod_sofia. */
-    siprec_metadata_participant_t parts[1] = {
-        { .participant_id = uuid,
-          .aor = switch_channel_get_variable(
-              switch_core_session_get_channel(session),
-              "sip_from_uri"),
-          .display_name = NULL },
-    };
-    if (!parts[0].aor) parts[0].aor = "sip:unknown@unknown";
+     * Stream mapping:
+     *   stream-1  →  audio FROM caller TO callee  (read dir)
+     *   stream-2  →  audio FROM callee TO caller  (write dir)
+     * The bug's READ callback receives the carrier inbound
+     * (caller-spoken); WRITE receives what FS sends back
+     * to the carrier (callee-spoken via FS-internal apps).
+     */
+    switch_channel_t *orig_ch = switch_core_session_get_channel(session);
 
-    siprec_metadata_stream_t streams_arr[1] = {
+    const char *caller_aor = switch_channel_get_variable(orig_ch, "sip_from_uri");
+    if (!caller_aor) {
+        caller_aor = switch_channel_get_variable(orig_ch, "caller_id_number");
+    }
+    if (!caller_aor) caller_aor = "sip:unknown@unknown";
+
+    const char *callee_aor = switch_channel_get_variable(orig_ch, "sip_to_uri");
+    if (!callee_aor) {
+        callee_aor = switch_channel_get_variable(orig_ch, "destination_number");
+    }
+    if (!callee_aor) callee_aor = "sip:unknown@unknown";
+
+    /* participant IDs are derived from the call-uuid +
+     * suffix so they're unique within the recording session
+     * but stable across re-INVITEs. */
+    char p_caller_id[80], p_callee_id[80];
+    switch_snprintf(p_caller_id, sizeof(p_caller_id), "%s-caller", uuid);
+    switch_snprintf(p_callee_id, sizeof(p_callee_id), "%s-callee", uuid);
+
+    siprec_metadata_participant_t parts[2] = {
+        { .participant_id = p_caller_id,
+          .aor = caller_aor, .display_name = NULL },
+        { .participant_id = p_callee_id,
+          .aor = callee_aor, .display_name = NULL },
+    };
+
+    /* RFC 7865 §5: the participant that produces the audio is
+     * the <send>-er; the participant on the receiving side
+     * MAY also reference the same stream as <recv>. We model
+     * each direction's audio as belonging to one participant
+     * (the speaker) — the SRS can synthesise the recv side
+     * from the send xref. */
+    siprec_metadata_stream_t streams_arr[2] = {
         { .stream_id = "stream-1", .mode = SIPREC_STREAM_SEND,
-          .participant_idx = 0 },
+          .participant_idx = 0 }, /* caller speaks */
+        { .stream_id = "stream-2", .mode = SIPREC_STREAM_SEND,
+          .participant_idx = 1 }, /* callee speaks */
     };
 
     char associate_time[64] = {0};
@@ -260,9 +293,9 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
         .group_id          = uuid,
         .associate_time_utc = associate_time,
         .participants      = parts,
-        .participant_count = 1,
+        .participant_count = 2,
         .streams           = streams_arr,
-        .stream_count      = 1,
+        .stream_count      = 2,
     };
     char *metadata_body = siprec_metadata_build(&mopts);
     if (!metadata_body) {

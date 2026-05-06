@@ -31,6 +31,7 @@
  */
 #include "mod_siprec.h"
 #include "recording_session.h"
+#include "siprec_invite.h"
 
 globals_t globals;
 
@@ -165,6 +166,91 @@ SWITCH_STANDARD_APP(siprec_app_function)
 	start_recording_session(session, recording_server_name);
 }
 
+/* siprec_pause / siprec_resume: send a re-INVITE on the
+ * recording dialog with an updated SDP direction attribute
+ * per RFC 7866 §6.4.
+ *
+ *   pause   →  a=inactive   (SRS stops writing the WAV
+ *                            but the dialog stays up)
+ *   resume  →  a=sendonly   (SRS resumes writing)
+ *
+ * The new SDP is built locally using the same parameters
+ * the original INVITE used (src_ip, codec, port stable for
+ * the dialog's lifetime); only the direction attribute
+ * changes.
+ *
+ * Usage in dialplan:
+ *   <action application="siprec_pause"  data="default"/>
+ *   <action application="siprec_resume" data="default"/>
+ *
+ * The recording-server name argument selects which active
+ * recording to re-INVITE (one call may have multiple
+ * recordings to different SRSes).
+ */
+static switch_status_t siprec_change_direction(
+	switch_core_session_t *session,
+	const char *server_name,
+	int paused)
+{
+	if (zstr(server_name)) {
+		server_name = "default";
+	}
+
+	const char *uuid = switch_core_session_get_uuid(session);
+	char *recording_key = switch_mprintf("%s-%s", server_name, uuid);
+
+	switch_mutex_lock(globals.recordings_mutex);
+	recording_t *recording = switch_core_hash_find(globals.recordings_hash, recording_key);
+	switch_mutex_unlock(globals.recordings_mutex);
+	switch_safe_free(recording_key);
+
+	if (!recording) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+			"siprec: no active recording for server '%s' on this leg\n",
+			server_name);
+		return SWITCH_STATUS_FALSE;
+	}
+
+	/* Build a minimal SDP carrying just the direction attribute
+	 * change. mod_sofia picks up the new SDP via the
+	 * SWITCH_MESSAGE_INDICATE_MEDIA_REDIRECT tag and re-uses
+	 * the dialog's negotiated media (m= line stays valid).
+	 *
+	 * RFC 4566: a=inactive on the session level applies to
+	 * every m= block; a=sendonly on the session level does
+	 * the same. Stream-level direction (per m=) overrides
+	 * session-level when present — for v1.1 we use session-
+	 * level since both streams of a recording flip together.
+	 */
+	const char *direction = paused ? "a=inactive" : "a=sendonly";
+	char tiny_sdp[256];
+	switch_snprintf(tiny_sdp, sizeof(tiny_sdp),
+		"v=0\r\n"
+		"o=- 0 0 IN IP4 0.0.0.0\r\n"
+		"s=-\r\n"
+		"t=0 0\r\n"
+		"%s\r\n",
+		direction);
+
+	switch_status_t st = siprec_invite_reinvite(recording, tiny_sdp, NULL);
+	if (st != SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+			"siprec: re-INVITE for %s failed: %d\n",
+			paused ? "pause" : "resume", (int)st);
+	}
+	return st;
+}
+
+SWITCH_STANDARD_APP(siprec_pause_app_function)
+{
+	siprec_change_direction(session, data, /*paused*/ 1);
+}
+
+SWITCH_STANDARD_APP(siprec_resume_app_function)
+{
+	siprec_change_direction(session, data, /*paused*/ 0);
+}
+
 SWITCH_MODULE_LOAD_FUNCTION(mod_siprec_load)
 {
 	switch_status_t status = SWITCH_STATUS_SUCCESS;
@@ -182,7 +268,17 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_siprec_load)
 		goto done;
 	}
 
-	SWITCH_ADD_APP(app_interface, "siprec", "Start RS for provided RCS", "", siprec_app_function, "<recording_server>", SAF_NONE);
+	SWITCH_ADD_APP(app_interface, "siprec",
+		"Start a SIPREC recording", "", siprec_app_function,
+		"<recording_server>", SAF_NONE);
+	SWITCH_ADD_APP(app_interface, "siprec_pause",
+		"Pause a SIPREC recording (re-INVITE a=inactive)",
+		"", siprec_pause_app_function,
+		"<recording_server>", SAF_NONE);
+	SWITCH_ADD_APP(app_interface, "siprec_resume",
+		"Resume a SIPREC recording (re-INVITE a=sendonly)",
+		"", siprec_resume_app_function,
+		"<recording_server>", SAF_NONE);
 
 	done:
 	return status;
