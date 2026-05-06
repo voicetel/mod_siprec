@@ -285,14 +285,26 @@ switch_status_t siprec_invite_send(
     if (parsed > 0) {
         ctx->negotiated_count = (size_t)parsed;
     } else {
-        /* Fallback to channel-var single endpoint. */
+        /* Fallback to channel-var single endpoint. Validate
+         * port is a sane RTP port (1..65535) — atoi("abc")
+         * silently returns 0 which would later silently feed
+         * sendto a port-0 destination. Prefer to fail loud. */
         const char *rip   = switch_channel_get_variable(rch, "remote_media_ip");
         const char *rport = switch_channel_get_variable(rch, "remote_media_port");
-        if (rip && rport) {
-            switch_copy_string(ctx->negotiated[0].remote_ip, rip,
-                sizeof(ctx->negotiated[0].remote_ip));
-            ctx->negotiated[0].remote_port = (uint16_t)atoi(rport);
-            ctx->negotiated_count = 1;
+        if (!zstr(rip) && !zstr(rport)) {
+            char *endp = NULL;
+            long  pn   = strtol(rport, &endp, 10);
+            if (endp && *endp == '\0' && pn > 0 && pn <= 65535) {
+                switch_copy_string(ctx->negotiated[0].remote_ip, rip,
+                    sizeof(ctx->negotiated[0].remote_ip));
+                ctx->negotiated[0].remote_port = (uint16_t)pn;
+                ctx->negotiated_count = 1;
+            } else {
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+                    "siprec: remote_media_port='%s' is not a valid "
+                    "1-65535 integer; fallback path failing\n",
+                    rport);
+            }
         }
     }
 
