@@ -226,19 +226,28 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
         sb_appendf(&sb, "  </session>\r\n");
     }
 
-    /* <participant> entries. Per RFC 7865 §5, each participant
-     * carries a session_id that ties it to the session above. */
+    /* <participant> entries. Per RFC 7865 Appendix A
+     * (participanttype):
+     *
+     *   <xs:complexType name="participant">
+     *     <xs:sequence>
+     *       <xs:element name="nameID" .../>
+     *       <xs:any namespace='##other' .../>
+     *     </xs:sequence>
+     *     <xs:attribute name="participant_id" use="required"/>
+     *   </xs:complexType>
+     *
+     * Only `participant_id` is a valid attribute, and the only
+     * in-namespace child is <nameID>. The participant→stream
+     * mapping lives exclusively in <participantstreamassoc>;
+     * <reason> is a session-level element. */
     for (size_t i = 0; i < opts->participant_count; i++) {
         const siprec_metadata_participant_t *p = &opts->participants[i];
 
         sb_appendf(&sb, "  <participant participant_id=\"");
         xml_escape_into(&sb, p->participant_id);
-        sb_appendf(&sb, "\" session_id=\"");
-        xml_escape_into(&sb, opts->session_id);
         sb_appendf(&sb, "\">\r\n");
 
-        /* nameID — RFC 7865 §5. Always carries the AOR;
-         * display name is optional. */
         sb_appendf(&sb, "    <nameID aor=\"");
         xml_escape_into(&sb, p->aor);
         sb_appendf(&sb, "\"");
@@ -248,30 +257,6 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
             sb_appendf(&sb, "</name>\r\n    </nameID>\r\n");
         } else {
             sb_appendf(&sb, "/>\r\n");
-        }
-
-        /* <send> / <recv> stream cross-refs. Walk the streams
-         * once per participant — small N (typically 2) keeps
-         * the O(P*S) cost negligible. */
-        for (size_t j = 0; j < opts->stream_count; j++) {
-            const siprec_metadata_stream_t *s = &opts->streams[j];
-            if (s->participant_idx != i) continue;
-
-            const char *tag =
-                (s->mode == SIPREC_STREAM_RECV) ? "recv" : "send";
-            sb_appendf(&sb, "    <%s>", tag);
-            xml_escape_into(&sb, s->stream_id);
-            sb_appendf(&sb, "</%s>\r\n", tag);
-        }
-
-        /* Optional per-participant <reason> — RFC 7865 §5
-         * — surfaces on PARTIAL re-INVITE updates that signal
-         * a state change for this participant (transferred,
-         * left, etc.). */
-        if (p->reason && *p->reason) {
-            sb_appendf(&sb, "    <reason>");
-            xml_escape_into(&sb, p->reason);
-            sb_appendf(&sb, "</reason>\r\n");
         }
 
         sb_appendf(&sb, "  </participant>\r\n");

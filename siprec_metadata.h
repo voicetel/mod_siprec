@@ -57,12 +57,6 @@ typedef struct {
     /* Optional display name (RFC 7865 §5 nameID/name).
      * NULL omits the element. */
     const char *display_name;
-
-    /* Optional <reason> child (RFC 7865 §5). Free-text reason
-     * for a state change, e.g. "transferred", "left",
-     * "removed". Used predominantly on PARTIAL re-INVITE
-     * updates that signal participant departure. NULL omits. */
-    const char *reason;
 } siprec_metadata_participant_t;
 
 /* siprec_metadata_datamode: RFC 7865 §5.1 <datamode>.

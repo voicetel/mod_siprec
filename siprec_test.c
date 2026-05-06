@@ -259,12 +259,20 @@ static void test_metadata_two_participants(void) {
     check_contains(xml, "<associate-time>2026-05-06T03:00:00Z</associate-time>",
                                                                      "meta:associate-time");
     check_contains(xml, "</session>",                                "meta:session close");
-    check_contains(xml, "<participant participant_id=\"urn:uuid:p-caller\"",
+    check_contains(xml, "<participant participant_id=\"urn:uuid:p-caller\">",
                                                                      "meta:participant alice");
+    /* <participant> only carries participant_id per RFC 7865
+     * Appendix A — session_id MUST NOT appear here. */
+    check_not_contains(xml,
+        "<participant participant_id=\"urn:uuid:p-caller\" session_id=",
+                                                                     "meta:participant no session_id attr");
     check_contains(xml, "<nameID aor=\"sip:alice@example.com\">",   "meta:nameID alice");
     check_contains(xml, "<name>Alice</name>",                        "meta:display name");
-    check_contains(xml, "<send>urn:uuid:s-1</send>",                 "meta:send xref");
-    check_contains(xml, "<participant participant_id=\"urn:uuid:p-callee\"",
+    /* <send>/<recv> moved to <participantstreamassoc>; the
+     * participant body must not carry them. */
+    check_not_contains(xml, "<send>urn:uuid:s-1</send>\r\n  </participant>",
+                                                                     "meta:participant has no send xref");
+    check_contains(xml, "<participant participant_id=\"urn:uuid:p-callee\">",
                                                                      "meta:participant bob");
     /* Bob has no display name → self-closing nameID */
     check_contains(xml, "<nameID aor=\"sip:bob@example.com\"/>",     "meta:nameID self-close");
@@ -305,11 +313,11 @@ static void test_metadata_partial_datamode(void) {
 }
 
 static void test_metadata_reason_elements(void) {
-    /* RFC 7865 §5: <reason> is allowed inside <group>,
-     * <session>, and <participant>. */
+    /* RFC 7865 Appendix A: <reason> is a child of <session>
+     * only. <participant> and <group> do not allow it in the
+     * recording: namespace. */
     const siprec_metadata_participant_t parts[] = {
-        { .participant_id = "p1", .aor = "sip:a@x", .display_name = NULL,
-          .reason = "transferred" },
+        { .participant_id = "p1", .aor = "sip:a@x", .display_name = NULL },
     };
     siprec_metadata_options_t opts = {
         .session_id    = "sess",
@@ -322,7 +330,6 @@ static void test_metadata_reason_elements(void) {
     char *xml = siprec_metadata_build(&opts);
     check_contains(xml, "<reason>paused</reason>",       "meta:session reason");
     check_contains(xml, "<reason>merged</reason>",       "meta:group reason");
-    check_contains(xml, "<reason>transferred</reason>",  "meta:participant reason");
     siprec_metadata_free(xml);
 }
 
