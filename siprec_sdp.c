@@ -233,9 +233,19 @@ char *siprec_sdp_build(const siprec_sdp_options_t *opts) {
 
 /* sb_append: raw byte append (no formatting). Used by the
  * direction-flip helper to copy unmodified lines straight
- * through. */
+ * through.
+ *
+ * Early-return on n == 0: ISO C 7.24.2.1 makes memcpy with a
+ * NULL src or dst undefined behavior even when count is zero.
+ * The flip-direction walker legitimately calls sb_append with
+ * n == 0 when src_sdp contains adjacent line terminators
+ * ("\r\n\r\n"), and on the very first call sb->data is still
+ * NULL because sb_reserve hasn't run yet. Skip the memcpy in
+ * that path so we never construct the UB even though no
+ * implementation actually crashes on it. */
 static void sb_append(sb_t *sb, const char *s, size_t n) {
     if (sb->err) return;
+    if (n == 0) return;
     if (sb_reserve(sb, sb->len + n + 1) != 0) return;
     memcpy(sb->data + sb->len, s, n);
     sb->len += n;

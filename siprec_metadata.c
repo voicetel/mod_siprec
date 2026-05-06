@@ -47,6 +47,12 @@ static int sb_reserve(sb_t *sb, size_t want) {
 
 static void sb_append(sb_t *sb, const char *s, size_t n) {
     if (sb->err) return;
+    /* ISO C 7.24.2.1: memcpy with a NULL pointer is undefined
+     * behavior even when count is zero. Short-circuit before
+     * we can construct the call. xml_escape_into can call us
+     * with n == 0 in degenerate paths, and on the very first
+     * call sb->data is still NULL. */
+    if (n == 0) return;
     if (sb_reserve(sb, sb->len + n + 1) != 0) return;
     memcpy(sb->data + sb->len, s, n);
     sb->len += n;
