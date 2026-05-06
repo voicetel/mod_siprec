@@ -14,6 +14,7 @@
  */
 #include "siprec_srtp.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,7 +41,14 @@ int siprec_srtp_keymat_random(uint8_t *buf, size_t len)
     size_t got = 0;
     while (got < len) {
         ssize_t n = read(fd, buf + got, len - got);
-        if (n <= 0) {
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            close(fd);
+            return -1;
+        }
+        if (n == 0) {
+            /* /dev/urandom shouldn't EOF, but treat it as a
+             * hard failure rather than spinning forever. */
             close(fd);
             return -1;
         }
