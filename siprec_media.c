@@ -56,37 +56,51 @@
 static uint8_t l16_to_ulaw(int16_t pcm)
 {
     /* Standard µ-law encoder (G.711). Bias 0x84, exponent
-     * cap 7. Widely-published implementation; this matches
-     * libsndfile's lookup-free version. */
+     * cap 7. Widely-published implementation; matches
+     * libsndfile's lookup-free version.
+     *
+     * Promote to int before negation so INT16_MIN (-32768)
+     * doesn't overflow: -INT16_MIN = 32768, which fits int
+     * but not int16_t (max 32767). The previous version
+     * stored the result back into a int16_t local and the
+     * truncation was implementation-defined per C11 §6.3.1.3
+     * — gcc/clang both wrap to -32768 again, producing the
+     * wrong PCMU code for one sample value. */
     const int BIAS = 0x84;
     const int CLIP = 32635;
 
-    int sign = (pcm >> 8) & 0x80;
-    if (sign) pcm = -pcm;
-    if (pcm > CLIP) pcm = CLIP;
-    pcm += BIAS;
+    int p    = pcm;
+    int sign = (p < 0) ? 0x80 : 0;
+    if (sign) p = -p;
+    if (p > CLIP) p = CLIP;
+    p += BIAS;
 
     int exponent = 7;
-    for (int mask = 0x4000; (pcm & mask) == 0 && exponent > 0; mask >>= 1) {
+    for (int mask = 0x4000; (p & mask) == 0 && exponent > 0; mask >>= 1) {
         exponent--;
     }
-    int mantissa = (pcm >> ((exponent == 0) ? 4 : (exponent + 3))) & 0x0F;
+    int mantissa = (p >> ((exponent == 0) ? 4 : (exponent + 3))) & 0x0F;
     return (uint8_t)~(sign | (exponent << 4) | mantissa);
 }
 
 static uint8_t l16_to_alaw(int16_t pcm)
 {
-    int sign = (pcm >> 8) & 0x80;
-    if (sign) pcm = -pcm - 1;
-    if (pcm > 32767) pcm = 32767;
+    /* Same INT16_MIN consideration as l16_to_ulaw — promote
+     * before negation. The A-law negative-side adjustment is
+     * `-p - 1` (rather than just `-p`) per G.711's
+     * symmetric-around-zero quantisation. */
+    int p    = pcm;
+    int sign = (p < 0) ? 0x80 : 0;
+    if (sign) p = -p - 1;
+    if (p > 32767) p = 32767;
 
     int exponent = 7;
-    for (int mask = 0x4000; (pcm & mask) == 0 && exponent > 0; mask >>= 1) {
+    for (int mask = 0x4000; (p & mask) == 0 && exponent > 0; mask >>= 1) {
         exponent--;
     }
     int mantissa = (exponent < 1)
-        ? (pcm >> 4) & 0x0F
-        : (pcm >> (exponent + 3)) & 0x0F;
+        ? (p >> 4) & 0x0F
+        : (p >> (exponent + 3)) & 0x0F;
     uint8_t alaw = (uint8_t)((exponent << 4) | mantissa);
     if (sign) alaw |= 0x80;
     return alaw ^ 0x55; /* per G.711 spec */
