@@ -243,7 +243,7 @@ static void sb_append(sb_t *sb, const char *s, size_t n) {
 }
 
 char *siprec_sdp_flip_direction(const char *src_sdp, int paused) {
-    if (!src_sdp) return NULL;
+    if (!src_sdp || !*src_sdp) return NULL;
 
     const char *target = paused ? "a=inactive" : "a=sendonly";
     const size_t target_len = strlen(target);

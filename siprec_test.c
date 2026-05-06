@@ -187,6 +187,15 @@ static void test_sdp_flip_direction(void) {
     check_contains(back, "o=- 99 2 IN IP4 1.2.3.4\r\n",
         "flip:inactive→sendonly bumps version");
     siprec_sdp_free(back);
+
+    /* Empty / NULL input must reject — no point producing an
+     * empty body for a re-INVITE that would be malformed. */
+    test_count++;
+    if (siprec_sdp_flip_direction(NULL, 0) == NULL) printf("PASS flip:reject NULL\n");
+    else { fprintf(stderr, "FAIL flip:NULL should reject\n"); fail_count++; }
+    test_count++;
+    if (siprec_sdp_flip_direction("", 0) == NULL) printf("PASS flip:reject empty\n");
+    else { fprintf(stderr, "FAIL flip:empty should reject\n"); fail_count++; }
 }
 
 static void test_sdp_invalid_returns_null(void) {
