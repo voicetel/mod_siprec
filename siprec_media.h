@@ -42,6 +42,15 @@ typedef struct siprec_media_ctx {
         uint32_t   timestamp;
         uint16_t   sequence;
         struct siprec_srtp_session *srtp;
+
+        /* RFC 3551 §4.1: the marker bit on the first packet
+         * of a talkspurt after silence. We set this whenever
+         * we transition from "no frame this tick" to "frame
+         * this tick" — gives VAD-aware SRSes a hint to chunk
+         * the recording on speech boundaries. Initial state
+         * is 1 so the first packet of the recording is also
+         * marked. */
+        uint8_t    marker_pending;
     } streams[2];
     size_t stream_count;
 

@@ -113,7 +113,7 @@ static uint8_t l16_to_alaw(int16_t pcm)
 static int rtp_pack_and_send(
     int fd,
     const struct sockaddr *dst, socklen_t dst_len,
-    uint8_t pt, uint32_t ssrc,
+    uint8_t pt, uint8_t marker, uint32_t ssrc,
     uint16_t sequence, uint32_t timestamp,
     const uint8_t *payload, size_t payload_len,
     struct siprec_srtp_session *srtp)
@@ -134,7 +134,7 @@ static int rtp_pack_and_send(
      * Bytes 4-7: timestamp (big-endian)
      * Bytes 8-11: SSRC (big-endian) */
     pkt[0] = (RTP_VERSION << 6);
-    pkt[1] = pt & 0x7F;
+    pkt[1] = (marker ? 0x80 : 0) | (pt & 0x7F);
     pkt[2] = (sequence >> 8) & 0xFF;
     pkt[3] = sequence & 0xFF;
     pkt[4] = (timestamp >> 24) & 0xFF;
@@ -204,16 +204,27 @@ static switch_bool_t media_bug_callback(
         frame.data    = frame_buf;
         frame.buflen  = sizeof(frame_buf);
 
+        size_t stream_idx = (type == SWITCH_ABC_TYPE_READ) ? 0 : 1;
+        if (stream_idx >= ctx->stream_count) return SWITCH_TRUE;
+
         if (switch_core_media_bug_read(bug, &frame, SWITCH_FALSE)
             != SWITCH_STATUS_SUCCESS) {
+            /* No frame ready this tick: the next packet we
+             * actually send opens a new talkspurt → mark it. */
+            ctx->streams[stream_idx].marker_pending = 1;
             return SWITCH_TRUE;
         }
         if (!frame.data || frame.datalen == 0) {
+            ctx->streams[stream_idx].marker_pending = 1;
             return SWITCH_TRUE;
         }
-
-        size_t stream_idx = (type == SWITCH_ABC_TYPE_READ) ? 0 : 1;
-        if (stream_idx >= ctx->stream_count) return SWITCH_TRUE;
+        /* CNG / discontinuous-transmission frames signal silence
+         * — treat them like an empty read so the next real
+         * audio packet carries M=1. */
+        if (frame.flags & SFF_CNG) {
+            ctx->streams[stream_idx].marker_pending = 1;
+            return SWITCH_TRUE;
+        }
 
         const int16_t *samples      = (const int16_t *)frame.data;
         size_t         sample_count = frame.datalen / 2;
@@ -247,12 +258,14 @@ static switch_bool_t media_bug_callback(
             ctx->streams[stream_idx].fd,
             (struct sockaddr *)&dst, sizeof(dst),
             ctx->pt,
+            ctx->streams[stream_idx].marker_pending,
             ctx->streams[stream_idx].ssrc,
             ctx->streams[stream_idx].sequence++,
             ctx->streams[stream_idx].timestamp,
             encoded, sample_count,
             ctx->streams[stream_idx].srtp);
 
+        ctx->streams[stream_idx].marker_pending = 0;
         ctx->streams[stream_idx].timestamp += sample_count;
         return SWITCH_TRUE;
     }
@@ -335,6 +348,7 @@ switch_status_t siprec_media_attach(recording_t *recording)
         mctx->streams[i].timestamp = 0;
         mctx->streams[i].sequence = 0;
         mctx->streams[i].srtp = NULL;
+        mctx->streams[i].marker_pending = 1; /* first pkt opens talkspurt */
 
         if (ictx->negotiated[i].srtp_keymat_len > 0) {
             mctx->streams[i].srtp = siprec_srtp_session_create(
