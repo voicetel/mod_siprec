@@ -235,7 +235,7 @@ static switch_status_t siprec_change_direction(
 		return SWITCH_STATUS_FALSE;
 	}
 	if (!recording->invite_ctx
-		|| !recording->invite_ctx->recording_session) {
+		|| !*recording->invite_ctx->recording_uuid) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
 			SWITCH_LOG_ERROR,
 			"siprec: recording '%s' has no live SIP dialog\n",
@@ -253,11 +253,28 @@ static switch_status_t siprec_change_direction(
 	 * Source the existing local SDP from the recording leg's
 	 * sip_local_sdp_str channel variable (mod_sofia populates
 	 * it after every successful negotiation), flip the
-	 * direction line, bump o=version. */
-	switch_core_session_t *rs = recording->invite_ctx->recording_session;
+	 * direction line, bump o=version. Locate-by-uuid so the
+	 * read can't UAF on a torn-down recording leg. */
+	switch_core_session_t *rs = switch_core_session_locate(
+		recording->invite_ctx->recording_uuid);
+	if (!rs) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+			SWITCH_LOG_ERROR,
+			"siprec: recording leg %s is gone — cannot pause/resume\n",
+			recording->invite_ctx->recording_uuid);
+		return SWITCH_STATUS_FALSE;
+	}
+
 	switch_channel_t *rch = switch_core_session_get_channel(rs);
 	const char *local_sdp =
 		switch_channel_get_variable(rch, "sip_local_sdp_str");
+	char *new_sdp = NULL;
+
+	if (!zstr(local_sdp)) {
+		new_sdp = siprec_sdp_flip_direction(local_sdp, paused);
+	}
+
+	switch_core_session_rwunlock(rs);
 
 	if (zstr(local_sdp)) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
@@ -266,8 +283,6 @@ static switch_status_t siprec_change_direction(
 			"cannot pause/resume\n");
 		return SWITCH_STATUS_FALSE;
 	}
-
-	char *new_sdp = siprec_sdp_flip_direction(local_sdp, paused);
 	if (!new_sdp) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
 			SWITCH_LOG_ERROR,

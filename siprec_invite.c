@@ -247,6 +247,9 @@ switch_status_t siprec_invite_send(
     }
 
     ctx->recording_session = new_session;
+    switch_copy_string(ctx->recording_uuid,
+        switch_core_session_get_uuid(new_session),
+        sizeof(ctx->recording_uuid));
     recording->invite_ctx  = ctx;
 
     /* Pull the negotiated remote endpoints. Preferred path:
@@ -390,15 +393,17 @@ switch_status_t siprec_invite_send_bye(recording_t *recording)
         return SWITCH_STATUS_FALSE;
     }
     siprec_invite_ctx_t *ctx = recording->invite_ctx;
-    if (!ctx->recording_session) {
+    if (!*ctx->recording_uuid) {
         return SWITCH_STATUS_FALSE;
     }
 
-    /* locate-by-UUID guarantees we don't deref a session that
-     * sofia has already torn down (e.g. SRS-side BYE arrived
-     * first or the leg already 4xx'd out). */
-    const char *uuid = switch_core_session_get_uuid(ctx->recording_session);
-    switch_core_session_t *s = switch_core_session_locate(uuid);
+    /* Locate by the stashed UUID rather than dereferencing
+     * ctx->recording_session — sofia / FS core may have torn
+     * the session down already (SRS-side BYE arrived first,
+     * leg 4xx'd out). switch_core_session_locate returns NULL
+     * with no side effects when the session is gone. */
+    switch_core_session_t *s =
+        switch_core_session_locate(ctx->recording_uuid);
     if (!s) {
         ctx->recording_session = NULL;
         return SWITCH_STATUS_SUCCESS;
@@ -429,9 +434,27 @@ switch_status_t siprec_invite_reinvite(
     const char *new_sdp,
     const char *new_metadata)
 {
-    if (!recording || !recording->invite_ctx) return SWITCH_STATUS_FALSE;
+    if (!recording || !recording->invite_ctx || !new_sdp) {
+        return SWITCH_STATUS_FALSE;
+    }
     siprec_invite_ctx_t *ctx = recording->invite_ctx;
-    if (!ctx->recording_session || !new_sdp) return SWITCH_STATUS_FALSE;
+    if (!*ctx->recording_uuid) {
+        return SWITCH_STATUS_FALSE;
+    }
+
+    /* Locate by stashed UUID — same rationale as
+     * siprec_invite_send_bye: the recording leg may have
+     * been torn down between siprec_invite_send returning
+     * and pause/resume firing. */
+    switch_core_session_t *s =
+        switch_core_session_locate(ctx->recording_uuid);
+    if (!s) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+            "siprec: re-INVITE skipped — recording leg %s is gone\n",
+            ctx->recording_uuid);
+        ctx->recording_session = NULL;
+        return SWITCH_STATUS_FALSE;
+    }
 
     /* The metadata XML on a re-INVITE carries
      * <datamode>partial</datamode> per RFC 7865 §5.1 — the
@@ -443,8 +466,7 @@ switch_status_t siprec_invite_reinvite(
             "application/rs-metadata+xml", "recording-session",
             new_metadata);
         if (mp) {
-            switch_channel_t *ch = switch_core_session_get_channel(
-                ctx->recording_session);
+            switch_channel_t *ch = switch_core_session_get_channel(s);
             switch_channel_set_variable_var_check(ch,
                 "sip_multipart", mp, SWITCH_FALSE);
         }
@@ -456,8 +478,9 @@ switch_status_t siprec_invite_reinvite(
     msg.string_arg   = (char *)new_sdp;
     msg.from         = __FILE__;
 
-    switch_status_t st = switch_core_session_receive_message(
-        ctx->recording_session, &msg);
+    switch_status_t st = switch_core_session_receive_message(s, &msg);
+
+    switch_core_session_rwunlock(s);
 
     if (st != SWITCH_STATUS_SUCCESS) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,

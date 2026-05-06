@@ -25,9 +25,19 @@
  * resolves to the same type as `siprec_invite_ctx_t`. */
 typedef struct siprec_invite_ctx {
     /* Outbound dialog session created by switch_ivr_originate.
-     * Lifetime: matches the recording_t. NULL until INVITE
-     * dispatched. */
+     * NULL until INVITE dispatched. The pointer is held without
+     * a refcount once siprec_invite_send returns — never deref
+     * it directly; use recording_uuid + switch_core_session_locate
+     * so we can detect a tear-down by the SRS or the FS core. */
     switch_core_session_t *recording_session;
+
+    /* UUID of recording_session, captured at originate time
+     * and held across the session's lifetime. Used by every
+     * caller that needs to act on the recording leg
+     * (siprec_invite_send_bye, siprec_invite_reinvite,
+     * pause/resume) so they can switch_core_session_locate
+     * safely instead of dereferencing the bare pointer. */
+    char recording_uuid[80];
 
     /* SDP body sent on INVITE. Owned by the recording's pool. */
     const char *sent_sdp;
