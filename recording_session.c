@@ -374,6 +374,19 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
     siprec_metadata_free(metadata_body);
 
     if (inv != SWITCH_STATUS_SUCCESS) {
+        /* INVITE failed: there is no recording leg, no media
+         * bug, and the original session's on_destroy
+         * state-handler hasn't been bound yet (we only do
+         * that on the success path below), so nobody else
+         * will reap this recording_t. Remove the hash entry
+         * and tear down the pool here, otherwise it leaks
+         * until module unload. */
+        switch_mutex_lock(globals.recordings_mutex);
+        switch_core_hash_delete(globals.recordings_hash, recording->key);
+        switch_mutex_unlock(globals.recordings_mutex);
+
+        switch_mutex_destroy(recording->mutex);
+        switch_core_destroy_memory_pool(&recording->pool);
         return inv;
     }
 
