@@ -17,8 +17,9 @@
  * audio call we typically have 2 streams (one per direction). */
 typedef struct {
     /* stream_id is the unique identifier referenced from the
-     * <participant>'s <send>/<recv> elements and from the SDP's
-     * a=label. RFC 7865 §5 — a UUID URN is the canonical form,
+     * SDP's a=label and from the participant binding emitted
+     * inside <participantstreamassoc>'s <send>/<recv> child
+     * elements. RFC 7865 §5 — a UUID URN is the canonical form,
      * e.g. "urn:uuid:55c93cc4-...". */
     const char *stream_id;
 

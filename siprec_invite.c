@@ -15,8 +15,13 @@
  * `sip_multipart` channel variable is set on the originated
  * leg, mod_sofia builds a multipart/mixed body whose first
  * part is the auto-generated SDP and whose subsequent parts
- * come from each `sip_multipart` value. We use that mechanism
- * to attach the RFC 7865 metadata XML.
+ * come from each `sip_multipart` value. We attach the RFC 7865
+ * metadata XML via that mechanism — but pass it through the
+ * originate's `ovars` argument rather than the brace-prefix
+ * dial-string, since the brace grammar is parsed by
+ * switch_event_create_brackets and treats `,` / `'` / `}` as
+ * terminators (the metadata XML legitimately contains all of
+ * those).
  *
  * Each `sip_multipart` value uses the FS-internal grammar:
  *
@@ -34,11 +39,11 @@
  * The SDP that mod_sofia auto-generates for an outbound-only
  * leg already includes `a=sendonly` (RFC 7866 §7.4) because
  * the leg has no inbound media path. It does NOT yet emit
- * `a=label:N` per stream — that is a strict RFC 7866 §8.5
- * requirement for the labelled-stream xref. Recording servers
- * we ship with (cb-srs) accept the unlabelled form; strict-
- * peer interop requires the v1.1 follow-up that overrides
- * `local_sdp_str` via SWITCH_MESSAGE_INDICATE_MEDIA_REDIRECT.
+ * `a=label:N` per stream — that is the RFC 7866 §8.5
+ * labelled-stream cross-reference requirement. Closing that
+ * gap needs a "set local SDP before originate" hook through
+ * mod_sofia that doesn't exist today; siprec_sdp.c carries the
+ * label-aware builder for the day that hook lands.
  */
 #include "siprec_invite.h"
 

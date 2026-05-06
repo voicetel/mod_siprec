@@ -248,21 +248,21 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
      * RFC 7866 INVITE dispatch                                *
      * ──────────────────────────────────────────────────────── */
 
-    /* v1.1: model the bridged call as two participants —
-     * caller (sip_from_uri) and callee (sip_to_uri / dialed
+    /* Model the bridged call as two participants — caller
+     * (sip_from_uri) and callee (sip_to_uri / dialed
      * destination_number) — with one stream per direction.
-     * The recording leg still carries one m=audio (mono mix
-     * of both directions) until the strict-RFC SDP override
-     * lands in v2; the metadata XML, however, gives the SRS
-     * the per-participant cross-reference structure RFC 7865
-     * recommends.
+     * The metadata XML carries the per-participant cross-
+     * reference structure RFC 7865 §5 recommends; the actual
+     * SDP shape (one m=audio mono-mixed vs two labelled m=
+     * blocks) depends on whether the SRS-side answer
+     * negotiated one or two streams (parsed in siprec_invite.c).
      *
      * Stream mapping:
      *   stream-1  →  audio FROM caller TO callee  (read dir)
      *   stream-2  →  audio FROM callee TO caller  (write dir)
      * The bug's READ callback receives the carrier inbound
-     * (caller-spoken); WRITE receives what FS sends back
-     * to the carrier (callee-spoken via FS-internal apps).
+     * (caller-spoken); WRITE receives what FS sends back to
+     * the carrier (callee-spoken via FS-internal apps).
      */
     switch_channel_t *orig_ch = switch_core_session_get_channel(session);
 
@@ -298,11 +298,12 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
      * each direction's audio as belonging to one participant
      * (the speaker) — the SRS can synthesise the recv side
      * from the send xref. */
-    /* labels "1" / "2" map to the SDP a=label:1 / a=label:2
-     * the v2 strict-RFC SDP override will emit. Even though
-     * the v1.1 SDP comes from sofia auto-gen and lacks these
-     * labels, including them in the metadata gives the SRS a
-     * stable name for each direction it can use for storage. */
+    /* labels "1" / "2" are placeholder identifiers the SRS
+     * can use for per-direction storage. They are emitted as
+     * <label> children of <stream> in the metadata, but the
+     * SDP's a=label:N attribute that RFC 7866 §8.5 wants on
+     * the same stream isn't being emitted today — see the
+     * "SDP shape" note in siprec_invite.c. */
     siprec_metadata_stream_t streams_arr[2] = {
         { .stream_id = "stream-1", .mode = SIPREC_STREAM_SEND,
           .participant_idx = 0, /* caller speaks */
