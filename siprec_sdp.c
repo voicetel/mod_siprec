@@ -19,6 +19,15 @@
  * Internal: growable string buffer.                           *
  * ──────────────────────────────────────────────────────────── */
 
+/* Hard ceiling for a single SDP body. RFC 4566 doesn't impose
+ * one, but real-world SIP UDP messages cap at the path MTU
+ * (~1500) and large TCP-fragmented bodies still rarely exceed
+ * a few KB. 64 MB is six orders of magnitude beyond anything
+ * legitimate; an SDP that hits this is either a memory-pressure
+ * attack or a code bug. Failing the build with an error is
+ * preferable to OOMing the host. */
+#define SB_MAX_CAP ((size_t)64 * 1024 * 1024)
+
 typedef struct {
     char  *data;
     size_t len;
@@ -40,8 +49,23 @@ static int sb_reserve(sb_t *sb, size_t want) {
     if (want <= sb->cap) {
         return 0;
     }
+    /* Reject overflow / pathological growth before realloc. */
+    if (want > SB_MAX_CAP) {
+        sb->err = 1;
+        return -1;
+    }
     size_t new_cap = sb->cap ? sb->cap : 256;
+    /* Guard against new_cap *= 2 wrapping past SIZE_MAX/2 — at
+     * that point new_cap stops increasing, which would loop
+     * forever. SB_MAX_CAP < SIZE_MAX/2 by construction so the
+     * cap ceiling check above already prevents this loop from
+     * entering the danger zone, but the explicit check makes
+     * the safety property visible to readers and analyzers. */
     while (new_cap < want) {
+        if (new_cap > SB_MAX_CAP / 2) {
+            new_cap = want;
+            break;
+        }
         new_cap *= 2;
     }
     char *p = realloc(sb->data, new_cap);
@@ -52,6 +76,19 @@ static int sb_reserve(sb_t *sb, size_t want) {
     sb->data = p;
     sb->cap  = new_cap;
     return 0;
+}
+
+/* sb_can_grow_by: true iff sb->len + extra + 1 doesn't
+ * overflow size_t and stays below SB_MAX_CAP. Callers use
+ * this before passing a derived want into sb_reserve. */
+static int sb_can_grow_by(const sb_t *sb, size_t extra) {
+    /* extra + 1 overflow */
+    if (extra > SIZE_MAX - 1) return 0;
+    /* sb->len + extra + 1 overflow */
+    if (sb->len > SIZE_MAX - extra - 1) return 0;
+    /* exceeds SB_MAX_CAP */
+    if (sb->len + extra + 1 > SB_MAX_CAP) return 0;
+    return 1;
 }
 
 static void sb_appendf(sb_t *sb, const char *fmt, ...) {
@@ -71,6 +108,12 @@ static void sb_appendf(sb_t *sb, const char *fmt, ...) {
     va_end(ap);
 
     if (n < 0) {
+        sb->err = 1;
+        return;
+    }
+    /* Reject before the addition can overflow size_t / breach
+     * SB_MAX_CAP. */
+    if (!sb_can_grow_by(sb, (size_t)n)) {
         sb->err = 1;
         return;
     }
@@ -255,6 +298,9 @@ char *siprec_sdp_build(const siprec_sdp_options_t *opts) {
 static void sb_append(sb_t *sb, const char *s, size_t n) {
     if (sb->err) return;
     if (n == 0) return;
+    /* Reject before the addition can overflow size_t / breach
+     * SB_MAX_CAP. */
+    if (!sb_can_grow_by(sb, n)) { sb->err = 1; return; }
     if (sb_reserve(sb, sb->len + n + 1) != 0) return;
     /* sb_reserve only returns 0 on a successful allocation, so
      * sb->data is non-NULL here. The redundant check exists for

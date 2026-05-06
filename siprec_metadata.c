@@ -21,7 +21,13 @@
 
 /* Re-use the same string-builder pattern as siprec_sdp.c. The
  * code is small enough that duplicating it keeps the two
- * compilation units independent (no shared header dependency). */
+ * compilation units independent (no shared header dependency).
+ *
+ * SB_MAX_CAP / sb_can_grow_by — same rationale as siprec_sdp.c.
+ * 64 MB ceiling is a memory-pressure / DoS guard. The
+ * sb_can_grow_by helper keeps the size_t arithmetic
+ * overflow-safe at the call sites. */
+#define SB_MAX_CAP ((size_t)64 * 1024 * 1024)
 
 typedef struct {
     char  *data;
@@ -37,12 +43,26 @@ static void sb_init(sb_t *sb) {
 static int sb_reserve(sb_t *sb, size_t want) {
     if (sb->err) return -1;
     if (want <= sb->cap) return 0;
+    if (want > SB_MAX_CAP) { sb->err = 1; return -1; }
     size_t new_cap = sb->cap ? sb->cap : 512;
-    while (new_cap < want) new_cap *= 2;
+    while (new_cap < want) {
+        if (new_cap > SB_MAX_CAP / 2) {
+            new_cap = want;
+            break;
+        }
+        new_cap *= 2;
+    }
     char *p = realloc(sb->data, new_cap);
     if (!p) { sb->err = 1; return -1; }
     sb->data = p; sb->cap = new_cap;
     return 0;
+}
+
+static int sb_can_grow_by(const sb_t *sb, size_t extra) {
+    if (extra > SIZE_MAX - 1) return 0;
+    if (sb->len > SIZE_MAX - extra - 1) return 0;
+    if (sb->len + extra + 1 > SB_MAX_CAP) return 0;
+    return 1;
 }
 
 static void sb_append(sb_t *sb, const char *s, size_t n) {
@@ -53,6 +73,8 @@ static void sb_append(sb_t *sb, const char *s, size_t n) {
      * with n == 0 in degenerate paths, and on the very first
      * call sb->data is still NULL. */
     if (n == 0) return;
+    /* Reject overflowing / over-cap appends. */
+    if (!sb_can_grow_by(sb, n)) { sb->err = 1; return; }
     if (sb_reserve(sb, sb->len + n + 1) != 0) return;
     /* sb_reserve only returns 0 with sb->data set; redundant
      * re-check for flow-sensitive analyzers. */
@@ -76,6 +98,8 @@ static void sb_appendf(sb_t *sb, const char *fmt, ...) {
     int n = vsnprintf(NULL, 0, fmt, ap);
     va_end(ap);
     if (n < 0) { sb->err = 1; return; }
+    /* Reject overflowing / over-cap formatted appends. */
+    if (!sb_can_grow_by(sb, (size_t)n)) { sb->err = 1; return; }
     if (sb_reserve(sb, sb->len + (size_t)n + 1) != 0) return;
     /* Bounded: dst capacity is the explicit second argument
      * and sb_reserve above guaranteed it covers n+1 bytes. */
