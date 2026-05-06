@@ -272,64 +272,13 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
         sb_appendf(&sb, "  </participant>\r\n");
     }
 
-    /* <participantsessionassoc> — RFC 7865 §5 explicit
-     * binding between participants and the session. Each
-     * participant we declared above gets one. The <send>/
-     * <recv> child references on the participant already
-     * give the SRS a participant-stream association, but
-     * a participant can be in a session without sending
-     * any stream (e.g. observer / supervisor); the explicit
-     * <participantsessionassoc> covers that case and the
-     * SRS gets a definitive binding either way.
-     */
-    for (size_t i = 0; i < opts->participant_count; i++) {
-        const siprec_metadata_participant_t *p = &opts->participants[i];
-
-        sb_appendf(&sb, "  <participantsessionassoc participant_id=\"");
-        xml_escape_into(&sb, p->participant_id);
-        sb_appendf(&sb, "\" session_id=\"");
-        xml_escape_into(&sb, opts->session_id);
-        sb_appendf(&sb, "\"");
-
-        if (opts->associate_time_utc && *opts->associate_time_utc) {
-            sb_appendf(&sb, ">\r\n    <associate-time>");
-            xml_escape_into(&sb, opts->associate_time_utc);
-            sb_appendf(&sb,
-                "</associate-time>\r\n  </participantsessionassoc>\r\n");
-        } else {
-            sb_appendf(&sb, "/>\r\n");
-        }
-    }
-
-    /* <participantstreamassoc> — RFC 7865 §5 explicit binding
-     * between participants and streams. Mirrors the
-     * <send>/<recv> cross-references on each participant; the
-     * dual representation matches the schema's allowed forms
-     * and lets SRSes that prefer top-level associations to
-     * the in-line form bind streams unambiguously.
-     */
-    for (size_t i = 0; i < opts->stream_count; i++) {
-        const siprec_metadata_stream_t *s = &opts->streams[i];
-        if (s->participant_idx >= opts->participant_count) continue;
-        const siprec_metadata_participant_t *p =
-            &opts->participants[s->participant_idx];
-
-        sb_appendf(&sb, "  <participantstreamassoc participant_id=\"");
-        xml_escape_into(&sb, p->participant_id);
-        sb_appendf(&sb, "\">\r\n");
-
-        const char *tag =
-            (s->mode == SIPREC_STREAM_RECV) ? "recv" : "send";
-        sb_appendf(&sb, "    <%s>", tag);
-        xml_escape_into(&sb, s->stream_id);
-        sb_appendf(&sb, "</%s>\r\n", tag);
-
-        sb_appendf(&sb, "  </participantstreamassoc>\r\n");
-    }
-
     /* <stream> entries — declare each stream once at the
-     * recording level. Cross-referenced by participant
-     * <send>/<recv>. RFC 7865 §5.
+     * recording level. Cross-referenced by
+     * <participantstreamassoc> below. Per RFC 7865 Appendix A
+     * the recording sequence places <stream> AFTER
+     * <participant> and BEFORE the assoc elements; emitting
+     * the assocs first would put the document out of schema
+     * sequence and a strict XSD parser would reject.
      *
      * Per-stream child elements:
      *   <label>      — MUST match the corresponding SDP
@@ -361,6 +310,56 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
         sb_appendf(&sb, "</media-type>\r\n");
 
         sb_appendf(&sb, "  </stream>\r\n");
+    }
+
+    /* <participantsessionassoc> — RFC 7865 Appendix A
+     * participantsessionassoc complexType. Both participant_id
+     * and session_id are required. Each declared participant
+     * gets one binding so an SRS that prefers explicit
+     * associations over schema implication has a definitive
+     * source. Schema sequence: comes after <stream>. */
+    for (size_t i = 0; i < opts->participant_count; i++) {
+        const siprec_metadata_participant_t *p = &opts->participants[i];
+
+        sb_appendf(&sb, "  <participantsessionassoc participant_id=\"");
+        xml_escape_into(&sb, p->participant_id);
+        sb_appendf(&sb, "\" session_id=\"");
+        xml_escape_into(&sb, opts->session_id);
+        sb_appendf(&sb, "\"");
+
+        if (opts->associate_time_utc && *opts->associate_time_utc) {
+            sb_appendf(&sb, ">\r\n    <associate-time>");
+            xml_escape_into(&sb, opts->associate_time_utc);
+            sb_appendf(&sb,
+                "</associate-time>\r\n  </participantsessionassoc>\r\n");
+        } else {
+            sb_appendf(&sb, "/>\r\n");
+        }
+    }
+
+    /* <participantstreamassoc> — RFC 7865 Appendix A
+     * participantstreamassoc complexType. Carries the
+     * participant→stream mapping (this is the ONLY place
+     * <send>/<recv> appear; they are not allowed inside
+     * <participant>). Schema declares only participant_id
+     * as a required attribute. */
+    for (size_t i = 0; i < opts->stream_count; i++) {
+        const siprec_metadata_stream_t *s = &opts->streams[i];
+        if (s->participant_idx >= opts->participant_count) continue;
+        const siprec_metadata_participant_t *p =
+            &opts->participants[s->participant_idx];
+
+        sb_appendf(&sb, "  <participantstreamassoc participant_id=\"");
+        xml_escape_into(&sb, p->participant_id);
+        sb_appendf(&sb, "\">\r\n");
+
+        const char *tag =
+            (s->mode == SIPREC_STREAM_RECV) ? "recv" : "send";
+        sb_appendf(&sb, "    <%s>", tag);
+        xml_escape_into(&sb, s->stream_id);
+        sb_appendf(&sb, "</%s>\r\n", tag);
+
+        sb_appendf(&sb, "  </participantstreamassoc>\r\n");
     }
 
     sb_appendf(&sb, "</recording>\r\n");

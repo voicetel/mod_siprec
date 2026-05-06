@@ -376,6 +376,46 @@ static void test_metadata_assoc_elements(void) {
     siprec_metadata_free(xml);
 }
 
+static void test_metadata_element_ordering(void) {
+    /* RFC 7865 Appendix A's <recording> sequence is:
+     * datamode → group → session → participant → stream →
+     * sessionrecordingassoc → participantsessionassoc →
+     * participantstreamassoc.
+     *
+     * A strict XSD parser will reject an out-of-sequence
+     * document. Verify <stream> appears BEFORE the assoc
+     * elements. */
+    const siprec_metadata_participant_t parts[] = {
+        { .participant_id = "p1", .aor = "sip:a@x" },
+    };
+    const siprec_metadata_stream_t streams[] = {
+        { .stream_id = "s1", .mode = SIPREC_STREAM_SEND,
+          .participant_idx = 0, .label = "1" },
+    };
+    siprec_metadata_options_t opts = {
+        .session_id = "sess",
+        .participants = parts, .participant_count = 1,
+        .streams      = streams, .stream_count = 1,
+    };
+    char *xml = siprec_metadata_build(&opts);
+
+    test_count++;
+    const char *stream_pos = strstr(xml, "<stream stream_id=");
+    const char *psa_pos    = strstr(xml, "<participantsessionassoc");
+    const char *psma_pos   = strstr(xml, "<participantstreamassoc");
+    if (stream_pos && psa_pos && psma_pos
+        && stream_pos < psa_pos && stream_pos < psma_pos) {
+        printf("PASS meta:<stream> before assocs (schema order)\n");
+    } else {
+        fprintf(stderr,
+            "FAIL meta:element order — <stream> must precede "
+            "<participantsessionassoc>/<participantstreamassoc>\n");
+        fail_count++;
+    }
+
+    siprec_metadata_free(xml);
+}
+
 static void test_metadata_stream_default_media_type(void) {
     /* When .media_type is NULL the builder defaults to audio. */
     const siprec_metadata_participant_t parts[] = {
@@ -462,6 +502,7 @@ int main(void) {
     test_metadata_stream_default_media_type();
     test_metadata_reason_elements();
     test_metadata_assoc_elements();
+    test_metadata_element_ordering();
 
     printf("\n%d/%d passed\n", test_count - fail_count, test_count);
     return fail_count == 0 ? 0 : 1;
