@@ -205,16 +205,28 @@ static switch_bool_t media_bug_callback(
         frame.buflen  = sizeof(frame_buf);
 
         size_t stream_idx = (type == SWITCH_ABC_TYPE_READ) ? 0 : 1;
-        if (stream_idx >= ctx->stream_count) return SWITCH_TRUE;
 
-        if (switch_core_media_bug_read(bug, &frame, SWITCH_FALSE)
-            != SWITCH_STATUS_SUCCESS) {
+        /* Always drain the bug's queue, even if this direction
+         * has no configured stream (e.g. SRS only negotiated
+         * one m=audio block, so stream_count == 1 and the WRITE
+         * callback has nowhere to send). Skipping the read
+         * leaves frames buffered on the bug, which back-pressures
+         * the original session and eventually drops audio. */
+        switch_status_t rs =
+            switch_core_media_bug_read(bug, &frame, SWITCH_FALSE);
+
+        if (stream_idx >= ctx->stream_count) {
+            /* Discarded — but we did consume the frame slot. */
+            return SWITCH_TRUE;
+        }
+
+        if (rs != SWITCH_STATUS_SUCCESS) {
             /* No frame ready this tick: the next packet we
              * actually send opens a new talkspurt → mark it. */
             ctx->streams[stream_idx].marker_pending = 1;
             return SWITCH_TRUE;
         }
-        if (!frame.data || frame.datalen == 0) {
+        if (frame.datalen == 0) {
             ctx->streams[stream_idx].marker_pending = 1;
             return SWITCH_TRUE;
         }
