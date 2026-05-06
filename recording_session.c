@@ -38,8 +38,6 @@
 #include "siprec_invite.h"
 #include "siprec_media.h"
 #include "siprec_metadata.h"
-#include "siprec_sdp.h"
-#include "siprec_srtp.h"
 
 static switch_status_t my_on_destroy(switch_core_session_t *session)
 {
@@ -339,113 +337,49 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
         return SWITCH_STATUS_FALSE;
     }
 
-    /* Build the strict-RFC SDP body with a=label:N per stream
-     * (RFC 7866 §8.5). siprec_invite_send_failover passes this
-     * to siprec_invite_send, which fires an immediate re-INVITE
-     * after the dialog establishes — bridging the gap between
-     * sofia's auto-generated SDP (no labels) and the labelled
-     * form RFC-strict SRSes require.
+    /* SRTP for the RTP fork (RFC 7866 §11.2) is gated on a
+     * working SDP-offer override: the SRC has to put a=crypto
+     * into the INITIAL INVITE so the SRS can decrypt anything
+     * we send. mod_sofia auto-generates the offer SDP on
+     * outbound originate and there's no per-call hook today
+     * that lets mod_siprec inject a=crypto into that body.
      *
-     * The src_ip uses local_ip_v4 (set at sofia startup); the
-     * RTP ports advertised in this offer are what the recording
-     * leg will receive on, but mod_sofia chose them during the
-     * initial INVITE — we don't override here. The SRS already
-     * accepted them in its 200 OK; the re-INVITE only updates
-     * the SDP attributes (labels + group), not the m=audio
-     * port. */
-    const char *src_ip = switch_core_get_variable("local_ip_v4");
-    if (!src_ip) src_ip = "127.0.0.1";
-
-    /* When the recording-server has SRTP enabled, generate a
-     * fresh per-stream master key+salt and base64-encode it
-     * for the SDP a=crypto offer. The same raw keymat is
-     * stashed on the invite_ctx so siprec_media_attach can
-     * spin up a libsrtp session that encrypts our outbound
-     * RTP with the same key the SDP advertised. */
-    uint8_t srtp_key_a[SIPREC_SRTP_AES128_KEY_SALT_LEN] = {0};
-    uint8_t srtp_key_b[SIPREC_SRTP_AES128_KEY_SALT_LEN] = {0};
-    char    srtp_b64_a[64] = {0};
-    char    srtp_b64_b[64] = {0};
-    int     srtp_on = server->srtp_enabled;
-
-    if (srtp_on) {
-        if (siprec_srtp_keymat_random(srtp_key_a, sizeof(srtp_key_a)) != 0
-            || siprec_srtp_keymat_random(srtp_key_b, sizeof(srtp_key_b)) != 0
-            || siprec_srtp_keymat_to_b64(srtp_key_a, sizeof(srtp_key_a),
-                                         srtp_b64_a, sizeof(srtp_b64_a)) != 0
-            || siprec_srtp_keymat_to_b64(srtp_key_b, sizeof(srtp_key_b),
-                                         srtp_b64_b, sizeof(srtp_b64_b)) != 0) {
-            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
-                SWITCH_LOG_ERROR,
-                "siprec: SRTP keymat generation failed; aborting\n");
-            siprec_metadata_free(metadata_body);
-            return SWITCH_STATUS_FALSE;
-        }
+     * The previous implementation tried to plug the gap with
+     * a post-originate re-INVITE carrying our labelled-SDP,
+     * but that body had port=1 placeholders and a fresh
+     * o=session-id, so the re-INVITE was always rejected and
+     * the SRTP path silently produced encrypted-but-
+     * undecodable RTP at the SRS. Refuse to start in that
+     * configuration rather than silently corrupt the
+     * recording. */
+    if (server->srtp_enabled) {
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
-            SWITCH_LOG_INFO,
-            "siprec: SRTP enabled; per-stream keys generated\n");
+            SWITCH_LOG_ERROR,
+            "siprec: srtp=true is not supported in this build "
+            "(SDP-offer override path is not yet wired); "
+            "aborting recording for server '%s'\n",
+            recording_server_name);
+        siprec_metadata_free(metadata_body);
+        return SWITCH_STATUS_FALSE;
     }
 
-    const siprec_sdp_track_t sdp_tracks[2] = {
-        { .label = "1", .port = 1, .pt = 0,
-          .codec_name = "PCMU", .clock_rate = 8000,
-          .channels = 1, .ptime_ms = 20,
-          .srtp_crypto_suite = srtp_on ? "AES_CM_128_HMAC_SHA1_80" : NULL,
-          .srtp_inline_key_b64 = srtp_on ? srtp_b64_a : NULL },
-        { .label = "2", .port = 1, .pt = 0,
-          .codec_name = "PCMU", .clock_rate = 8000,
-          .channels = 1, .ptime_ms = 20,
-          .srtp_crypto_suite = srtp_on ? "AES_CM_128_HMAC_SHA1_80" : NULL,
-          .srtp_inline_key_b64 = srtp_on ? srtp_b64_b : NULL },
-    };
-    const char *group_labels[2] = { "1", "2" };
-
-    siprec_sdp_options_t sopts = {
-        .src_ip            = src_ip,
-        .session_id        = (uint64_t)switch_epoch_time_now(NULL),
-        .session_version   = 1,
-        .tracks            = sdp_tracks,
-        .track_count       = 2,
-        .group_labels      = group_labels,
-        .group_label_count = 2,
-    };
-    char *labelled_sdp = siprec_sdp_build(&sopts);
-
-    /* Use the failover variant — siprec_invite_send_failover
-     * walks the recording_server's ->next chain, trying each
-     * (host, port, transport) candidate in config order until
-     * one accepts the INVITE. */
+    /* v1 path: send the INVITE without an SDP override and
+     * let mod_sofia auto-generate the offer body. The
+     * sdp_body argument to siprec_invite_send_failover is
+     * therefore NULL — reserved for the future strict-RFC
+     * (a=label:N per stream) bring-up. */
     switch_status_t inv = siprec_invite_send_failover(
-        recording, profile, server, labelled_sdp, metadata_body);
+        recording, profile, server, /*sdp_body*/ NULL, metadata_body);
 
     siprec_metadata_free(metadata_body);
-    if (labelled_sdp) siprec_sdp_free(labelled_sdp);
 
     if (inv != SWITCH_STATUS_SUCCESS) {
         return inv;
     }
 
-    /* Stash the SRTP keymat on the invite_ctx so
-     * siprec_media_attach can derive the per-stream libsrtp
-     * sessions. Two streams, two independent keys. */
-    if (srtp_on && recording->invite_ctx) {
-        siprec_invite_ctx_t *ic = recording->invite_ctx;
-        if (ic->negotiated_count >= 1) {
-            memcpy(ic->negotiated[0].srtp_keymat, srtp_key_a,
-                sizeof(srtp_key_a));
-            ic->negotiated[0].srtp_keymat_len = sizeof(srtp_key_a);
-        }
-        if (ic->negotiated_count >= 2) {
-            memcpy(ic->negotiated[1].srtp_keymat, srtp_key_b,
-                sizeof(srtp_key_b));
-            ic->negotiated[1].srtp_keymat_len = sizeof(srtp_key_b);
-        }
-    }
-
-    /* siprec_invite_send populated invite_ctx->negotiated[0]
-     * from the recording leg's remote_media_ip/port. Hand
-     * that off to siprec_media_attach to wire the bug + RTP
-     * fork. */
+    /* siprec_invite_send populated invite_ctx->negotiated[]
+     * by parsing the SRS-side answer SDP. Hand that off to
+     * siprec_media_attach to wire the bug + RTP fork. */
     siprec_media_attach(recording);
 
     /* Bind the on_destroy state-handler so caller-side hangup

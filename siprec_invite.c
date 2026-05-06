@@ -302,28 +302,16 @@ switch_status_t siprec_invite_send(
             srs_uri);
     }
 
-    /* RFC 7866 §8.5 strict-RFC: when the caller pre-built an
-     * SDP body with `a=label:N` per stream, fire an immediate
-     * re-INVITE so the dialog's negotiated SDP carries the
-     * labels. This adds one SIP transaction at session-start
-     * but bridges the gap between mod_sofia's auto-generated
-     * SDP (no labels) and what RFC-strict SRSes require.
-     *
-     * sdp_body is NULL on the v1 path (sofia auto-gen is
-     * accepted as-is) — only the v2 strict-RFC bring-up
-     * passes a labelled SDP here.
-     */
-    if (sdp_body && *sdp_body) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,
-            "siprec: dispatching strict-RFC re-INVITE with a=label\n");
-        if (siprec_invite_reinvite(recording, sdp_body, NULL)
-            != SWITCH_STATUS_SUCCESS) {
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
-                "siprec: label-override re-INVITE failed; recording continues without labels\n");
-            /* don't fail the recording — the SRS may accept
-             * the unlabelled form even if it's strict. */
-        }
-    }
+    /* sdp_body parameter is reserved for a future strict-RFC
+     * SDP-override path (RFC 7866 §8.5 a=label per stream).
+     * The previous implementation fired an immediate
+     * re-INVITE with the caller-supplied labelled SDP, but
+     * that body carried port=1 placeholders and a fresh
+     * o=session-id — both incompatible with the dialog the
+     * SRS had just answered. The re-INVITE was therefore
+     * always rejected. Until a proper "set local SDP before
+     * originate" path is wired through mod_sofia, the
+     * argument is unused. */
 
     return SWITCH_STATUS_SUCCESS;
 }
