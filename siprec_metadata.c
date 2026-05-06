@@ -1,0 +1,247 @@
+/*
+ * siprec_metadata.c — RFC 7865 recording metadata XML builder.
+ *
+ * Pure C. The output document conforms to the schema in
+ * RFC 7865 §5 (urn:ietf:params:xml:ns:recording:1).
+ *
+ * Element order matches the IANA-registered schema's
+ * complexType <recording>. Attribute names are case-sensitive.
+ *
+ * XML content is escaped via xml_escape_into() to keep
+ * caller-provided strings (display names, AORs, etc.) from
+ * breaking the parse on the SRS side. The escaping covers the
+ * RFC 4627-style five entities (& < > " ').
+ */
+#include "siprec_metadata.h"
+
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Re-use the same string-builder pattern as siprec_sdp.c. The
+ * code is small enough that duplicating it keeps the two
+ * compilation units independent (no shared header dependency). */
+
+typedef struct {
+    char  *data;
+    size_t len;
+    size_t cap;
+    int    err;
+} sb_t;
+
+static void sb_init(sb_t *sb) {
+    sb->data = NULL; sb->len = 0; sb->cap = 0; sb->err = 0;
+}
+
+static int sb_reserve(sb_t *sb, size_t want) {
+    if (sb->err) return -1;
+    if (want <= sb->cap) return 0;
+    size_t new_cap = sb->cap ? sb->cap : 512;
+    while (new_cap < want) new_cap *= 2;
+    char *p = realloc(sb->data, new_cap);
+    if (!p) { sb->err = 1; return -1; }
+    sb->data = p; sb->cap = new_cap;
+    return 0;
+}
+
+static void sb_append(sb_t *sb, const char *s, size_t n) {
+    if (sb->err) return;
+    if (sb_reserve(sb, sb->len + n + 1) != 0) return;
+    memcpy(sb->data + sb->len, s, n);
+    sb->len += n;
+    sb->data[sb->len] = '\0';
+}
+
+static void sb_appendf(sb_t *sb, const char *fmt, ...) {
+    if (sb->err) return;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(NULL, 0, fmt, ap);
+    va_end(ap);
+    if (n < 0) { sb->err = 1; return; }
+    if (sb_reserve(sb, sb->len + (size_t)n + 1) != 0) return;
+    va_start(ap, fmt);
+    int written = vsnprintf(sb->data + sb->len, sb->cap - sb->len, fmt, ap);
+    va_end(ap);
+    if (written < 0 || (size_t)written >= sb->cap - sb->len) {
+        sb->err = 1; return;
+    }
+    sb->len += (size_t)written;
+}
+
+static char *sb_take(sb_t *sb) {
+    if (sb->err || !sb->data) {
+        free(sb->data);
+        return NULL;
+    }
+    /* shrink-to-fit. On realloc failure (rare) the original
+     * buffer is still valid per C11 §7.22.3.5 — we just keep
+     * the oversized one. cppcheck flags this as a leak; it
+     * isn't, since the failure branch never frees. */
+    char *p = realloc(sb->data, sb->len + 1);
+    /* cppcheck-suppress memleak */
+    return p ? p : sb->data;
+}
+
+/* xml_escape_into: append `s` to `sb`, replacing the five XML
+ * entities with their numeric/named references. Used wherever
+ * caller-supplied strings (AORs, display names, IDs) land in
+ * element content or attribute values. */
+static void xml_escape_into(sb_t *sb, const char *s) {
+    if (!s) return;
+    while (*s) {
+        switch (*s) {
+            case '&':  sb_append(sb, "&amp;",  5); break;
+            case '<':  sb_append(sb, "&lt;",   4); break;
+            case '>':  sb_append(sb, "&gt;",   4); break;
+            case '"':  sb_append(sb, "&quot;", 6); break;
+            case '\'': sb_append(sb, "&apos;", 6); break;
+            default:   sb_append(sb, s, 1);        break;
+        }
+        s++;
+    }
+}
+
+/* ──────────────────────────────────────────────────────────── *
+ * Validation                                                  *
+ * ──────────────────────────────────────────────────────────── */
+
+static int validate_options(const siprec_metadata_options_t *opts) {
+    if (!opts) return 0;
+    if (!opts->session_id || !*opts->session_id) return 0;
+    if (opts->participant_count == 0 || !opts->participants) return 0;
+
+    for (size_t i = 0; i < opts->participant_count; i++) {
+        const siprec_metadata_participant_t *p = &opts->participants[i];
+        if (!p->participant_id || !*p->participant_id) return 0;
+        if (!p->aor || !*p->aor) return 0;
+    }
+
+    /* Streams may legitimately be zero (a session with declared
+     * participants but no media yet — re-INVITE will add them
+     * later). When present, each stream's participant_idx must
+     * be in range. */
+    for (size_t i = 0; i < opts->stream_count; i++) {
+        const siprec_metadata_stream_t *s = &opts->streams[i];
+        if (!s->stream_id || !*s->stream_id) return 0;
+        if (s->participant_idx >= opts->participant_count) return 0;
+    }
+
+    return 1;
+}
+
+/* ──────────────────────────────────────────────────────────── *
+ * Build                                                       *
+ * ──────────────────────────────────────────────────────────── */
+
+char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
+    if (!validate_options(opts)) {
+        return NULL;
+    }
+
+    sb_t sb;
+    sb_init(&sb);
+
+    /* XML prolog. RFC 7865 examples use UTF-8. */
+    sb_appendf(&sb,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n"
+        "<recording xmlns=\"urn:ietf:params:xml:ns:recording:1\">\r\n");
+
+    /* <datamode> — RFC 7865 §5.1. "complete" means this body is
+     * a full snapshot; "partial" is for delta updates on
+     * re-INVITE. v1 always sends "complete". */
+    sb_appendf(&sb, "  <datamode>complete</datamode>\r\n");
+
+    /* <group group_id="..."> — wraps related participants.
+     * Optional; emitted only when caller provides a group_id. */
+    if (opts->group_id && *opts->group_id) {
+        sb_appendf(&sb, "  <group group_id=\"");
+        xml_escape_into(&sb, opts->group_id);
+        sb_appendf(&sb, "\"/>\r\n");
+    }
+
+    /* <session session_id="..."> — wraps the session-scoped
+     * elements (associate-time, etc.). */
+    sb_appendf(&sb, "  <session session_id=\"");
+    xml_escape_into(&sb, opts->session_id);
+    sb_appendf(&sb, "\"");
+
+    /* If we have nothing to put inside <session>, render as a
+     * self-closing element. Otherwise open + close. */
+    int session_has_body = opts->associate_time_utc && *opts->associate_time_utc;
+
+    if (!session_has_body) {
+        sb_appendf(&sb, "/>\r\n");
+    } else {
+        sb_appendf(&sb, ">\r\n");
+        if (opts->associate_time_utc && *opts->associate_time_utc) {
+            sb_appendf(&sb, "    <associate-time>");
+            xml_escape_into(&sb, opts->associate_time_utc);
+            sb_appendf(&sb, "</associate-time>\r\n");
+        }
+        sb_appendf(&sb, "  </session>\r\n");
+    }
+
+    /* <participant> entries. Per RFC 7865 §5, each participant
+     * carries a session_id that ties it to the session above. */
+    for (size_t i = 0; i < opts->participant_count; i++) {
+        const siprec_metadata_participant_t *p = &opts->participants[i];
+
+        sb_appendf(&sb, "  <participant participant_id=\"");
+        xml_escape_into(&sb, p->participant_id);
+        sb_appendf(&sb, "\" session_id=\"");
+        xml_escape_into(&sb, opts->session_id);
+        sb_appendf(&sb, "\">\r\n");
+
+        /* nameID — RFC 7865 §5. Always carries the AOR;
+         * display name is optional. */
+        sb_appendf(&sb, "    <nameID aor=\"");
+        xml_escape_into(&sb, p->aor);
+        sb_appendf(&sb, "\"");
+        if (p->display_name && *p->display_name) {
+            sb_appendf(&sb, ">\r\n      <name>");
+            xml_escape_into(&sb, p->display_name);
+            sb_appendf(&sb, "</name>\r\n    </nameID>\r\n");
+        } else {
+            sb_appendf(&sb, "/>\r\n");
+        }
+
+        /* <send> / <recv> stream cross-refs. Walk the streams
+         * once per participant — small N (typically 2) keeps
+         * the O(P*S) cost negligible. */
+        for (size_t j = 0; j < opts->stream_count; j++) {
+            const siprec_metadata_stream_t *s = &opts->streams[j];
+            if (s->participant_idx != i) continue;
+
+            const char *tag =
+                (s->mode == SIPREC_STREAM_RECV) ? "recv" : "send";
+            sb_appendf(&sb, "    <%s>", tag);
+            xml_escape_into(&sb, s->stream_id);
+            sb_appendf(&sb, "</%s>\r\n", tag);
+        }
+
+        sb_appendf(&sb, "  </participant>\r\n");
+    }
+
+    /* <stream> entries — declare each stream once at the
+     * recording level. Cross-referenced by participant
+     * <send>/<recv>. RFC 7865 §5. */
+    for (size_t i = 0; i < opts->stream_count; i++) {
+        const siprec_metadata_stream_t *s = &opts->streams[i];
+
+        sb_appendf(&sb, "  <stream stream_id=\"");
+        xml_escape_into(&sb, s->stream_id);
+        sb_appendf(&sb, "\" session_id=\"");
+        xml_escape_into(&sb, opts->session_id);
+        sb_appendf(&sb, "\"/>\r\n");
+    }
+
+    sb_appendf(&sb, "</recording>\r\n");
+
+    return sb_take(&sb);
+}
+
+void siprec_metadata_free(char *buf) {
+    free(buf);
+}

@@ -1,0 +1,35 @@
+# Standalone test build for the SDP / metadata builders.
+# These compilation units have no FreeSWITCH dependency and are
+# unit-tested independently of the module build (which requires
+# the full FS source tree + ./configure-generated headers).
+#
+# Usage:
+#   make -f Makefile.test test
+#   make -f Makefile.test lint
+#   make -f Makefile.test clean
+
+CC      ?= gcc
+CFLAGS  ?= -Wall -Wextra -Wpedantic -O2 -std=c11
+TEST    = siprec_test
+SOURCES = siprec_test.c siprec_sdp.c siprec_metadata.c
+
+.PHONY: test lint clean
+
+test: $(TEST)
+	./$(TEST)
+
+$(TEST): $(SOURCES) siprec_sdp.h siprec_metadata.h
+	$(CC) $(CFLAGS) $(SOURCES) -o $@
+
+lint:
+	cppcheck --enable=all --inline-suppr --check-level=exhaustive \
+	    --suppress=missingIncludeSystem --suppress=missingInclude \
+	    --suppress=unusedFunction --suppress=staticFunction \
+	    --suppress=checkersReport --suppress=unmatchedSuppression \
+	    --suppress=normalCheckLevelMaxBranches \
+	    --error-exitcode=1 --std=c11 --force -I . \
+	    siprec_sdp.c siprec_metadata.c siprec_test.c \
+	    mod_siprec.c recording_session.c
+
+clean:
+	rm -f $(TEST)
