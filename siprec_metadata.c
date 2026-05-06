@@ -14,6 +14,11 @@
  */
 #include "siprec_metadata.h"
 
+#define __STDC_WANT_LIB_EXT1__ 1
+
+#include <safeclib/safe_mem_lib.h>
+#include <safeclib/safe_str_lib.h>
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,27 +52,56 @@ static int sb_reserve(sb_t *sb, size_t want) {
 
 static void sb_append(sb_t *sb, const char *s, size_t n) {
     if (sb->err) return;
+    /* ISO C: memcpy with NULL src/dst is UB even when n == 0.
+     * Caller paths that pass empty buffers shouldn't trip it. */
+    if (n == 0) return;
     if (sb_reserve(sb, sb->len + n + 1) != 0) return;
-    memcpy(sb->data + sb->len, s, n);
+    /* sb_reserve only returns 0 on a successful allocation;
+     * the explicit re-check is for flow-sensitive analyzers
+     * that don't propagate the post-condition. */
+    if (!sb->data) {
+        sb->err = 1;
+        return;
+    }
+    /* memcpy_s — C11 Annex K §K.3.7.1.1 via libsafec. Bounds-
+     * checked copy: passes the actual tail capacity so a bug
+     * in the caller can't overrun sb->cap. */
+    if (memcpy_s(sb->data + sb->len, sb->cap - sb->len, s, n) != 0) {
+        sb->err = 1;
+        return;
+    }
     sb->len += n;
     sb->data[sb->len] = '\0';
 }
 
 static void sb_appendf(sb_t *sb, const char *fmt, ...) {
     if (sb->err) return;
-    va_list ap;
-    va_start(ap, fmt);
-    int n = vsnprintf(NULL, 0, fmt, ap);
-    va_end(ap);
-    if (n < 0) { sb->err = 1; return; }
-    if (sb_reserve(sb, sb->len + (size_t)n + 1) != 0) return;
-    va_start(ap, fmt);
-    int written = vsnprintf(sb->data + sb->len, sb->cap - sb->len, fmt, ap);
-    va_end(ap);
-    if (written < 0 || (size_t)written >= sb->cap - sb->len) {
-        sb->err = 1; return;
+
+    /* See siprec_sdp.c sb_appendf for the doubling rationale —
+     * vsnprintf_s (C11 Annex K) cannot do the size=0 sizing
+     * pass that vsnprintf supports, so we grow geometrically
+     * until the result fits. Bounded at 16 doublings (~16 MB)
+     * so a pathological format input still terminates. */
+    enum { SB_MAX_FORMAT_DOUBLINGS = 16 };
+
+    if (sb_reserve(sb, sb->len + 64) != 0) return;
+
+    for (int attempt = 0; attempt < SB_MAX_FORMAT_DOUBLINGS; attempt++) {
+        rsize_t avail = (rsize_t)(sb->cap - sb->len);
+
+        va_list ap;
+        va_start(ap, fmt);
+        int written = vsnprintf_s(sb->data + sb->len, avail, fmt, ap);
+        va_end(ap);
+
+        if (written >= 0) {
+            sb->len += (size_t)written;
+            return;
+        }
+        if (sb_reserve(sb, sb->cap * 2 + 1) != 0) return;
     }
-    sb->len += (size_t)written;
+
+    sb->err = 1;
 }
 
 static char *sb_take(sb_t *sb) {

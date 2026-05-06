@@ -14,7 +14,12 @@
 #include "siprec_sdp.h"
 #include "siprec_metadata.h"
 
+#define __STDC_WANT_LIB_EXT1__ 1
+
+#include <safeclib/safe_str_lib.h>
+
 #include <assert.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,17 +27,48 @@
 static int test_count = 0;
 static int fail_count = 0;
 
+/* Annex-K-friendly stderr writer.
+ *
+ * The tests' diagnostic output goes to stderr only on FAIL so
+ * it doesn't pollute the PASS run. fputs is unflagged by
+ * clang-analyzer-security.insecureAPI because it takes both a
+ * stream and a NUL-terminated string (no buffer-bound surface
+ * for a checker to worry about). For formatted diagnostics we
+ * compose into a stack buffer with vsnprintf_s and fputs the
+ * result; on overflow we still emit a (truncated) message so
+ * the operator gets *some* signal — silent test failures are
+ * the worst kind. */
+static void eputs(const char *s) {
+    fputs(s, stderr);
+}
+
+__attribute__((format(printf, 1, 2)))
+static void efprintf(const char *fmt, ...) {
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf_s(buf, (rsize_t)sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (n >= 0) {
+        eputs(buf);
+    } else {
+        /* Format failed (overflow or constraint violation).
+         * Emit a fixed-shape fallback rather than going dark. */
+        eputs("[efprintf: format failed, message truncated]\n");
+    }
+}
+
 static void check_contains(const char *got, const char *want, const char *what) {
     test_count++;
     if (!got) {
-        fprintf(stderr, "FAIL %s: builder returned NULL\n", what);
+        efprintf("FAIL %s: builder returned NULL\n", what);
         fail_count++;
         return;
     }
     if (strstr(got, want)) {
         printf("PASS %s\n", what);
     } else {
-        fprintf(stderr, "FAIL %s: missing substring '%s'\n  got:\n%s\n",
+        efprintf("FAIL %s: missing substring '%s'\n  got:\n%s\n",
             what, want, got);
         fail_count++;
     }
@@ -43,7 +79,7 @@ static void check_not_contains(const char *got, const char *want, const char *wh
     if (got && !strstr(got, want)) {
         printf("PASS %s\n", what);
     } else {
-        fprintf(stderr, "FAIL %s: unexpected substring '%s'\n", what, want);
+        efprintf("FAIL %s: unexpected substring '%s'\n", what, want);
         fail_count++;
     }
 }
@@ -192,10 +228,10 @@ static void test_sdp_flip_direction(void) {
      * empty body for a re-INVITE that would be malformed. */
     test_count++;
     if (siprec_sdp_flip_direction(NULL, 0) == NULL) printf("PASS flip:reject NULL\n");
-    else { fprintf(stderr, "FAIL flip:NULL should reject\n"); fail_count++; }
+    else { eputs("FAIL flip:NULL should reject\n"); fail_count++; }
     test_count++;
     if (siprec_sdp_flip_direction("", 0) == NULL) printf("PASS flip:reject empty\n");
-    else { fprintf(stderr, "FAIL flip:empty should reject\n"); fail_count++; }
+    else { eputs("FAIL flip:empty should reject\n"); fail_count++; }
 }
 
 static void test_sdp_invalid_returns_null(void) {
@@ -206,14 +242,14 @@ static void test_sdp_invalid_returns_null(void) {
         siprec_sdp_options_t opts = { .src_ip = "", .tracks = &t, .track_count = 1 };
         test_count++;
         if (siprec_sdp_build(&opts) == NULL) printf("PASS sdp:reject empty src_ip\n");
-        else { fprintf(stderr, "FAIL sdp:empty src_ip should reject\n"); fail_count++; }
+        else { eputs("FAIL sdp:empty src_ip should reject\n"); fail_count++; }
     }
     /* Zero tracks → NULL */
     {
         siprec_sdp_options_t opts = { .src_ip = "1.2.3.4", .track_count = 0 };
         test_count++;
         if (siprec_sdp_build(&opts) == NULL) printf("PASS sdp:reject zero tracks\n");
-        else { fprintf(stderr, "FAIL sdp:zero tracks should reject\n"); fail_count++; }
+        else { eputs("FAIL sdp:zero tracks should reject\n"); fail_count++; }
     }
     /* Track with port=0 → NULL */
     {
@@ -222,7 +258,7 @@ static void test_sdp_invalid_returns_null(void) {
         siprec_sdp_options_t opts = { .src_ip = "1.2.3.4", .tracks = &t, .track_count = 1 };
         test_count++;
         if (siprec_sdp_build(&opts) == NULL) printf("PASS sdp:reject port=0\n");
-        else { fprintf(stderr, "FAIL sdp:port=0 should reject\n"); fail_count++; }
+        else { eputs("FAIL sdp:port=0 should reject\n"); fail_count++; }
     }
 }
 
@@ -415,9 +451,8 @@ static void test_metadata_element_ordering(void) {
         && stream_pos < psa_pos && stream_pos < psma_pos) {
         printf("PASS meta:<stream> before assocs (schema order)\n");
     } else {
-        fprintf(stderr,
-            "FAIL meta:element order — <stream> must precede "
-            "<participantsessionassoc>/<participantstreamassoc>\n");
+        eputs("FAIL meta:element order — <stream> must precede "
+              "<participantsessionassoc>/<participantstreamassoc>\n");
         fail_count++;
     }
 
@@ -478,7 +513,7 @@ static void test_metadata_invalid_returns_null(void) {
         siprec_metadata_options_t opts = { .participants = &p, .participant_count = 1 };
         test_count++;
         if (siprec_metadata_build(&opts) == NULL) printf("PASS meta:reject no session_id\n");
-        else { fprintf(stderr, "FAIL meta:no session_id should reject\n"); fail_count++; }
+        else { eputs("FAIL meta:no session_id should reject\n"); fail_count++; }
     }
     /* Stream pointing at out-of-range participant → NULL */
     {
@@ -490,7 +525,7 @@ static void test_metadata_invalid_returns_null(void) {
             .streams = &s, .stream_count = 1 };
         test_count++;
         if (siprec_metadata_build(&opts) == NULL) printf("PASS meta:reject stream OOB idx\n");
-        else { fprintf(stderr, "FAIL meta:OOB stream idx should reject\n"); fail_count++; }
+        else { eputs("FAIL meta:OOB stream idx should reject\n"); fail_count++; }
     }
 }
 
