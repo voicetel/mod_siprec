@@ -279,6 +279,14 @@ switch_status_t siprec_media_attach(recording_t *recording)
     siprec_media_ctx_t *mctx = switch_core_alloc(
         recording->pool, sizeof(*mctx));
     memset(mctx, 0, sizeof(*mctx));
+    /* Initialize fds to -1 so cleanup guards (fd >= 0) work
+     * correctly. memset(0) leaves them at 0 (stdin), which
+     * isn't ours and a > 0 check would skip closing legitimate
+     * fd 0 if the kernel ever returns it (rare but possible
+     * if FS launched with stdin closed). */
+    for (size_t i = 0; i < sizeof(mctx->streams) / sizeof(mctx->streams[0]); i++) {
+        mctx->streams[i].fd = -1;
+    }
 
     /* PCMU is the v1 default; PCMA picked iff the original
      * session negotiated payload type 8. */
@@ -294,7 +302,9 @@ switch_status_t siprec_media_attach(recording_t *recording)
     for (size_t i = 0; i < mctx->stream_count; i++) {
         mctx->streams[i].fd = socket(AF_INET, SOCK_DGRAM, 0);
         if (mctx->streams[i].fd < 0) {
-            for (size_t j = 0; j < i; j++) close(mctx->streams[j].fd);
+            for (size_t j = 0; j < i; j++) {
+                if (mctx->streams[j].fd >= 0) close(mctx->streams[j].fd);
+            }
             return SWITCH_STATUS_FALSE;
         }
         switch_copy_string(mctx->streams[i].remote_ip,
@@ -338,7 +348,7 @@ switch_status_t siprec_media_attach(recording_t *recording)
                 for (size_t j = 0; j <= i; j++) {
                     if (mctx->streams[j].srtp)
                         siprec_srtp_session_destroy(mctx->streams[j].srtp);
-                    if (mctx->streams[j].fd > 0)
+                    if (mctx->streams[j].fd >= 0)
                         close(mctx->streams[j].fd);
                 }
                 return SWITCH_STATUS_FALSE;
@@ -365,7 +375,14 @@ switch_status_t siprec_media_attach(recording_t *recording)
 
     if (st != SWITCH_STATUS_SUCCESS) {
         for (size_t i = 0; i < mctx->stream_count; i++) {
-            close(mctx->streams[i].fd);
+            if (mctx->streams[i].srtp) {
+                siprec_srtp_session_destroy(mctx->streams[i].srtp);
+                mctx->streams[i].srtp = NULL;
+            }
+            if (mctx->streams[i].fd >= 0) {
+                close(mctx->streams[i].fd);
+                mctx->streams[i].fd = -1;
+            }
         }
         return st;
     }
@@ -390,7 +407,7 @@ switch_status_t siprec_media_detach(recording_t *recording)
             siprec_srtp_session_destroy(mctx->streams[i].srtp);
             mctx->streams[i].srtp = NULL;
         }
-        if (mctx->streams[i].fd > 0) {
+        if (mctx->streams[i].fd >= 0) {
             close(mctx->streams[i].fd);
             mctx->streams[i].fd = -1;
         }
