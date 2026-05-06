@@ -44,6 +44,77 @@
 
 #include <switch.h>
 
+/* parse_remote_sdp_streams: walk the SRS-side SDP from
+ * sip_remote_sdp_str and extract one (ip, port) per m=audio
+ * block. RFC 4566 §5.7: a session-level c= applies to every
+ * m= block unless the m= block has its own c= override.
+ *
+ * Returns the number of streams written into `out` (0..max).
+ * Streams with port=0 are rejected per RFC 3264 §5.1 and
+ * skipped — they consume an m= slot in the answer but are
+ * not active media.
+ *
+ * Only IPv4 is parsed; IPv6 (c=IN IP6 …) is ignored — the
+ * downstream RTP fork is IPv4-only in v1.
+ */
+static int parse_remote_sdp_streams(
+    const char *sdp,
+    struct {
+        char     remote_ip[64];
+        uint16_t remote_port;
+        uint8_t  srtp_keymat[64];
+        size_t   srtp_keymat_len;
+    } *out,
+    size_t out_max)
+{
+    if (!sdp || !out || out_max == 0) return 0;
+
+    char session_ip[64] = {0};
+    int  n        = 0;
+    int  seen_m   = 0;
+
+    const char *p = sdp;
+    while (*p) {
+        const char *eol = strpbrk(p, "\r\n");
+        size_t line_len = eol ? (size_t)(eol - p) : strlen(p);
+
+        if (line_len > 9 && memcmp(p, "c=IN IP4 ", 9) == 0) {
+            size_t addr_len = line_len - 9;
+            if (addr_len >= sizeof(session_ip)) addr_len = sizeof(session_ip) - 1;
+
+            if (!seen_m) {
+                memcpy(session_ip, p + 9, addr_len);
+                session_ip[addr_len] = '\0';
+            } else if (n > 0) {
+                /* Per-media c= — overrides the session-level
+                 * value for the most recently committed stream. */
+                memcpy(out[n - 1].remote_ip, p + 9, addr_len);
+                out[n - 1].remote_ip[addr_len] = '\0';
+            }
+        } else if (line_len > 8 && memcmp(p, "m=audio ", 8) == 0) {
+            unsigned port = 0;
+            if (sscanf(p + 8, "%u", &port) == 1
+                && port > 0 && port <= 65535
+                && (size_t)n < out_max) {
+                size_t ip_len = strlen(session_ip);
+                if (ip_len >= sizeof(out[n].remote_ip)) {
+                    ip_len = sizeof(out[n].remote_ip) - 1;
+                }
+                memcpy(out[n].remote_ip, session_ip, ip_len);
+                out[n].remote_ip[ip_len] = '\0';
+                out[n].remote_port = (uint16_t)port;
+                n++;
+            }
+            seen_m = 1;
+        }
+
+        if (!eol) break;
+        p = eol + (eol[0] == '\r' && eol[1] == '\n' ? 2 : 1);
+    }
+
+    return n;
+}
+
 /* multipart_value: build the `<Content-Type>:~<headers>\r\n<body>`
  * string mod_sofia's process_mp() expects. The leading `~` opts
  * us into the extra-headers form so we can attach
@@ -178,28 +249,58 @@ switch_status_t siprec_invite_send(
     ctx->recording_session = new_session;
     recording->invite_ctx  = ctx;
 
-    /* Pull the negotiated remote endpoint off the recording
-     * leg's channel vars — sofia populates these once 200 OK
-     * arrives. v1 supports a single audio stream, so one
-     * negotiated entry is all we need. Multi-stream support
-     * needs us to parse `sip_remote_sdp_str`; deferred to v1.1.
+    /* Pull the negotiated remote endpoints. Preferred path:
+     * parse the full SDP from sip_remote_sdp_str so each
+     * m=audio block in the answer becomes its own
+     * negotiated[i] entry. RFC 7866 §7 expects N streams in
+     * one offer/answer cycle (one per recorded direction);
+     * recording the WRITE direction depends on stream[1]
+     * being populated.
+     *
+     * Fallback: if sip_remote_sdp_str isn't populated (sofia
+     * hasn't materialised it for whatever reason), drop back
+     * to remote_media_ip / remote_media_port — that's
+     * effectively single-stream, but better than failing the
+     * whole INVITE.
      */
     switch_channel_t *rch = switch_core_session_get_channel(new_session);
-    const char *rip   = switch_channel_get_variable(rch, "remote_media_ip");
-    const char *rport = switch_channel_get_variable(rch, "remote_media_port");
-    if (rip && rport) {
-        switch_copy_string(ctx->negotiated[0].remote_ip, rip,
-            sizeof(ctx->negotiated[0].remote_ip));
-        ctx->negotiated[0].remote_port = (uint16_t)atoi(rport);
-        ctx->negotiated_count = 1;
+    const char *remote_sdp =
+        switch_channel_get_variable(rch, "sip_remote_sdp_str");
+
+    int parsed = 0;
+    if (!zstr(remote_sdp)) {
+        parsed = parse_remote_sdp_streams(
+            remote_sdp, ctx->negotiated,
+            sizeof(ctx->negotiated) / sizeof(ctx->negotiated[0]));
+    }
+
+    if (parsed > 0) {
+        ctx->negotiated_count = (size_t)parsed;
+    } else {
+        /* Fallback to channel-var single endpoint. */
+        const char *rip   = switch_channel_get_variable(rch, "remote_media_ip");
+        const char *rport = switch_channel_get_variable(rch, "remote_media_port");
+        if (rip && rport) {
+            switch_copy_string(ctx->negotiated[0].remote_ip, rip,
+                sizeof(ctx->negotiated[0].remote_ip));
+            ctx->negotiated[0].remote_port = (uint16_t)atoi(rport);
+            ctx->negotiated_count = 1;
+        }
     }
 
     switch_core_session_rwunlock(new_session);
 
-    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,
-        "siprec: INVITE to %s answered, remote=%s:%u\n",
-        srs_uri, ctx->negotiated[0].remote_ip,
-        (unsigned)ctx->negotiated[0].remote_port);
+    for (size_t s = 0; s < ctx->negotiated_count; s++) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,
+            "siprec: INVITE to %s answered, stream[%zu] remote=%s:%u\n",
+            srs_uri, s, ctx->negotiated[s].remote_ip,
+            (unsigned)ctx->negotiated[s].remote_port);
+    }
+    if (ctx->negotiated_count == 0) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+            "siprec: INVITE to %s answered with no usable streams\n",
+            srs_uri);
+    }
 
     /* RFC 7866 §8.5 strict-RFC: when the caller pre-built an
      * SDP body with `a=label:N` per stream, fire an immediate
