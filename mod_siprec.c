@@ -61,8 +61,8 @@ static switch_status_t load_recording_server(switch_xml_t xml)
 
 	if ((settings = switch_xml_child(xml, "settings"))) {
 		for (param = switch_xml_child(settings, "param"); param; param = param->next) {
-			char *var = (char *) switch_xml_attr_soft(param, "name");
-			char *val = (char *) switch_xml_attr_soft(param, "value");
+			const char *var = switch_xml_attr_soft(param, "name");
+			const char *val = switch_xml_attr_soft(param, "value");
 			/* Use switch_core_strdup (pool-bound) instead of bare
 			 * strdup. The recording_server's pool is destroyed at
 			 * module shutdown; strings allocated from the heap
