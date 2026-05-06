@@ -221,12 +221,28 @@ switch_status_t siprec_invite_send(
     switch_event_add_header_string(ovars, SWITCH_STACK_BOTTOM,
         "sip_multipart", mp_metadata);
 
+    /* IMPORTANT: do NOT append " &park()" to the dial-string.
+     *
+     * The trailing-app syntax (`bridgeto &app(args)`) is parsed
+     * ONLY by the mod_dptools `originate` API command — NOT by
+     * the C-level switch_ivr_originate(). Through this code path
+     * the trailing app reaches sofia as part of the URL, sofia's
+     * URL parser rejects it with sofia_glue.c [CRIT] "Error
+     * creating HANDLE!", and the originate fails with cause
+     * DESTINATION_OUT_OF_ORDER before any INVITE goes on the wire.
+     *
+     * Instead we explicitly park the new session below by setting
+     * its channel state to CS_PARK. That keeps the recording leg
+     * alive after rwunlock (without it the channel run-loop
+     * would CS_HANGUP since nothing else is acting on it), giving
+     * mod_siprec_media a stable bug-host until siprec_invite_send_bye
+     * is called at recording teardown. */
     char dial_string[512];
     int dn = switch_snprintf(dial_string, sizeof(dial_string),
         "{ignore_early_media=true,"
         "hangup_after_bridge=false,"
         "absolute_codec_string='PCMU,PCMA'"
-        "}sofia/%s/%s &park()",
+        "}sofia/%s/%s",
         sofia_profile, srs_uri);
 
     if (dn <= 0 || (size_t)dn >= sizeof(dial_string)) {
@@ -262,6 +278,13 @@ switch_status_t siprec_invite_send(
             srs_uri, switch_channel_cause2str(cause));
         return SWITCH_STATUS_FALSE;
     }
+
+    /* Park the new (recording) session so it stays alive after
+     * rwunlock. switch_channel_set_state is non-blocking and
+     * thread-safe; the channel's run-loop picks up CS_PARK on
+     * its next dispatch and the leg sits idle until BYE. */
+    switch_channel_set_state(
+        switch_core_session_get_channel(new_session), CS_PARK);
 
     /* Stash the UUID before sofia gets a chance to tear the
      * session down. switch_core_session_get_uuid is safe to
