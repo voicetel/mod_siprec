@@ -32,6 +32,7 @@
 #include "mod_siprec.h"
 #include "recording_session.h"
 #include "siprec_invite.h"
+#include "siprec_sdp.h"
 #include "siprec_srtp.h"
 
 globals_t globals;
@@ -232,29 +233,50 @@ static switch_status_t siprec_change_direction(
 			server_name);
 		return SWITCH_STATUS_FALSE;
 	}
+	if (!recording->invite_ctx
+		|| !recording->invite_ctx->recording_session) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+			SWITCH_LOG_ERROR,
+			"siprec: recording '%s' has no live SIP dialog\n",
+			server_name);
+		return SWITCH_STATUS_FALSE;
+	}
 
-	/* Build a minimal SDP carrying just the direction attribute
-	 * change. mod_sofia picks up the new SDP via the
-	 * SWITCH_MESSAGE_INDICATE_MEDIA_REDIRECT tag and re-uses
-	 * the dialog's negotiated media (m= line stays valid).
+	/* RFC 7866 §6.4 pause/resume: re-INVITE on the existing
+	 * dialog with the SDP direction flipped. The new SDP MUST
+	 * keep the negotiated ports, codec, c= address, and crypto
+	 * stable — only the direction attribute and o=session-version
+	 * change. Building from scratch would change session-id and
+	 * the SRS would treat it as a brand-new session.
 	 *
-	 * RFC 4566: a=inactive on the session level applies to
-	 * every m= block; a=sendonly on the session level does
-	 * the same. Stream-level direction (per m=) overrides
-	 * session-level when present — for v1.1 we use session-
-	 * level since both streams of a recording flip together.
-	 */
-	const char *direction = paused ? "a=inactive" : "a=sendonly";
-	char tiny_sdp[256];
-	switch_snprintf(tiny_sdp, sizeof(tiny_sdp),
-		"v=0\r\n"
-		"o=- 0 0 IN IP4 0.0.0.0\r\n"
-		"s=-\r\n"
-		"t=0 0\r\n"
-		"%s\r\n",
-		direction);
+	 * Source the existing local SDP from the recording leg's
+	 * sip_local_sdp_str channel variable (mod_sofia populates
+	 * it after every successful negotiation), flip the
+	 * direction line, bump o=version. */
+	switch_core_session_t *rs = recording->invite_ctx->recording_session;
+	switch_channel_t *rch = switch_core_session_get_channel(rs);
+	const char *local_sdp =
+		switch_channel_get_variable(rch, "sip_local_sdp_str");
 
-	switch_status_t st = siprec_invite_reinvite(recording, tiny_sdp, NULL);
+	if (zstr(local_sdp)) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+			SWITCH_LOG_ERROR,
+			"siprec: recording leg has no sip_local_sdp_str — "
+			"cannot pause/resume\n");
+		return SWITCH_STATUS_FALSE;
+	}
+
+	char *new_sdp = siprec_sdp_flip_direction(local_sdp, paused);
+	if (!new_sdp) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+			SWITCH_LOG_ERROR,
+			"siprec: SDP direction-flip allocation failed\n");
+		return SWITCH_STATUS_FALSE;
+	}
+
+	switch_status_t st = siprec_invite_reinvite(recording, new_sdp, NULL);
+	siprec_sdp_free(new_sdp);
+
 	if (st != SWITCH_STATUS_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
 			"siprec: re-INVITE for %s failed: %d\n",

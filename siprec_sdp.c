@@ -232,6 +232,84 @@ char *siprec_sdp_build(const siprec_sdp_options_t *opts) {
     return sb_take(&sb);
 }
 
+/* ──────────────────────────────────────────────────────────── *
+ * SDP direction-flip                                          *
+ * ──────────────────────────────────────────────────────────── */
+
+/* sb_append: raw byte append (no formatting). Used by the
+ * direction-flip helper to copy unmodified lines straight
+ * through. */
+static void sb_append(sb_t *sb, const char *s, size_t n) {
+    if (sb->err) return;
+    if (sb_reserve(sb, sb->len + n + 1) != 0) return;
+    memcpy(sb->data + sb->len, s, n);
+    sb->len += n;
+    sb->data[sb->len] = '\0';
+}
+
+char *siprec_sdp_flip_direction(const char *src_sdp, int paused) {
+    if (!src_sdp) return NULL;
+
+    const char *target = paused ? "a=inactive" : "a=sendonly";
+    const size_t target_len = strlen(target);
+
+    sb_t sb;
+    sb_init(&sb);
+
+    const char *p = src_sdp;
+    while (*p) {
+        /* Locate end-of-line. SDP lines are CRLF-terminated
+         * per RFC 4566 §6 but accept LF-only for tolerance. */
+        const char *eol = strpbrk(p, "\r\n");
+        size_t line_len = eol ? (size_t)(eol - p) : strlen(p);
+
+        if (line_len >= 2 && p[0] == 'o' && p[1] == '=') {
+            /* o=<user> <session-id> <session-version>
+             *   <nettype> <addrtype> <unicast-address>
+             *
+             * RFC 4566 §5.2: session-version MUST be incremented
+             * on every modification. We bump by 1; sscanf with
+             * %llu handles values up to 64-bit per the RFC. */
+            char     user[64], id[64], net[16], at[16], addr[64];
+            unsigned long long ver = 0;
+            int n = sscanf(p, "o=%63s %63s %llu %15s %15s %63s",
+                user, id, &ver, net, at, addr);
+            if (n == 6) {
+                sb_appendf(&sb, "o=%s %s %llu %s %s %s",
+                    user, id, ver + 1ULL, net, at, addr);
+            } else {
+                /* Malformed o= — pass through unchanged rather
+                 * than guess at a fix. */
+                sb_append(&sb, p, line_len);
+            }
+        } else if (line_len == 10 &&
+                   (memcmp(p, "a=sendonly", 10) == 0 ||
+                    memcmp(p, "a=recvonly", 10) == 0 ||
+                    memcmp(p, "a=sendrecv", 10) == 0 ||
+                    memcmp(p, "a=inactive", 10) == 0)) {
+            /* RFC 4566 §6: direction attributes are exactly
+             * 10 chars on a line of their own (no parameters).
+             * Matching on exact length avoids accidentally
+             * rewriting "a=sendonlysomething". */
+            sb_append(&sb, target, target_len);
+        } else {
+            sb_append(&sb, p, line_len);
+        }
+
+        if (!eol) break;
+
+        if (eol[0] == '\r' && eol[1] == '\n') {
+            sb_append(&sb, "\r\n", 2);
+            p = eol + 2;
+        } else {
+            sb_append(&sb, eol, 1);
+            p = eol + 1;
+        }
+    }
+
+    return sb_take(&sb);
+}
+
 void siprec_sdp_free(char *buf) {
     free(buf);
 }

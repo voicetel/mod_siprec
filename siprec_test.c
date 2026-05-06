@@ -137,6 +137,59 @@ static void test_sdp_srtp_emission(void) {
     siprec_sdp_free(sdp);
 }
 
+static void test_sdp_flip_direction(void) {
+    /* RFC 7866 §6.4: pause/resume re-INVITE flips direction
+     * while preserving the negotiated session — same ports,
+     * same crypto, same session-id; only o=session-version
+     * is bumped per RFC 4566 §5.2. */
+    const char *src =
+        "v=0\r\n"
+        "o=- 12345 7 IN IP4 192.0.2.10\r\n"
+        "s=-\r\n"
+        "c=IN IP4 192.0.2.10\r\n"
+        "t=0 0\r\n"
+        "m=audio 30000 RTP/SAVP 0\r\n"
+        "a=rtpmap:0 PCMU/8000\r\n"
+        "a=ptime:20\r\n"
+        "a=label:1\r\n"
+        "a=sendonly\r\n"
+        "a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\n";
+
+    char *paused = siprec_sdp_flip_direction(src, 1);
+    check_contains(paused, "o=- 12345 8 IN IP4 192.0.2.10\r\n",
+        "flip:o= version bumped on pause");
+    check_contains(paused, "a=inactive\r\n",   "flip:a=inactive on pause");
+    check_not_contains(paused, "a=sendonly",   "flip:no a=sendonly on pause");
+    check_contains(paused, "m=audio 30000 RTP/SAVP 0\r\n",
+        "flip:m= preserved on pause");
+    check_contains(paused, "a=crypto:1 AES_CM_128_HMAC_SHA1_80",
+        "flip:a=crypto preserved on pause");
+    check_contains(paused, "a=label:1\r\n",    "flip:a=label preserved");
+    siprec_sdp_free(paused);
+
+    char *resumed = siprec_sdp_flip_direction(src, 0);
+    check_contains(resumed, "o=- 12345 8 IN IP4 192.0.2.10\r\n",
+        "flip:o= version bumped on resume");
+    check_contains(resumed, "a=sendonly\r\n", "flip:a=sendonly on resume");
+    check_not_contains(resumed, "a=inactive", "flip:no a=inactive on resume");
+    siprec_sdp_free(resumed);
+
+    /* Round-trip a SDP that already has a=inactive; resume
+     * should rewrite it back to a=sendonly. */
+    const char *paused_src =
+        "v=0\r\n"
+        "o=- 99 1 IN IP4 1.2.3.4\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n"
+        "m=audio 9 RTP/AVP 0\r\n"
+        "a=inactive\r\n";
+    char *back = siprec_sdp_flip_direction(paused_src, 0);
+    check_contains(back, "a=sendonly\r\n",   "flip:inactive→sendonly");
+    check_contains(back, "o=- 99 2 IN IP4 1.2.3.4\r\n",
+        "flip:inactive→sendonly bumps version");
+    siprec_sdp_free(back);
+}
+
 static void test_sdp_invalid_returns_null(void) {
     /* Empty src_ip → NULL */
     {
@@ -384,6 +437,7 @@ int main(void) {
     test_sdp_two_track_pcmu();
     test_sdp_stereo_opus();
     test_sdp_srtp_emission();
+    test_sdp_flip_direction();
     test_sdp_invalid_returns_null();
 
     test_metadata_two_participants();

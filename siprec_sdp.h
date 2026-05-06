@@ -94,7 +94,25 @@ typedef struct {
  */
 char *siprec_sdp_build(const siprec_sdp_options_t *opts);
 
-/* Free a buffer returned by siprec_sdp_build. NULL-safe. */
+/* siprec_sdp_flip_direction: produce a copy of `src_sdp` with
+ * its direction attribute swapped to a=inactive (paused != 0)
+ * or a=sendonly (paused == 0), and the o= session-version
+ * incremented per RFC 4566 §5.2.
+ *
+ * Used by the pause/resume re-INVITE path: the recording leg
+ * already negotiated a complete local SDP (ports, codec, c=,
+ * a=crypto if SRTP), and a re-INVITE for direction change
+ * MUST keep all of that stable while only flipping the
+ * direction. Rebuilding from scratch would change the
+ * session-id and break dialog continuity at the SRS.
+ *
+ * Returns a heap buffer (caller frees with siprec_sdp_free)
+ * or NULL on allocation failure / malformed input.
+ */
+char *siprec_sdp_flip_direction(const char *src_sdp, int paused);
+
+/* Free a buffer returned by siprec_sdp_build /
+ * siprec_sdp_flip_direction. NULL-safe. */
 void siprec_sdp_free(char *buf);
 
 #endif /* SIPREC_SDP_H */
