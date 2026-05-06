@@ -129,12 +129,17 @@ switch_status_t stop_recording_session(switch_core_session_t *session)
     return SWITCH_STATUS_SUCCESS;
 }
 
-/* SDP/RTP port allocation is delegated to mod_sofia. The
- * outbound recording leg is a normal sofia originate, so the
- * profile's rtp-port-min/-max range provides the source port
- * and `local_ip_v4` selects the bind address. We don't open
- * a socket from this module — siprec_media's UDP fork sends
- * to the SRS-side endpoint reported in the 200-OK answer.
+/* SDP / negotiated-port allocation for the recording leg's
+ * SIP-side media is delegated to mod_sofia: the outbound
+ * originate uses the profile's rtp-port-min/-max range, with
+ * `local_ip_v4` selecting the bind address.
+ *
+ * The RTP fork itself opens its own UDP sockets in
+ * siprec_media_attach (one per stream, kernel-assigned
+ * ephemeral source port) and sends to the SRS-side endpoint
+ * parsed out of the 200 OK answer SDP. The recording-leg
+ * SIP session and the RTP fork are independent transport
+ * channels — sofia owns one, siprec_media owns the other.
  */
 
 switch_status_t start_recording_session(switch_core_session_t *session, const char *recording_server_name)
