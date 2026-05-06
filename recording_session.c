@@ -272,11 +272,18 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
      * each direction's audio as belonging to one participant
      * (the speaker) — the SRS can synthesise the recv side
      * from the send xref. */
+    /* labels "1" / "2" map to the SDP a=label:1 / a=label:2
+     * the v2 strict-RFC SDP override will emit. Even though
+     * the v1.1 SDP comes from sofia auto-gen and lacks these
+     * labels, including them in the metadata gives the SRS a
+     * stable name for each direction it can use for storage. */
     siprec_metadata_stream_t streams_arr[2] = {
         { .stream_id = "stream-1", .mode = SIPREC_STREAM_SEND,
-          .participant_idx = 0 }, /* caller speaks */
+          .participant_idx = 0, /* caller speaks */
+          .label = "1", .media_type = "audio" },
         { .stream_id = "stream-2", .mode = SIPREC_STREAM_SEND,
-          .participant_idx = 1 }, /* callee speaks */
+          .participant_idx = 1, /* callee speaks */
+          .label = "2", .media_type = "audio" },
     };
 
     char associate_time[64] = {0};
@@ -292,6 +299,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
         .session_id        = uuid,
         .group_id          = uuid,
         .associate_time_utc = associate_time,
+        .datamode          = SIPREC_DATAMODE_COMPLETE,
         .participants      = parts,
         .participant_count = 2,
         .streams           = streams_arr,

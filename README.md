@@ -59,7 +59,11 @@ up is the next milestone (see [`tests/README.md`](tests/README.md)).
 | [§8.4][rfc7866-8.4] DTMF tone forking | ✅ (passes through audio bug) |
 | RFC 7865 §5 `<recording>` schema | ✅ |
 | RFC 7865 §5 multi-participant + stream cross-ref | ✅ |
-| RFC 7865 §5.1 `<associate-time>` ISO-8601 | ✅ |
+| RFC 7865 §5 `<stream>` body with `<label>` + `<media-type>` | ✅ |
+| RFC 7865 §5 `<session group_ref="…">` | ✅ |
+| RFC 7865 §5 `<group>` body with `<associate-time>` | ✅ |
+| RFC 7865 §5.1 `<datamode>` (complete + partial) | ✅ |
+| RFC 7865 §5 `<associate-time>` ISO-8601 | ✅ |
 | RFC 7865 §5 XML escaping for caller-supplied content | ✅ |
 
 [rfc7866-6.1]: https://datatracker.ietf.org/doc/html/rfc7866#section-6.1

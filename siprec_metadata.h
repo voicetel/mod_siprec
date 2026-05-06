@@ -12,7 +12,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* siprec_metadata_stream: one media stream entry. RFC 7865
+/* siprec_metadata_stream: one media stream entry. RFC 7865 §5
  * defines stream as the unit of recordable media — for a 2-leg
  * audio call we typically have 2 streams (one per direction). */
 typedef struct {
@@ -34,6 +34,16 @@ typedef struct {
     /* The participant this stream belongs to. Index into the
      * participants array. */
     size_t participant_idx;
+
+    /* RFC 7865 §5 <label> child of <stream>: the value MUST
+     * match the corresponding SDP a=label attribute on the SRC
+     * INVITE so the SRS can correlate the metadata stream with
+     * the actual RTP session. NULL omits the element. */
+    const char *label;
+
+    /* RFC 7865 §5 <media-type> child of <stream>: typically
+     * "audio" or "video"; defaults to "audio" when NULL. */
+    const char *media_type;
 } siprec_metadata_stream_t;
 
 typedef struct {
@@ -49,6 +59,18 @@ typedef struct {
     const char *display_name;
 } siprec_metadata_participant_t;
 
+/* siprec_metadata_datamode: RFC 7865 §5.1 <datamode>.
+ *   COMPLETE — full snapshot; the SRS replaces any prior state.
+ *   PARTIAL  — delta update (re-INVITE); the SRS merges with
+ *              the existing state.
+ * v1 sends COMPLETE on initial INVITE and PARTIAL only when
+ * driving a re-INVITE that carries a participant change.
+ */
+typedef enum {
+    SIPREC_DATAMODE_COMPLETE = 0,
+    SIPREC_DATAMODE_PARTIAL  = 1,
+} siprec_metadata_datamode_t;
+
 typedef struct {
     /* session_id — UUID URN identifying the recording session.
      * Stays stable across re-INVITEs. RFC 7865 §5. */
@@ -56,12 +78,22 @@ typedef struct {
 
     /* group_id — RFC 7865 §5 — groups participants of the same
      * logical conversation. For a 1-call recording, all
-     * participants share one group. NULL omits the <group>. */
+     * participants share one group. NULL omits the <group>.
+     * When set, <session> also gains a group_ref="<group_id>"
+     * attribute per RFC 7865 §5 to bind the session to its
+     * group. */
     const char *group_id;
 
-    /* ISO-8601 timestamp, e.g. "2026-05-06T03:00:00Z", placed
-     * inside <session><associate-time>. NULL emits no element. */
+    /* ISO-8601 timestamp, e.g. "2026-05-06T03:00:00Z". Placed
+     * inside <session><associate-time>; if group_id is set,
+     * also placed inside <group><associate-time>. NULL omits
+     * both. */
     const char *associate_time_utc;
+
+    /* RFC 7865 §5.1 <datamode>. Default (zero value) is
+     * COMPLETE. Re-INVITE updates that carry only changed
+     * fields should set this to PARTIAL. */
+    siprec_metadata_datamode_t datamode;
 
     /* Participants array. */
     const siprec_metadata_participant_t *participants;

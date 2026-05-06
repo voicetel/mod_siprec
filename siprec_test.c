@@ -154,14 +154,17 @@ static void test_metadata_two_participants(void) {
           .display_name = NULL },
     };
     const siprec_metadata_stream_t streams[] = {
-        { .stream_id = "urn:uuid:s-1", .mode = SIPREC_STREAM_SEND, .participant_idx = 0 },
-        { .stream_id = "urn:uuid:s-2", .mode = SIPREC_STREAM_SEND, .participant_idx = 1 },
+        { .stream_id = "urn:uuid:s-1", .mode = SIPREC_STREAM_SEND,
+          .participant_idx = 0, .label = "1", .media_type = "audio" },
+        { .stream_id = "urn:uuid:s-2", .mode = SIPREC_STREAM_SEND,
+          .participant_idx = 1, .label = "2", .media_type = "audio" },
     };
 
     siprec_metadata_options_t opts = {
         .session_id = "urn:uuid:sess-abc",
         .group_id   = "urn:uuid:grp-xyz",
         .associate_time_utc = "2026-05-06T03:00:00Z",
+        .datamode   = SIPREC_DATAMODE_COMPLETE,
         .participants = parts, .participant_count = 2,
         .streams = streams, .stream_count = 2,
     };
@@ -171,9 +174,12 @@ static void test_metadata_two_participants(void) {
     check_contains(xml, "<?xml version=\"1.0\"",                    "meta:xml decl");
     check_contains(xml, "xmlns=\"urn:ietf:params:xml:ns:recording:1\"", "meta:xmlns");
     check_contains(xml, "<datamode>complete</datamode>",            "meta:datamode complete");
-    check_contains(xml, "<group group_id=\"urn:uuid:grp-xyz\"/>",   "meta:group");
-    check_contains(xml, "<session session_id=\"urn:uuid:sess-abc\">",
-                                                                     "meta:session open");
+    /* group has body because associate_time_utc is set */
+    check_contains(xml, "<group group_id=\"urn:uuid:grp-xyz\">",
+                                                                     "meta:group with body");
+    /* session carries group_ref binding to its group */
+    check_contains(xml, "<session session_id=\"urn:uuid:sess-abc\" group_ref=\"urn:uuid:grp-xyz\">",
+                                                                     "meta:session open with group_ref");
     check_contains(xml, "<associate-time>2026-05-06T03:00:00Z</associate-time>",
                                                                      "meta:associate-time");
     check_contains(xml, "</session>",                                "meta:session close");
@@ -186,9 +192,59 @@ static void test_metadata_two_participants(void) {
                                                                      "meta:participant bob");
     /* Bob has no display name → self-closing nameID */
     check_contains(xml, "<nameID aor=\"sip:bob@example.com\"/>",     "meta:nameID self-close");
+
+    /* RFC 7865 §5: <stream> body MUST include <label> + <media-type> */
     check_contains(xml, "<stream stream_id=\"urn:uuid:s-1\"",        "meta:stream 1");
     check_contains(xml, "<stream stream_id=\"urn:uuid:s-2\"",        "meta:stream 2");
+    check_contains(xml, "<label>1</label>",                          "meta:stream label 1");
+    check_contains(xml, "<label>2</label>",                          "meta:stream label 2");
+    check_contains(xml, "<media-type>audio</media-type>",            "meta:stream media-type");
+    check_not_contains(xml, "<stream stream_id=\"urn:uuid:s-1\" session_id=\"urn:uuid:sess-abc\"/>",
+                                                                     "meta:stream not self-closed");
 
+    /* RFC 7865 §5: <session> binds to <group> via group_ref */
+    check_contains(xml, "group_ref=\"urn:uuid:grp-xyz\"",            "meta:session group_ref");
+
+    /* <group> with associate-time gets a body */
+    check_contains(xml, "<group group_id=\"urn:uuid:grp-xyz\">",     "meta:group with body open");
+    check_contains(xml, "</group>",                                   "meta:group close");
+
+    siprec_metadata_free(xml);
+}
+
+static void test_metadata_partial_datamode(void) {
+    /* RFC 7865 §5.1: re-INVITE updates use datamode=partial. */
+    const siprec_metadata_participant_t parts[] = {
+        { .participant_id = "p1", .aor = "sip:a@x", .display_name = NULL },
+    };
+    siprec_metadata_options_t opts = {
+        .session_id = "s",
+        .datamode   = SIPREC_DATAMODE_PARTIAL,
+        .participants = parts, .participant_count = 1,
+    };
+    char *xml = siprec_metadata_build(&opts);
+    check_contains(xml, "<datamode>partial</datamode>",     "meta:datamode partial");
+    check_not_contains(xml, "<datamode>complete</datamode>", "meta:no complete when partial");
+    siprec_metadata_free(xml);
+}
+
+static void test_metadata_stream_default_media_type(void) {
+    /* When .media_type is NULL the builder defaults to audio. */
+    const siprec_metadata_participant_t parts[] = {
+        { .participant_id = "p1", .aor = "sip:a@x", .display_name = NULL },
+    };
+    const siprec_metadata_stream_t streams[] = {
+        { .stream_id = "s1", .mode = SIPREC_STREAM_SEND,
+          .participant_idx = 0, .label = "1", .media_type = NULL },
+    };
+    siprec_metadata_options_t opts = {
+        .session_id = "sess",
+        .participants = parts, .participant_count = 1,
+        .streams = streams, .stream_count = 1,
+    };
+    char *xml = siprec_metadata_build(&opts);
+    check_contains(xml, "<media-type>audio</media-type>",
+        "meta:default media-type is audio");
     siprec_metadata_free(xml);
 }
 
@@ -252,6 +308,8 @@ int main(void) {
     test_metadata_two_participants();
     test_metadata_xml_escaping();
     test_metadata_invalid_returns_null();
+    test_metadata_partial_datamode();
+    test_metadata_stream_default_media_type();
 
     printf("\n%d/%d passed\n", test_count - fail_count, test_count);
     return fail_count == 0 ? 0 : 1;

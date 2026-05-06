@@ -149,23 +149,48 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
         "<recording xmlns=\"urn:ietf:params:xml:ns:recording:1\">\r\n");
 
     /* <datamode> — RFC 7865 §5.1. "complete" means this body is
-     * a full snapshot; "partial" is for delta updates on
-     * re-INVITE. v1 always sends "complete". */
-    sb_appendf(&sb, "  <datamode>complete</datamode>\r\n");
+     * a full snapshot; "partial" is a delta update typically
+     * carried on a re-INVITE so the SRS merges rather than
+     * replaces existing state. */
+    const char *dm_str =
+        (opts->datamode == SIPREC_DATAMODE_PARTIAL)
+            ? "partial" : "complete";
+    sb_appendf(&sb, "  <datamode>%s</datamode>\r\n", dm_str);
 
-    /* <group group_id="..."> — wraps related participants.
-     * Optional; emitted only when caller provides a group_id. */
+    /* <group group_id="..."> — wraps related participants in a
+     * single logical conversation. RFC 7865 §5: when an
+     * associate-time is known, emit it inside the group too so
+     * the SRS can timestamp the conversation start as well as
+     * the per-session start. */
+    int group_has_body = opts->group_id && *opts->group_id
+        && opts->associate_time_utc && *opts->associate_time_utc;
+
     if (opts->group_id && *opts->group_id) {
         sb_appendf(&sb, "  <group group_id=\"");
         xml_escape_into(&sb, opts->group_id);
-        sb_appendf(&sb, "\"/>\r\n");
+        sb_appendf(&sb, "\"");
+
+        if (group_has_body) {
+            sb_appendf(&sb, ">\r\n    <associate-time>");
+            xml_escape_into(&sb, opts->associate_time_utc);
+            sb_appendf(&sb, "</associate-time>\r\n  </group>\r\n");
+        } else {
+            sb_appendf(&sb, "/>\r\n");
+        }
     }
 
-    /* <session session_id="..."> — wraps the session-scoped
-     * elements (associate-time, etc.). */
+    /* <session session_id="..." [group_ref="..."]> — wraps the
+     * session-scoped elements. group_ref binds the session to
+     * its group (RFC 7865 §5). */
     sb_appendf(&sb, "  <session session_id=\"");
     xml_escape_into(&sb, opts->session_id);
     sb_appendf(&sb, "\"");
+
+    if (opts->group_id && *opts->group_id) {
+        sb_appendf(&sb, " group_ref=\"");
+        xml_escape_into(&sb, opts->group_id);
+        sb_appendf(&sb, "\"");
+    }
 
     /* If we have nothing to put inside <session>, render as a
      * self-closing element. Otherwise open + close. */
@@ -226,7 +251,16 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
 
     /* <stream> entries — declare each stream once at the
      * recording level. Cross-referenced by participant
-     * <send>/<recv>. RFC 7865 §5. */
+     * <send>/<recv>. RFC 7865 §5.
+     *
+     * Per-stream child elements:
+     *   <label>      — MUST match the corresponding SDP
+     *                  a=label attribute on the SRC INVITE
+     *                  (RFC 7866 §8.5). The SRS uses this to
+     *                  bind metadata streams to RTP streams.
+     *   <media-type> — "audio" or "video"; defaults to audio
+     *                  when caller leaves it NULL.
+     */
     for (size_t i = 0; i < opts->stream_count; i++) {
         const siprec_metadata_stream_t *s = &opts->streams[i];
 
@@ -234,7 +268,21 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
         xml_escape_into(&sb, s->stream_id);
         sb_appendf(&sb, "\" session_id=\"");
         xml_escape_into(&sb, opts->session_id);
-        sb_appendf(&sb, "\"/>\r\n");
+        sb_appendf(&sb, "\">\r\n");
+
+        if (s->label && *s->label) {
+            sb_appendf(&sb, "    <label>");
+            xml_escape_into(&sb, s->label);
+            sb_appendf(&sb, "</label>\r\n");
+        }
+
+        const char *mt = (s->media_type && *s->media_type)
+            ? s->media_type : "audio";
+        sb_appendf(&sb, "    <media-type>");
+        xml_escape_into(&sb, mt);
+        sb_appendf(&sb, "</media-type>\r\n");
+
+        sb_appendf(&sb, "  </stream>\r\n");
     }
 
     sb_appendf(&sb, "</recording>\r\n");
