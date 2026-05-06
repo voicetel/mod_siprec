@@ -142,6 +142,32 @@ switch_status_t stop_recording_session(switch_core_session_t *session)
  * channels — sofia owns one, siprec_media owns the other.
  */
 
+/* discard_pending_recording: tear down a half-built recording_t
+ * that's already in globals.recordings_hash but hasn't yet had
+ * its on_destroy state-handler bound to the original session.
+ * Called from every failure path between hash-insert and
+ * state-handler-bind in start_recording_session — without it,
+ * any failure between those two points leaks the recording_t
+ * (and its mutex + pool) until module unload, since nothing
+ * else will ever reap it. */
+static void discard_pending_recording(recording_t *recording)
+{
+    if (!recording) return;
+
+    /* Best-effort tear-down of any partially-attached state.
+     * Both detach and BYE are NULL-safe and idempotent — they
+     * no-op when invite_ctx / media_ctx aren't populated. */
+    siprec_media_detach(recording);
+    siprec_invite_send_bye(recording);
+
+    switch_mutex_lock(globals.recordings_mutex);
+    switch_core_hash_delete(globals.recordings_hash, recording->key);
+    switch_mutex_unlock(globals.recordings_mutex);
+
+    switch_mutex_destroy(recording->mutex);
+    switch_core_destroy_memory_pool(&recording->pool);
+}
+
 switch_status_t start_recording_session(switch_core_session_t *session, const char *recording_server_name)
 {
     recording_server_t *server = NULL;
@@ -314,6 +340,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
     if (!metadata_body) {
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
             SWITCH_LOG_ERROR, "siprec: metadata build failed\n");
+        discard_pending_recording(recording);
         return SWITCH_STATUS_FALSE;
     }
 
@@ -339,6 +366,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
             "siprec: channel has no sofia_profile_name — "
             "SIPREC requires a sofia-backed channel\n");
         siprec_metadata_free(metadata_body);
+        discard_pending_recording(recording);
         return SWITCH_STATUS_FALSE;
     }
 
@@ -365,6 +393,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
             "aborting recording for server '%s'\n",
             recording_server_name);
         siprec_metadata_free(metadata_body);
+        discard_pending_recording(recording);
         return SWITCH_STATUS_FALSE;
     }
 
@@ -383,22 +412,29 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
          * bug, and the original session's on_destroy
          * state-handler hasn't been bound yet (we only do
          * that on the success path below), so nobody else
-         * will reap this recording_t. Remove the hash entry
-         * and tear down the pool here, otherwise it leaks
-         * until module unload. */
-        switch_mutex_lock(globals.recordings_mutex);
-        switch_core_hash_delete(globals.recordings_hash, recording->key);
-        switch_mutex_unlock(globals.recordings_mutex);
-
-        switch_mutex_destroy(recording->mutex);
-        switch_core_destroy_memory_pool(&recording->pool);
+         * will reap this recording_t. */
+        discard_pending_recording(recording);
         return inv;
     }
 
     /* siprec_invite_send populated invite_ctx->negotiated[]
      * by parsing the SRS-side answer SDP. Hand that off to
-     * siprec_media_attach to wire the bug + RTP fork. */
-    siprec_media_attach(recording);
+     * siprec_media_attach to wire the bug + RTP fork.
+     *
+     * Failing the attach is a hard error — the SIP dialog is
+     * up but no audio will reach the SRS. We BYE the dialog
+     * to prevent a "ghost" recording session at the SRS that
+     * receives no media. discard_pending_recording handles
+     * the BYE + hash cleanup. */
+    if (siprec_media_attach(recording) != SWITCH_STATUS_SUCCESS) {
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+            SWITCH_LOG_ERROR,
+            "siprec: media attach failed; tearing down "
+            "recording leg for server '%s'\n",
+            recording_server_name);
+        discard_pending_recording(recording);
+        return SWITCH_STATUS_FALSE;
+    }
 
     /* Bind the on_destroy state-handler so caller-side hangup
      * automatically tears down the recording. Without this
