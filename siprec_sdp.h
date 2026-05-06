@@ -104,6 +104,39 @@ char *siprec_sdp_build(const siprec_sdp_options_t *opts);
  */
 char *siprec_sdp_flip_direction(const char *src_sdp, int paused);
 
+/* siprec_sdp_inject_label: produce a copy of `src_sdp` with
+ * `a=label:<label>` injected into every m= block that doesn't
+ * already carry a label, and the o= session-version
+ * incremented per RFC 4566 §5.2.
+ *
+ * RFC 7866 §8.5 requires every SRC stream to carry an
+ * a=label:N attribute for cross-reference from the metadata
+ * XML's <stream> entries. mod_sofia's auto-generated offer
+ * SDP doesn't emit a=label, so we do a surgical injection on
+ * the local SDP after originate succeeds and re-INVITE the
+ * SRS with the labelled body. Same low-risk modification
+ * pattern as flip_direction: ports, codec, c=, crypto stay
+ * untouched; we only add one attribute line per m= block.
+ *
+ * The label is placed immediately before the direction
+ * attribute (a=sendonly / a=inactive) within each m= block,
+ * or at the end of the block if no direction attribute is
+ * present. m= blocks that already carry a=label:<anything>
+ * are left untouched (idempotent — calling this on an
+ * already-labelled SDP is safe).
+ *
+ * Multi-stream limitation: in v1 every m= block gets the
+ * SAME label string. mod_sofia's auto-gen produces a single
+ * m=audio so this is a single-stream injection in practice;
+ * full per-stream labelling per RFC 7866 §7.5 needs the
+ * "set local SDP before originate" path.
+ *
+ * Returns a heap buffer (caller frees with siprec_sdp_free)
+ * or NULL on allocation failure / malformed input / empty
+ * label.
+ */
+char *siprec_sdp_inject_label(const char *src_sdp, const char *label);
+
 /* Free a buffer returned by siprec_sdp_build /
  * siprec_sdp_flip_direction. NULL-safe. */
 void siprec_sdp_free(char *buf);

@@ -315,6 +315,99 @@ static void sb_append(sb_t *sb, const char *s, size_t n) {
     sb->data[sb->len] = '\0';
 }
 
+/* siprec_sdp_inject_label: walk src_sdp line by line, emitting
+ * each line verbatim except:
+ *   - o= line: bump session-version per RFC 4566 §5.2
+ *   - within each m= block, inject "a=label:<label>\r\n" if
+ *     the block doesn't already carry one, placed immediately
+ *     before the direction attribute (a=sendonly etc) for
+ *     ordering parity with siprec_sdp_build's output.
+ *
+ * Idempotent: m= blocks that already have an a=label line are
+ * passed through unchanged (a second call adds no second
+ * label, only bumps the version).
+ *
+ * Walk loop is parallel to siprec_sdp_flip_direction's; the
+ * two functions intentionally don't share a callback-based
+ * helper because the inject path needs cross-line state
+ * (in_m_block / current_block_has_label / label_emitted) that
+ * doesn't fit a stateless filter cleanly. */
+char *siprec_sdp_inject_label(const char *src_sdp, const char *label) {
+    if (!src_sdp || !*src_sdp || !label || !*label) return NULL;
+
+    sb_t sb;
+    sb_init(&sb);
+
+    int in_m_block              = 0;
+    int current_block_has_label = 0;
+    int label_emitted_for_block = 0;
+
+    const char *p = src_sdp;
+    while (*p) {
+        const char *eol = strpbrk(p, "\r\n");
+        size_t line_len = eol ? (size_t)(eol - p) : strlen(p);
+
+        if (line_len >= 2 && p[0] == 'o' && p[1] == '=') {
+            char     user[64], id[64], net[16], at[16], addr[64];
+            unsigned long long ver = 0;
+            /* Bounded by %63s / %15s widths. */
+            /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
+            int n = sscanf(p, "o=%63s %63s %llu %15s %15s %63s",
+                user, id, &ver, net, at, addr);
+            if (n == 6) {
+                sb_appendf(&sb, "o=%s %s %llu %s %s %s",
+                    user, id, ver + 1ULL, net, at, addr);
+            } else {
+                sb_append(&sb, p, line_len);
+            }
+        } else if (line_len >= 2 && p[0] == 'm' && p[1] == '=') {
+            /* New media block. If the previous block was
+             * unlabelled and we hadn't emitted yet, do it now
+             * (covers the corner case of an m= block with no
+             * direction attribute — terminator is the next m=
+             * line). */
+            if (in_m_block && !current_block_has_label && !label_emitted_for_block) {
+                sb_appendf(&sb, "a=label:%s\r\n", label);
+            }
+            in_m_block = 1;
+            current_block_has_label = 0;
+            label_emitted_for_block = 0;
+            sb_append(&sb, p, line_len);
+        } else if (in_m_block && line_len >= 8 && memcmp(p, "a=label:", 8) == 0) {
+            current_block_has_label = 1;
+            sb_append(&sb, p, line_len);
+        } else if (in_m_block && !current_block_has_label && !label_emitted_for_block
+                   && line_len == 10 &&
+                   (memcmp(p, "a=sendonly", 10) == 0 ||
+                    memcmp(p, "a=inactive", 10) == 0 ||
+                    memcmp(p, "a=recvonly", 10) == 0 ||
+                    memcmp(p, "a=sendrecv", 10) == 0)) {
+            sb_appendf(&sb, "a=label:%s\r\n", label);
+            label_emitted_for_block = 1;
+            sb_append(&sb, p, line_len);
+        } else {
+            sb_append(&sb, p, line_len);
+        }
+
+        if (!eol) break;
+        if (eol[0] == '\r' && eol[1] == '\n') {
+            sb_append(&sb, "\r\n", 2);
+            p = eol + 2;
+        } else {
+            sb_append(&sb, eol, 1);
+            p = eol + 1;
+        }
+    }
+
+    /* Trailing m= block with neither a=label nor a direction
+     * attribute — append the label at end-of-SDP. */
+    if (in_m_block && !current_block_has_label && !label_emitted_for_block) {
+        sb_appendf(&sb, "a=label:%s\r\n", label);
+    }
+
+    return sb_take(&sb);
+}
+
 char *siprec_sdp_flip_direction(const char *src_sdp, int paused) {
     if (!src_sdp || !*src_sdp) return NULL;
 

@@ -209,6 +209,97 @@ static void test_sdp_flip_direction(void) {
     else { fprintf(stderr, "FAIL flip:empty should reject\n"); fail_count++; }
 }
 
+static void test_sdp_inject_label(void) {
+    /* RFC 7866 §8.5: every SRC stream must carry a=label:N.
+     * mod_sofia auto-gens an SDP without labels; we inject
+     * via post-originate re-INVITE. */
+    const char *unlabelled =
+        "v=0\r\n"
+        "o=- 555 1 IN IP4 192.0.2.10\r\n"
+        "s=-\r\n"
+        "c=IN IP4 192.0.2.10\r\n"
+        "t=0 0\r\n"
+        "m=audio 30000 RTP/AVP 0\r\n"
+        "a=rtpmap:0 PCMU/8000\r\n"
+        "a=ptime:20\r\n"
+        "a=sendonly\r\n";
+
+    char *labelled = siprec_sdp_inject_label(unlabelled, "1");
+    check_contains(labelled, "a=label:1\r\n",
+        "inject:label appears");
+    check_contains(labelled, "o=- 555 2 IN IP4 192.0.2.10\r\n",
+        "inject:o= version bumped");
+    /* Label should appear BEFORE a=sendonly (the conventional
+     * direction-attribute position — matches siprec_sdp_build). */
+    test_count++;
+    {
+        const char *lpos = labelled ? strstr(labelled, "a=label:1") : NULL;
+        const char *spos = labelled ? strstr(labelled, "a=sendonly") : NULL;
+        if (lpos && spos && lpos < spos) {
+            printf("PASS inject:label precedes a=sendonly\n");
+        } else {
+            fprintf(stderr, "FAIL inject:label should appear before a=sendonly\n");
+            fail_count++;
+        }
+    }
+    check_contains(labelled, "m=audio 30000 RTP/AVP 0\r\n",
+        "inject:m= preserved");
+    check_contains(labelled, "c=IN IP4 192.0.2.10\r\n",
+        "inject:c= preserved");
+    siprec_sdp_free(labelled);
+
+    /* Idempotent: SDP that already carries a=label:1 must not
+     * be double-labelled. Version still bumps because that's
+     * what re-INVITE semantics demand. */
+    const char *already_labelled =
+        "v=0\r\n"
+        "o=- 555 1 IN IP4 1.2.3.4\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n"
+        "m=audio 30000 RTP/AVP 0\r\n"
+        "a=label:1\r\n"
+        "a=sendonly\r\n";
+    char *re_inject = siprec_sdp_inject_label(already_labelled, "1");
+    test_count++;
+    {
+        const char *p = re_inject;
+        int count = 0;
+        while (p && (p = strstr(p, "a=label:1")) != NULL) { count++; p++; }
+        if (count == 1) {
+            printf("PASS inject:idempotent (single a=label:1)\n");
+        } else {
+            fprintf(stderr, "FAIL inject:idempotent — extra a=label:1 was emitted\n");
+            fail_count++;
+        }
+    }
+    check_contains(re_inject, "o=- 555 2 IN IP4 1.2.3.4\r\n",
+        "inject:idempotent still bumps version");
+    siprec_sdp_free(re_inject);
+
+    /* m= block with no direction attribute — label appended
+     * at end of block / SDP. */
+    const char *no_direction =
+        "v=0\r\n"
+        "o=- 1 1 IN IP4 1.2.3.4\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n"
+        "m=audio 9 RTP/AVP 0\r\n";
+    char *trail = siprec_sdp_inject_label(no_direction, "X");
+    check_contains(trail, "a=label:X\r\n", "inject:trailing-block label");
+    siprec_sdp_free(trail);
+
+    /* Reject NULL / empty inputs. */
+    test_count++;
+    if (siprec_sdp_inject_label(NULL, "1") == NULL) printf("PASS inject:reject NULL sdp\n");
+    else { fprintf(stderr, "FAIL inject:NULL sdp should reject\n"); fail_count++; }
+    test_count++;
+    if (siprec_sdp_inject_label("v=0\r\n", NULL) == NULL) printf("PASS inject:reject NULL label\n");
+    else { fprintf(stderr, "FAIL inject:NULL label should reject\n"); fail_count++; }
+    test_count++;
+    if (siprec_sdp_inject_label("v=0\r\n", "") == NULL) printf("PASS inject:reject empty label\n");
+    else { fprintf(stderr, "FAIL inject:empty label should reject\n"); fail_count++; }
+}
+
 static void test_sdp_invalid_returns_null(void) {
     /* Empty src_ip → NULL */
     {
@@ -514,6 +605,7 @@ int main(void) {
     test_sdp_stereo_opus();
     test_sdp_srtp_emission();
     test_sdp_flip_direction();
+    test_sdp_inject_label();
     test_sdp_invalid_returns_null();
 
     test_metadata_two_participants();
