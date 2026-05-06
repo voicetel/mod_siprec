@@ -301,7 +301,27 @@ switch_status_t siprec_media_attach(recording_t *recording)
             ictx->negotiated[i].remote_ip,
             sizeof(mctx->streams[i].remote_ip));
         mctx->streams[i].remote_port = ictx->negotiated[i].remote_port;
-        mctx->streams[i].ssrc = (uint32_t)switch_micro_time_now() + (uint32_t)i;
+
+        /* RFC 3550 §8.1: SSRC must be chosen at random with
+         * uniform distribution so collision detection works.
+         * The previous seed (switch_micro_time_now() + i) was
+         * monotonic and predictable — two sessions started in
+         * the same microsecond would collide. Pull 4 bytes from
+         * /dev/urandom (via the SRTP wrapper); fall back to the
+         * old time-based seed only if entropy is unavailable
+         * (extremely rare on real systems). */
+        uint8_t ssrc_bytes[4];
+        if (siprec_srtp_keymat_random(ssrc_bytes, sizeof(ssrc_bytes)) == 0) {
+            mctx->streams[i].ssrc =
+                ((uint32_t)ssrc_bytes[0] << 24)
+                | ((uint32_t)ssrc_bytes[1] << 16)
+                | ((uint32_t)ssrc_bytes[2] <<  8)
+                |  (uint32_t)ssrc_bytes[3];
+        } else {
+            mctx->streams[i].ssrc =
+                (uint32_t)switch_micro_time_now() ^ (uint32_t)i;
+        }
+
         mctx->streams[i].timestamp = 0;
         mctx->streams[i].sequence = 0;
         mctx->streams[i].srtp = NULL;
