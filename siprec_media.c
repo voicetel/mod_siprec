@@ -25,13 +25,15 @@
  * hot path).
  */
 #include "siprec_media.h"
-#include "siprec_srtp.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 /* siprec_invite.h declares siprec_invite_ctx_t (the type the
- * media path reads negotiated[i].remote_ip / srtp_keymat from
- * during attach). siprec_media.h only forward-declares the
- * struct so the public header stays light; the .c needs the
- * full definition. */
+ * media path reads negotiated[i].remote_ip from during attach).
+ * siprec_media.h only forward-declares the struct so the public
+ * header stays light; the .c needs the full definition. */
 #include "siprec_invite.h"
 
 /* Compile-time invariants:
@@ -137,14 +139,9 @@ static int rtp_pack_and_send(
     const struct sockaddr *dst, socklen_t dst_len,
     uint8_t pt, uint8_t marker, uint32_t ssrc,
     uint16_t sequence, uint32_t timestamp,
-    const uint8_t *payload, size_t payload_len,
-    struct siprec_srtp_session *srtp)
+    const uint8_t *payload, size_t payload_len)
 {
-    /* Reserve trailing room for the SRTP auth tag + any
-     * libsrtp-internal trailer, sized via the public macro
-     * mirrored from libsrtp's SRTP_MAX_TRAILER_LEN. Harmless
-     * margin on the plain-RTP path. */
-    uint8_t pkt[RTP_HEADER_LEN + 1500 + SIPREC_SRTP_MAX_TRAILER_LEN];
+    uint8_t pkt[RTP_HEADER_LEN + 1500];
     if (payload_len > 1500) {
         return -1;
     }
@@ -170,17 +167,6 @@ static int rtp_pack_and_send(
 
     memcpy(pkt + RTP_HEADER_LEN, payload, payload_len);
     size_t pkt_len = RTP_HEADER_LEN + payload_len;
-
-    /* SRTP-protect in place when a session is wired up. The
-     * auth tag is appended to pkt[]; libsrtp updates the
-     * length pointer. On failure we drop the packet — the
-     * recording stream stays SRTP-only, no fallback to
-     * cleartext (RFC 3711 §9.1). */
-    if (srtp) {
-        if (siprec_srtp_protect(srtp, pkt, sizeof(pkt), &pkt_len) != 0) {
-            return -1;
-        }
-    }
 
     ssize_t n = sendto(fd, pkt, pkt_len,
         MSG_NOSIGNAL, dst, dst_len);
@@ -288,8 +274,7 @@ static switch_bool_t media_bug_callback(
             ctx->streams[stream_idx].ssrc,
             ctx->streams[stream_idx].sequence++,
             ctx->streams[stream_idx].timestamp,
-            encoded, sample_count,
-            ctx->streams[stream_idx].srtp);
+            encoded, sample_count);
 
         ctx->streams[stream_idx].marker_pending = 0;
         ctx->streams[stream_idx].timestamp += sample_count;
@@ -335,8 +320,7 @@ switch_status_t siprec_media_attach(recording_t *recording)
 
     /* One UDP socket per stream. The source port is left
      * unbound (the kernel picks an ephemeral); the SRS's SDP
-     * answer told us where to send. SRTP context is wired up
-     * iff the invite_ctx carries a keymat for this stream. */
+     * answer told us where to send. */
     mctx->stream_count = ictx->negotiated_count;
     for (size_t i = 0; i < mctx->stream_count; i++) {
         /* IPv4-only RTP fork in v1. inet_pton returns 0 for a
@@ -386,48 +370,31 @@ switch_status_t siprec_media_attach(recording_t *recording)
 
         /* RFC 3550 §8.1: SSRC must be chosen at random with
          * uniform distribution so collision detection works.
-         * The previous seed (switch_micro_time_now() + i) was
-         * monotonic and predictable — two sessions started in
-         * the same microsecond would collide. Pull 4 bytes from
-         * /dev/urandom (via the SRTP wrapper); fall back to the
-         * old time-based seed only if entropy is unavailable
-         * (extremely rare on real systems). */
-        uint8_t ssrc_bytes[4];
-        if (siprec_srtp_keymat_random(ssrc_bytes, sizeof(ssrc_bytes)) == 0) {
-            mctx->streams[i].ssrc =
-                ((uint32_t)ssrc_bytes[0] << 24)
-                | ((uint32_t)ssrc_bytes[1] << 16)
-                | ((uint32_t)ssrc_bytes[2] <<  8)
-                |  (uint32_t)ssrc_bytes[3];
-        } else {
-            mctx->streams[i].ssrc =
-                (uint32_t)switch_micro_time_now() ^ (uint32_t)i;
+         * Pull 4 bytes from /dev/urandom; fall back to the
+         * monotonic seed only if entropy is unavailable
+         * (extremely rare on real systems). The kernel
+         * CSPRNG never blocks once seeded, which it always
+         * is by the time FS is loading modules. RFC 4086 §6.2
+         * endorses /dev/urandom for unpredictable values. */
+        mctx->streams[i].ssrc =
+            (uint32_t)switch_micro_time_now() ^ (uint32_t)i;
+        int rfd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+        if (rfd >= 0) {
+            uint8_t ssrc_bytes[4];
+            ssize_t got = read(rfd, ssrc_bytes, sizeof(ssrc_bytes));
+            close(rfd);
+            if (got == (ssize_t)sizeof(ssrc_bytes)) {
+                mctx->streams[i].ssrc =
+                    ((uint32_t)ssrc_bytes[0] << 24)
+                    | ((uint32_t)ssrc_bytes[1] << 16)
+                    | ((uint32_t)ssrc_bytes[2] <<  8)
+                    |  (uint32_t)ssrc_bytes[3];
+            }
         }
 
         mctx->streams[i].timestamp = 0;
         mctx->streams[i].sequence = 0;
-        mctx->streams[i].srtp = NULL;
         mctx->streams[i].marker_pending = 1; /* first pkt opens talkspurt */
-
-        if (ictx->negotiated[i].srtp_keymat_len > 0) {
-            mctx->streams[i].srtp = siprec_srtp_session_create(
-                SIPREC_SRTP_AES_CM_128_HMAC_SHA1_80,
-                mctx->streams[i].ssrc,
-                ictx->negotiated[i].srtp_keymat,
-                ictx->negotiated[i].srtp_keymat_len);
-            if (!mctx->streams[i].srtp) {
-                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
-                    SWITCH_LOG_ERROR,
-                    "siprec: SRTP session-create failed for stream %zu\n", i);
-                for (size_t j = 0; j <= i; j++) {
-                    if (mctx->streams[j].srtp)
-                        siprec_srtp_session_destroy(mctx->streams[j].srtp);
-                    if (mctx->streams[j].fd >= 0)
-                        close(mctx->streams[j].fd);
-                }
-                return SWITCH_STATUS_FALSE;
-            }
-        }
     }
 
     /* Attach the bug. SMBF_READ_STREAM | SMBF_WRITE_STREAM is
@@ -449,10 +416,6 @@ switch_status_t siprec_media_attach(recording_t *recording)
 
     if (st != SWITCH_STATUS_SUCCESS) {
         for (size_t i = 0; i < mctx->stream_count; i++) {
-            if (mctx->streams[i].srtp) {
-                siprec_srtp_session_destroy(mctx->streams[i].srtp);
-                mctx->streams[i].srtp = NULL;
-            }
             if (mctx->streams[i].fd >= 0) {
                 close(mctx->streams[i].fd);
                 mctx->streams[i].fd = -1;
@@ -477,10 +440,6 @@ switch_status_t siprec_media_detach(recording_t *recording)
         mctx->bug = NULL;
     }
     for (size_t i = 0; i < mctx->stream_count; i++) {
-        if (mctx->streams[i].srtp) {
-            siprec_srtp_session_destroy(mctx->streams[i].srtp);
-            mctx->streams[i].srtp = NULL;
-        }
         if (mctx->streams[i].fd >= 0) {
             close(mctx->streams[i].fd);
             mctx->streams[i].fd = -1;

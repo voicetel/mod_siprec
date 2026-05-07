@@ -44,8 +44,6 @@
 typedef struct siprec_negotiated_s {
     char     remote_ip[64];
     uint16_t remote_port;
-    uint8_t  srtp_keymat[64];   /* room for the largest suite */
-    size_t   srtp_keymat_len;
 } siprec_negotiated_t;
 
 /* Per-recording SIP context. Lives inside the recording_t
@@ -74,14 +72,7 @@ typedef struct siprec_invite_ctx {
 
     /* Negotiated remote RTP endpoint(s) from the 200 OK SDP.
      * Populated by parse_remote_sdp. Filled in once per
-     * stream (one per a=label in the SRC offer).
-     *
-     * srtp_keymat / srtp_keymat_len: when non-zero length,
-     * this stream is SRTP-protected. siprec_media_attach
-     * spins up a libsrtp session per stream from the keymat
-     * we generated for the SDP offer. SRC-side keymat is
-     * sufficient because the SRC is sendonly — we never
-     * decrypt anything from the SRS. */
+     * stream (one per a=label in the SRC offer). */
     siprec_negotiated_t negotiated[SIPREC_MAX_STREAMS];
     size_t negotiated_count;
 } siprec_invite_ctx_t;
@@ -101,9 +92,9 @@ typedef struct siprec_invite_ctx {
  *                       carry a pre-built SDP override once
  *                       a "set local SDP before originate"
  *                       path through mod_sofia is wired —
- *                       that's the prerequisite for emitting
- *                       a=label:N per stream (RFC 7866 §8.5)
- *                       and for SRTP a=crypto in the offer.
+ *                       that's the prerequisite for a
+ *                       multi-track offer (per-direction
+ *                       RTP fork via siprec_sdp_build).
  *   metadata_body      — pre-built XML from
  *                       siprec_metadata_build (REQUIRED).
  *

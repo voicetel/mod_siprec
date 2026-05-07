@@ -17,10 +17,6 @@
                               * per-stream destination. */
 #include "mod_siprec.h"
 
-/* Forward decl — siprec_srtp.h is private to siprec_media.c so
- * the public header doesn't pull libsrtp2 into every callsite. */
-struct siprec_srtp_session;
-
 /* SIPREC_MAX_STREAMS is defined in siprec_invite.h; we pull
  * it through the same include path that consumers of this
  * file already need (mod_siprec.h ↔ siprec_invite.h). The
@@ -38,11 +34,7 @@ typedef struct siprec_media_ctx {
 
     /* The RTP socket (UDP) we send tapped audio over. One
      * socket per stream; v1 caps at 2 streams (read + write
-     * directions of the original 2-leg call).
-     *
-     * srtp is non-NULL when this stream is SRTP-protected.
-     * Encryption happens after RTP framing and before sendto;
-     * the buffer carries the SRTP auth tag appended in place. */
+     * directions of the original 2-leg call). */
     struct {
         int        fd;
         char       remote_ip[64];
@@ -60,7 +52,6 @@ typedef struct siprec_media_ctx {
         uint32_t   ssrc;
         uint32_t   timestamp;
         uint16_t   sequence;
-        struct siprec_srtp_session *srtp;
 
         /* RFC 3551 §4.1: the marker bit on the first packet
          * of a talkspurt after silence. We set this whenever

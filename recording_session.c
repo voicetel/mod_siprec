@@ -380,38 +380,11 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
         return SWITCH_STATUS_FALSE;
     }
 
-    /* SRTP for the RTP fork (RFC 7866 §11.2) is gated on a
-     * working SDP-offer override: the SRC has to put a=crypto
-     * into the INITIAL INVITE so the SRS can decrypt anything
-     * we send. mod_sofia auto-generates the offer SDP on
-     * outbound originate and there's no per-call hook today
-     * that lets mod_siprec inject a=crypto into that body.
-     *
-     * The previous implementation tried to plug the gap with
-     * a post-originate re-INVITE carrying our labelled-SDP,
-     * but that body had port=1 placeholders and a fresh
-     * o=session-id, so the re-INVITE was always rejected and
-     * the SRTP path silently produced encrypted-but-
-     * undecodable RTP at the SRS. Refuse to start in that
-     * configuration rather than silently corrupt the
-     * recording. */
-    if (server->srtp_enabled) {
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
-            SWITCH_LOG_ERROR,
-            "siprec: srtp=true is not supported in this build "
-            "(SDP-offer override path is not yet wired); "
-            "aborting recording for server '%s'\n",
-            recording_server_name);
-        siprec_metadata_free(metadata_body);
-        discard_pending_recording(recording);
-        return SWITCH_STATUS_FALSE;
-    }
-
-    /* v1 path: send the INVITE without an SDP override and
-     * let mod_sofia auto-generate the offer body. The
-     * sdp_body argument to siprec_invite_send_failover is
-     * therefore NULL — reserved for the future strict-RFC
-     * (a=label:N per stream) bring-up. */
+    /* Send the INVITE without an SDP override and let mod_sofia
+     * auto-generate the offer body. The sdp_body argument to
+     * siprec_invite_send_failover is therefore NULL — reserved
+     * for the future multi-track offer bring-up that needs an
+     * offer-time SDP-override hook through mod_sofia. */
     switch_status_t inv = siprec_invite_send_failover(
         recording, profile, server, /*sdp_body*/ NULL, metadata_body);
 

@@ -34,7 +34,6 @@
 #include "siprec_invite.h"
 #include "siprec_media.h"
 #include "siprec_sdp.h"
-#include "siprec_srtp.h"
 
 globals_t globals;
 
@@ -91,10 +90,6 @@ static switch_status_t load_recording_server(switch_xml_t xml)
 				 * MUST have sip-tls-port configured. */
 				recording_server->transport =
 					switch_core_strdup(recording_server_pool, val);
-			} else if (!strcmp(var, "srtp")) {
-				/* "true" enables SRTP for the RTP fork (per-
-				 * stream keys + RTP/SAVP profile + a=crypto). */
-				recording_server->srtp_enabled = switch_true(val);
 			}
 		}
 	}
@@ -329,16 +324,6 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_siprec_load)
 	switch_core_hash_init(&globals.recording_servers_hash);
 	switch_core_hash_init(&globals.recordings_hash);
 
-	/* libsrtp2 init — once at module load. Idempotent guard
-	 * inside siprec_srtp_init handles repeated reloads. Safe
-	 * to call even when no recording-server has SRTP enabled
-	 * (the per-session create only fires for SRTP streams). */
-	if (siprec_srtp_init() != 0) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
-			"siprec: libsrtp2 init failed; SRTP recordings will not work\n");
-		/* Continue load — non-SRTP recording still works. */
-	}
-
 	*module_interface = switch_loadable_module_create_module_interface(pool, modname);
 
 	status = do_config(SWITCH_FALSE);
@@ -411,8 +396,6 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_siprec_shutdown)
 
 	switch_mutex_destroy(globals.recordings_mutex);
 	switch_mutex_destroy(globals.recording_servers_mutex);
-
-	siprec_srtp_shutdown();
 
 	return SWITCH_STATUS_SUCCESS;
 }

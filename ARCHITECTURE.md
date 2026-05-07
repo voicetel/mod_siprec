@@ -152,8 +152,7 @@ siprec_media.h
 - [x] Unit tests for `siprec_sdp.c` — assertions covering
       RFC 7866 §7 line shape, RFC 4566 SDP shape,
       `a=group:DUP` correctly absent, mono vs stereo rtpmap,
-      SRTP a=crypto emission, direction-flip helper round-
-      trip, validation reject paths.
+      direction-flip helper round-trip, validation reject paths.
 - [x] Unit tests for `siprec_metadata.c` — assertions
       covering RFC 7865 Appendix A schema element ordering,
       attribute presence, schema-strict participant /
@@ -175,14 +174,19 @@ siprec_media.h
 
 ## Known gaps
 
-- **Initial-offer SDP override**: `a=label:N` per stream
-  (RFC 7866 §8.5) and SRTP `a=crypto` (RFC 4568) both need
-  the SRC to control the SDP carried on the initial INVITE.
-  mod_sofia auto-generates that body and there's no
-  per-call hook today that lets mod_siprec inject either
-  attribute. Until this lands, `srtp=true` recording is
-  refused at start; SRSes that strictly require labels will
-  reject our offers.
+- **Initial-offer SDP override**: a multi-track offer (two
+  `m=audio` blocks, one per recorded direction, each with its
+  own `a=label:N` per RFC 7866 §8.5) needs the SRC to control
+  the SDP body carried on the initial INVITE. mod_sofia
+  auto-generates that body single-track and there's no
+  per-call hook today that lets mod_siprec inject a
+  pre-built SDP. Until this lands, the SRC sends a
+  single-track offer and records only the READ direction
+  (RFC 7866 §7 explicitly permits this — "MAY send multiple
+  streams" — but bidirectional recording is the obvious next
+  step). SRTP via SDES (RFC 4568) is also gated on the same
+  override — keymat must travel in the initial offer, which
+  we don't control today.
 
 ## Non-goals (deferred)
 

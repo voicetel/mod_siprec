@@ -50,7 +50,7 @@ verification path; production interop is verified against
 | DTMF tone forking | [RFC 7866 §8.4][rfc7866-8.4] | ✅ passes through the audio bug |
 | communication-failure soft-fail | [RFC 7866 §11.1.1][rfc7866-11.1.1] | ✅ original call unaffected on dispatch failure |
 | SRS failover (multiple endpoints, ordered) | [RFC 7866 §11.1.1][rfc7866-11.1.1] | ✅ multiple `<recording-server>` entries, walked in config order |
-| SRTP for the recording RTP fork | [RFC 7866 §11.2][rfc7866-11.2] / [RFC 3711][rfc3711] / [RFC 4568][rfc4568] | ⏸ `srtp=true` is currently refused; needs initial-offer override (gates on the RFC 7866 §8.5 row above) |
+| SRTP for the recording RTP fork | [RFC 7866 §11.2][rfc7866-11.2] / [RFC 3711][rfc3711] / [RFC 4568][rfc4568] | ❌ not supported. SDES keymat must travel in the initial offer (RFC 4568 §5.1) and our offer is sofia auto-gen which doesn't carry `a=crypto`. The clean path needs the same offer-time SDP-override hook the multi-track work needs. SRSes that require SRTP will reject our `RTP/AVP` offer with `488 Not Acceptable Here`; failover or pin a strict-SRTP-not-required SRS. |
 | SIPS transport for SRC→SRS | [RFC 7866 §11.3][rfc7866-11.3] | ✅ `transport=tls` config |
 | SDP body shape (`v=`, `o=`, `s=`, `c=`, `t=`, `m=`, `a=rtpmap`, `a=ptime`, `a=label`, `a=sendonly`) | [RFC 4566][rfc4566] / [RFC 7866 §7][rfc7866-7] | ✅ `siprec_sdp_build` (offered to operators that build their own; sofia auto-gen used otherwise) |
 | Pause/resume SDP direction-flip with `o=` version bump | [RFC 4566 §5.2][rfc4566] | ✅ `siprec_sdp_flip_direction` |
@@ -212,14 +212,8 @@ Files:
 - **`siprec_metadata.{c,h}`** — [RFC 7865 Appendix A][rfc7865]
   schema-conformant metadata XML builder with full XML-entity
   escaping.
-- **`siprec_srtp.{c,h}`** — [libsrtp2][libsrtp2] wrapper
-  (AES_CM_128_HMAC_SHA1_80) + base64 keymat encoder. Currently
-  not exercised at runtime — see the SRTP row in the status
-  table for the gating issue.
-- **`siprec_test.c`** — 77 unit-test assertions for the builders
+- **`siprec_test.c`** — unit-test assertions for the builders
   and the SDP direction-flip helper.
-
-[libsrtp2]: https://github.com/cisco/libsrtp
 - **`autoload_conf/siprec.conf.xml`** — module config schema.
 - **[`ARCHITECTURE.md`](ARCHITECTURE.md)** — phase plan + RFC mapping.
 - **[`tests/README.md`](tests/README.md)** — operator field-test
