@@ -24,33 +24,6 @@ SRS's 200 OK answer.
 [rfc7865]: https://datatracker.ietf.org/doc/html/rfc7865
 [rfc7866]: https://datatracker.ietf.org/doc/html/rfc7866
 
-## Why this fork
-
-This module started as a fork of
-[StefanYohansson/mod_siprec][upstream]. The upstream readme
-describes itself as an "initial idea, not working yet" and the
-code reflects that: dispatching the `siprec` app crashed
-FreeSWITCH within a few hundred milliseconds because of an
-uninitialised memory pool, a NULL key into APR's hash, a
-duplicate-detect lookup against the wrong hash, and a double-
-free of an XML child after its parent had already been released.
-
-This fork:
-
-- fixes those four crash bugs on the dispatch path,
-- fixes two memory-pool leaks on the start/stop paths,
-- replaces the empty stub of `start_recording_session` with a
-  full SRC pipeline (multipart MIME, SDP, metadata XML, INVITE,
-  media bug, RTP fork, BYE),
-- adds RFC 7865 §5 metadata XML generation with proper escaping,
-- adds RFC 7866 §6.4 pause / resume via re-INVITE
-  (`siprec_pause` / `siprec_resume` apps),
-- ships a unit test suite that runs in ~0.2 s with no FreeSWITCH
-  dependency, plus a `cppcheck --enable=all
-  --check-level=exhaustive` clean codebase.
-
-[upstream]: https://github.com/StefanYohansson/mod_siprec
-
 ## Status
 
 All paths build, lint clean, and the unit-test suite for the
@@ -59,7 +32,10 @@ media / signalling pipeline has been audited and the broken
 pieces from the original fork have been replaced. Live
 integration against `cb-srs` is documented in
 [`tests/README.md`](tests/README.md) as the operator
-verification path.
+verification path; production interop is verified against
+[TransNexus ClearIP][clearip] as well.
+
+[clearip]: https://transnexus.com/clearip/
 
 | Concept | Spec | Status |
 |---|---|---|
@@ -215,6 +191,7 @@ starts.
                                                          ┌─────────────┐
                                                          │ SRS         │
                                                          │ (cb-srs,    │
+                                                         │  ClearIP,   │
                                                          │  Genesys,   │
                                                          │  NICE, ...) │
                                                          └─────────────┘
@@ -259,6 +236,35 @@ Issues and PRs welcome. Two things to keep in mind:
    FreeSWITCH source tree. Use the `tests/README.md` field-test
    checklist on a live build before merging behavior changes
    in `siprec_invite.c` / `siprec_media.c` / `recording_session.c`.
+
+## Why this fork
+
+This module started as a fork of
+[StefanYohansson/mod_siprec][upstream]. The upstream readme
+describes itself as an "initial idea, not working yet" and the
+code reflects that: dispatching the `siprec` app crashed
+FreeSWITCH within a few hundred milliseconds because of an
+uninitialised memory pool, a NULL key into APR's hash, a
+duplicate-detect lookup against the wrong hash, and a double-
+free of an XML child after its parent had already been released.
+
+This fork:
+
+- fixes those four crash bugs on the dispatch path,
+- fixes two memory-pool leaks on the start/stop paths,
+- replaces the empty stub of `start_recording_session` with a
+  full SRC pipeline (multipart MIME, SDP, metadata XML, INVITE,
+  media bug, RTP fork, BYE),
+- ships a unit test suite that runs in ~0.2 s with no FreeSWITCH
+  dependency, plus a `cppcheck --enable=all
+  --check-level=exhaustive` clean codebase.
+
+The full feature set (RFC 7865 metadata, RFC 7866 §6.4 pause /
+resume, RFC 7866 §5.2.1 `+sip.src` Contact tag, RFC 7866 §8.5
+`a=label:N`, etc.) is documented in the **Status** table near
+the top of this file.
+
+[upstream]: https://github.com/StefanYohansson/mod_siprec
 
 ## 🙌 Contributors
 
