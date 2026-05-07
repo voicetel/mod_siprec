@@ -377,7 +377,7 @@ switch_status_t siprec_invite_send(
         switch_channel_get_variable(rch, "sip_local_sdp_str");
     char *labelled_sdp = NULL;
     if (!zstr(local_sdp_now)) {
-        labelled_sdp = siprec_sdp_inject_label(local_sdp_now, "1");
+        labelled_sdp = siprec_sdp_inject_labels(local_sdp_now);
     }
 
     switch_core_session_rwunlock(new_session);
@@ -399,11 +399,11 @@ switch_status_t siprec_invite_send(
     /* RFC 7866 §8.5 label injection. mod_sofia's auto-gen
      * offer doesn't emit a=label:N, so we surgically modify
      * the just-negotiated local SDP (preserving every byte
-     * except the o= version bump and the new a=label line)
+     * except the o= version bump and the new a=label lines)
      * and re-INVITE. The labelled SDP carries the SAME ports
      * / codec / c= as what the SRS just accepted, so a
      * conformant SRS treats it as a session modification and
-     * applies the label.
+     * applies the labels.
      *
      * Fire-and-forget. If the SRS rejects the re-INVITE
      * (488 / 5xx), RFC 3261 §14.1 keeps the dialog at the
@@ -412,13 +412,14 @@ switch_status_t siprec_invite_send(
      * runs immediately after this returns, using the original
      * negotiated[] endpoints either way.
      *
-     * Multi-stream limitation: the same "1" label goes into
-     * every m= block today. mod_sofia's auto-gen produces a
-     * single m=audio so this is effectively single-stream.
-     * Per-stream distinct labels (a=label:1 + a=label:2 in
-     * one offer) need the SDP-override hook through mod_sofia
-     * — sdp_body parameter (already void-cast at function top)
-     * is reserved for that future path. */
+     * Per-block sequential labels: siprec_sdp_inject_labels
+     * auto-numbers each m= block (1st → label:1, 2nd → label:2,
+     * etc). Today mod_sofia's auto-gen produces a single
+     * m=audio so the wire effect is label:1 only. The moment
+     * sofia produces multi-track offers (or the "set local
+     * SDP before originate" hook lands, exposing
+     * siprec_sdp_build's multi-track output) the call site
+     * picks up the additional labels without code changes. */
 
     if (labelled_sdp) {
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
@@ -430,7 +431,7 @@ switch_status_t siprec_invite_send(
             switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
                 SWITCH_LOG_WARNING,
                 "siprec: label re-INVITE dispatch failed; recording "
-                "continues without a=label:1 in the offer\n");
+                "continues without a=label:N in the offer\n");
         }
         siprec_sdp_free(labelled_sdp);
     } else if (zstr(local_sdp_now)) {
@@ -438,7 +439,7 @@ switch_status_t siprec_invite_send(
             SWITCH_LOG_WARNING,
             "siprec: sip_local_sdp_str not yet materialised; skipping "
             "RFC 7866 §8.5 label injection — recording continues "
-            "without a=label:1 in the offer\n");
+            "without a=label:N in the offer\n");
     }
 
     return SWITCH_STATUS_SUCCESS;

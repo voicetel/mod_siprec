@@ -315,13 +315,21 @@ static void sb_append(sb_t *sb, const char *s, size_t n) {
     sb->data[sb->len] = '\0';
 }
 
-/* siprec_sdp_inject_label: walk src_sdp line by line, emitting
- * each line verbatim except:
+/* siprec_sdp_inject_labels: walk src_sdp line by line,
+ * emitting each line verbatim except:
  *   - o= line: bump session-version per RFC 4566 §5.2
- *   - within each m= block, inject "a=label:<label>\r\n" if
- *     the block doesn't already carry one, placed immediately
+ *   - within each m= block, inject "a=label:<n>\r\n" if the
+ *     block doesn't already carry one, where <n> is the
+ *     1-based ordinal of the m= block. Placed immediately
  *     before the direction attribute (a=sendonly etc) for
  *     ordering parity with siprec_sdp_build's output.
+ *
+ * The block counter advances on EVERY m= block — including
+ * blocks that already carry their own a=label — so a partially
+ * labelled SDP gets unique sequential labels for the missing
+ * positions. (Worth noting: an already-labelled "label:1" on
+ * the first block followed by an unlabelled second block ends
+ * up with label:2 on the second; we never collide.)
  *
  * Idempotent: m= blocks that already have an a=label line are
  * passed through unchanged (a second call adds no second
@@ -330,15 +338,18 @@ static void sb_append(sb_t *sb, const char *s, size_t n) {
  * Walk loop is parallel to siprec_sdp_flip_direction's; the
  * two functions intentionally don't share a callback-based
  * helper because the inject path needs cross-line state
- * (in_m_block / current_block_has_label / label_emitted) that
+ * (block_index / current_block_has_label / label_emitted) that
  * doesn't fit a stateless filter cleanly. */
-char *siprec_sdp_inject_label(const char *src_sdp, const char *label) {
-    if (!src_sdp || !*src_sdp || !label || !*label) return NULL;
+char *siprec_sdp_inject_labels(const char *src_sdp) {
+    if (!src_sdp || !*src_sdp) return NULL;
 
     sb_t sb;
     sb_init(&sb);
 
-    int in_m_block              = 0;
+    /* block_index counts m= blocks observed so far (1-based at
+     * emission time — incremented when we enter a block, so
+     * the first m= block has block_index == 1). */
+    int block_index             = 0;
     int current_block_has_label = 0;
     int label_emitted_for_block = 0;
 
@@ -365,24 +376,25 @@ char *siprec_sdp_inject_label(const char *src_sdp, const char *label) {
              * unlabelled and we hadn't emitted yet, do it now
              * (covers the corner case of an m= block with no
              * direction attribute — terminator is the next m=
-             * line). */
-            if (in_m_block && !current_block_has_label && !label_emitted_for_block) {
-                sb_appendf(&sb, "a=label:%s\r\n", label);
+             * line). The label uses the PREVIOUS block_index
+             * because we haven't bumped for this new block yet. */
+            if (block_index > 0 && !current_block_has_label && !label_emitted_for_block) {
+                sb_appendf(&sb, "a=label:%d\r\n", block_index);
             }
-            in_m_block = 1;
+            block_index++;
             current_block_has_label = 0;
             label_emitted_for_block = 0;
             sb_append(&sb, p, line_len);
-        } else if (in_m_block && line_len >= 8 && memcmp(p, "a=label:", 8) == 0) {
+        } else if (block_index > 0 && line_len >= 8 && memcmp(p, "a=label:", 8) == 0) {
             current_block_has_label = 1;
             sb_append(&sb, p, line_len);
-        } else if (in_m_block && !current_block_has_label && !label_emitted_for_block
+        } else if (block_index > 0 && !current_block_has_label && !label_emitted_for_block
                    && line_len == 10 &&
                    (memcmp(p, "a=sendonly", 10) == 0 ||
                     memcmp(p, "a=inactive", 10) == 0 ||
                     memcmp(p, "a=recvonly", 10) == 0 ||
                     memcmp(p, "a=sendrecv", 10) == 0)) {
-            sb_appendf(&sb, "a=label:%s\r\n", label);
+            sb_appendf(&sb, "a=label:%d\r\n", block_index);
             label_emitted_for_block = 1;
             sb_append(&sb, p, line_len);
         } else {
@@ -401,8 +413,8 @@ char *siprec_sdp_inject_label(const char *src_sdp, const char *label) {
 
     /* Trailing m= block with neither a=label nor a direction
      * attribute — append the label at end-of-SDP. */
-    if (in_m_block && !current_block_has_label && !label_emitted_for_block) {
-        sb_appendf(&sb, "a=label:%s\r\n", label);
+    if (block_index > 0 && !current_block_has_label && !label_emitted_for_block) {
+        sb_appendf(&sb, "a=label:%d\r\n", block_index);
     }
 
     return sb_take(&sb);

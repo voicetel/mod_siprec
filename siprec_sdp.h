@@ -104,10 +104,12 @@ char *siprec_sdp_build(const siprec_sdp_options_t *opts);
  */
 char *siprec_sdp_flip_direction(const char *src_sdp, int paused);
 
-/* siprec_sdp_inject_label: produce a copy of `src_sdp` with
- * `a=label:<label>` injected into every m= block that doesn't
- * already carry a label, and the o= session-version
- * incremented per RFC 4566 §5.2.
+/* siprec_sdp_inject_labels: produce a copy of `src_sdp` with
+ * `a=label:<n>` injected into every m= block that doesn't
+ * already carry a label, where <n> is the 1-based index of
+ * that m= block within the SDP (first m= → label:1, second →
+ * label:2, etc). The o= session-version is incremented per
+ * RFC 4566 §5.2.
  *
  * RFC 7866 §8.5 requires every SRC stream to carry an
  * a=label:N attribute for cross-reference from the metadata
@@ -123,19 +125,21 @@ char *siprec_sdp_flip_direction(const char *src_sdp, int paused);
  * or at the end of the block if no direction attribute is
  * present. m= blocks that already carry a=label:<anything>
  * are left untouched (idempotent — calling this on an
- * already-labelled SDP is safe).
+ * already-labelled SDP is safe; the per-block counter still
+ * advances on already-labelled blocks so subsequent unlabelled
+ * blocks pick up where the existing labels left off).
  *
- * Multi-stream limitation: in v1 every m= block gets the
- * SAME label string. mod_sofia's auto-gen produces a single
- * m=audio so this is a single-stream injection in practice;
- * full per-stream labelling per RFC 7866 §7.5 needs the
- * "set local SDP before originate" path.
+ * Today mod_sofia's auto-gen produces a single m=audio so
+ * the function effectively emits label:1. Once a multi-track
+ * offer path lands (either via a "set local SDP before
+ * originate" sofia hook OR via siprec_sdp_build's own
+ * multi-track output) the same call site picks up label:1 +
+ * label:2 + … without code changes.
  *
  * Returns a heap buffer (caller frees with siprec_sdp_free)
- * or NULL on allocation failure / malformed input / empty
- * label.
+ * or NULL on allocation failure / malformed input.
  */
-char *siprec_sdp_inject_label(const char *src_sdp, const char *label);
+char *siprec_sdp_inject_labels(const char *src_sdp);
 
 /* Free a buffer returned by siprec_sdp_build /
  * siprec_sdp_flip_direction. NULL-safe. */

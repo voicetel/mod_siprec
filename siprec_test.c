@@ -209,10 +209,13 @@ static void test_sdp_flip_direction(void) {
     else { fprintf(stderr, "FAIL flip:empty should reject\n"); fail_count++; }
 }
 
-static void test_sdp_inject_label(void) {
+static void test_sdp_inject_labels(void) {
     /* RFC 7866 §8.5: every SRC stream must carry a=label:N.
      * mod_sofia auto-gens an SDP without labels; we inject
-     * via post-originate re-INVITE. */
+     * via post-originate re-INVITE. The injector auto-numbers
+     * per m= block (1st → label:1, 2nd → label:2, …). */
+
+    /* Single m= block: label:1 emitted before a=sendonly. */
     const char *unlabelled =
         "v=0\r\n"
         "o=- 555 1 IN IP4 192.0.2.10\r\n"
@@ -224,9 +227,9 @@ static void test_sdp_inject_label(void) {
         "a=ptime:20\r\n"
         "a=sendonly\r\n";
 
-    char *labelled = siprec_sdp_inject_label(unlabelled, "1");
+    char *labelled = siprec_sdp_inject_labels(unlabelled);
     check_contains(labelled, "a=label:1\r\n",
-        "inject:label appears");
+        "inject:single-block label:1 appears");
     check_contains(labelled, "o=- 555 2 IN IP4 192.0.2.10\r\n",
         "inject:o= version bumped");
     /* Label should appear BEFORE a=sendonly (the conventional
@@ -248,6 +251,44 @@ static void test_sdp_inject_label(void) {
         "inject:c= preserved");
     siprec_sdp_free(labelled);
 
+    /* Two m= blocks: 1st gets label:1, 2nd gets label:2.
+     * RFC 7866 §7 / §8.5 multi-track signature — what the
+     * call site emits the day mod_sofia produces multi-track
+     * offers (or the SDP-override hook lands). */
+    const char *two_blocks =
+        "v=0\r\n"
+        "o=- 100 1 IN IP4 192.0.2.10\r\n"
+        "s=-\r\n"
+        "c=IN IP4 192.0.2.10\r\n"
+        "t=0 0\r\n"
+        "m=audio 30000 RTP/AVP 0\r\n"
+        "a=rtpmap:0 PCMU/8000\r\n"
+        "a=sendonly\r\n"
+        "m=audio 30002 RTP/AVP 0\r\n"
+        "a=rtpmap:0 PCMU/8000\r\n"
+        "a=sendonly\r\n";
+    char *two = siprec_sdp_inject_labels(two_blocks);
+    check_contains(two, "a=label:1\r\n",
+        "inject:two-block label:1 on first stream");
+    check_contains(two, "a=label:2\r\n",
+        "inject:two-block label:2 on second stream");
+    /* Ordering check: label:1 must precede label:2 in the
+     * output, AND each label must precede the corresponding
+     * a=sendonly within its block. Two-pass scan from the top. */
+    test_count++;
+    {
+        const char *l1 = two ? strstr(two, "a=label:1") : NULL;
+        const char *l2 = two ? strstr(two, "a=label:2") : NULL;
+        const char *m2 = two ? strstr(two, "m=audio 30002") : NULL;
+        if (l1 && l2 && m2 && l1 < m2 && m2 < l2) {
+            printf("PASS inject:two-block label ordering (label:1 in 1st block, label:2 in 2nd)\n");
+        } else {
+            fprintf(stderr, "FAIL inject:two-block label ordering wrong\n");
+            fail_count++;
+        }
+    }
+    siprec_sdp_free(two);
+
     /* Idempotent: SDP that already carries a=label:1 must not
      * be double-labelled. Version still bumps because that's
      * what re-INVITE semantics demand. */
@@ -259,7 +300,7 @@ static void test_sdp_inject_label(void) {
         "m=audio 30000 RTP/AVP 0\r\n"
         "a=label:1\r\n"
         "a=sendonly\r\n";
-    char *re_inject = siprec_sdp_inject_label(already_labelled, "1");
+    char *re_inject = siprec_sdp_inject_labels(already_labelled);
     test_count++;
     {
         const char *p = re_inject;
@@ -276,6 +317,36 @@ static void test_sdp_inject_label(void) {
         "inject:idempotent still bumps version");
     siprec_sdp_free(re_inject);
 
+    /* Mixed: 1st block already labelled (label:1), 2nd block
+     * unlabelled. Counter advances on the labelled block, so
+     * the 2nd block correctly gets label:2 — not label:1. */
+    const char *mixed =
+        "v=0\r\n"
+        "o=- 200 1 IN IP4 1.2.3.4\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n"
+        "m=audio 30000 RTP/AVP 0\r\n"
+        "a=label:1\r\n"
+        "a=sendonly\r\n"
+        "m=audio 30002 RTP/AVP 0\r\n"
+        "a=sendonly\r\n";
+    char *mixed_out = siprec_sdp_inject_labels(mixed);
+    test_count++;
+    {
+        const char *p = mixed_out;
+        int l1 = 0, l2 = 0;
+        while (p && (p = strstr(p, "a=label:1")) != NULL) { l1++; p++; }
+        p = mixed_out;
+        while (p && (p = strstr(p, "a=label:2")) != NULL) { l2++; p++; }
+        if (l1 == 1 && l2 == 1) {
+            printf("PASS inject:mixed (existing label:1 kept, new label:2 added)\n");
+        } else {
+            fprintf(stderr, "FAIL inject:mixed — l1=%d l2=%d, want 1/1\n", l1, l2);
+            fail_count++;
+        }
+    }
+    siprec_sdp_free(mixed_out);
+
     /* m= block with no direction attribute — label appended
      * at end of block / SDP. */
     const char *no_direction =
@@ -284,20 +355,17 @@ static void test_sdp_inject_label(void) {
         "s=-\r\n"
         "t=0 0\r\n"
         "m=audio 9 RTP/AVP 0\r\n";
-    char *trail = siprec_sdp_inject_label(no_direction, "X");
-    check_contains(trail, "a=label:X\r\n", "inject:trailing-block label");
+    char *trail = siprec_sdp_inject_labels(no_direction);
+    check_contains(trail, "a=label:1\r\n", "inject:trailing-block label");
     siprec_sdp_free(trail);
 
     /* Reject NULL / empty inputs. */
     test_count++;
-    if (siprec_sdp_inject_label(NULL, "1") == NULL) printf("PASS inject:reject NULL sdp\n");
+    if (siprec_sdp_inject_labels(NULL) == NULL) printf("PASS inject:reject NULL sdp\n");
     else { fprintf(stderr, "FAIL inject:NULL sdp should reject\n"); fail_count++; }
     test_count++;
-    if (siprec_sdp_inject_label("v=0\r\n", NULL) == NULL) printf("PASS inject:reject NULL label\n");
-    else { fprintf(stderr, "FAIL inject:NULL label should reject\n"); fail_count++; }
-    test_count++;
-    if (siprec_sdp_inject_label("v=0\r\n", "") == NULL) printf("PASS inject:reject empty label\n");
-    else { fprintf(stderr, "FAIL inject:empty label should reject\n"); fail_count++; }
+    if (siprec_sdp_inject_labels("") == NULL) printf("PASS inject:reject empty sdp\n");
+    else { fprintf(stderr, "FAIL inject:empty sdp should reject\n"); fail_count++; }
 }
 
 static void test_sdp_invalid_returns_null(void) {
@@ -605,7 +673,7 @@ int main(void) {
     test_sdp_stereo_opus();
     test_sdp_srtp_emission();
     test_sdp_flip_direction();
-    test_sdp_inject_label();
+    test_sdp_inject_labels();
     test_sdp_invalid_returns_null();
 
     test_metadata_two_participants();

@@ -54,7 +54,7 @@ This fork:
 ## Status
 
 All paths build, lint clean, and the unit-test suite for the
-SDP / metadata builders passes 77/77 assertions. The dispatch /
+SDP / metadata builders passes 93/93 assertions. The dispatch /
 media / signalling pipeline has been audited and the broken
 pieces from the original fork have been replaced. Live
 integration against `cb-srs` is documented in
@@ -68,7 +68,7 @@ verification path.
 | BYE on hangup | [RFC 7866 §6.4][rfc7866-6.4] | ✅ on_destroy state-handler |
 | pause / resume re-INVITE | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_pause` / `siprec_resume` apps; SDP direction-flip preserves negotiated session |
 | sendonly direction on SRC streams | [RFC 7866 §7.4][rfc7866-7.4] | ✅ sofia auto-gen offer |
-| `a=label:N` per stream | [RFC 7866 §8.5][rfc7866-8.5] | ⚠ partial — single-stream `a=label:1` injected via post-originate re-INVITE on the auto-generated SDP; per-stream distinct labels in one offer still need an `mod_sofia` SDP-override hook |
+| `a=label:N` per stream | [RFC 7866 §8.5][rfc7866-8.5] | ✅ per-block sequential labels (1st m= → `label:1`, 2nd → `label:2`, …) injected via post-originate re-INVITE on the auto-generated SDP. mod_sofia's auto-gen is single-track today, so the wire effect is `label:1`; the moment a multi-track offer path lands (sofia SDP-override hook OR `siprec_sdp_build`-driven originate) the same call site picks up `label:1` + `label:2` + … without code changes |
 | DTMF tone forking | [RFC 7866 §8.4][rfc7866-8.4] | ✅ passes through the audio bug |
 | communication-failure soft-fail | [RFC 7866 §11.1.1][rfc7866-11.1.1] | ✅ original call unaffected on dispatch failure |
 | SRS failover (multiple endpoints, ordered) | [RFC 7866 §11.1.1][rfc7866-11.1.1] | ✅ multiple `<recording-server>` entries, walked in config order |
