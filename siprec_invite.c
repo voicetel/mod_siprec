@@ -221,6 +221,27 @@ switch_status_t siprec_invite_send(
     switch_event_add_header_string(ovars, SWITCH_STACK_BOTTOM,
         "sip_multipart", mp_metadata);
 
+    /* RFC 7866 §5.2.1: the SRC's Contact in the INVITE to the SRS
+     * MUST carry the `+sip.src` feature tag — the bit the SRS keys
+     * on to classify this leg as a recording source rather than a
+     * normal call. Wire shape:
+     *
+     *     Contact: <sip:src@host:port>;+sip.src
+     *
+     * mod_sofia generates the Contact's URI part itself from the
+     * profile (sipip / extsipip + sip_port — sofia_glue.c
+     * lines 1301-1322). We just need to inject the feature tag.
+     *
+     * The leading `~` in the value is the load-bearing detail:
+     * sofia_overcome_sip_uri_weakness (sofia_glue.c:854,891) treats
+     * `~`-prefixed params as Contact HEADER parameters (placed AFTER
+     * the closing angle bracket — RFC 7866's wire form). Without
+     * the `~` the param goes inside the angle brackets as a URI
+     * parameter — most SRSes still accept that, but it's not the
+     * spec form. Use `~`. */
+    switch_event_add_header_string(ovars, SWITCH_STACK_BOTTOM,
+        "sip_invite_contact_params", "~+sip.src");
+
     /* IMPORTANT: do NOT append " &park()" to the dial-string.
      *
      * The trailing-app syntax (`bridgeto &app(args)`) is parsed

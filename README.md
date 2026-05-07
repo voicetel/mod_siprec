@@ -64,6 +64,7 @@ verification path.
 | Concept | Spec | Status |
 |---|---|---|
 | SRC INVITE with `Require: siprec` | [RFC 7866 §6.1][rfc7866-6.1] | ✅ via `switch_ivr_originate` ovars |
+| `+sip.src` Contact feature tag | [RFC 7866 §5.2.1][rfc7866-5.2.1] | ✅ via `sip_invite_contact_params=~+sip.src` ovar; the leading `~` tells `sofia_overcome_sip_uri_weakness` (sofia_glue.c:854,891) to place the tag AFTER the closing `>`, yielding `Contact: <sip:src@host:port>;+sip.src` per the spec |
 | `multipart/mixed` (SDP + metadata) | [RFC 7866 §6.1.2][rfc7866-6.1.2] / [RFC 2046][rfc2046] | ✅ `sip_multipart` channel var |
 | BYE on hangup | [RFC 7866 §6.4][rfc7866-6.4] | ✅ on_destroy state-handler |
 | pause / resume re-INVITE | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_pause` / `siprec_resume` apps; SDP direction-flip preserves negotiated session |
@@ -89,6 +90,7 @@ verification path.
 | `<participantsessionassoc>` / `<participantstreamassoc>` | [RFC 7865 Appendix A][rfc7865] | ✅ |
 | XML escaping for caller-supplied content | [RFC 7865 §5][rfc7865] | ✅ &amp; &lt; &gt; &quot; &apos; |
 
+[rfc7866-5.2.1]: https://datatracker.ietf.org/doc/html/rfc7866#section-5.2.1
 [rfc7866-6.1]: https://datatracker.ietf.org/doc/html/rfc7866#section-6.1
 [rfc7866-6.1.2]: https://datatracker.ietf.org/doc/html/rfc7866#section-6.1.2
 [rfc7866-6.4]: https://datatracker.ietf.org/doc/html/rfc7866#section-6.4
