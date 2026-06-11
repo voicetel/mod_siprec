@@ -254,7 +254,7 @@ static switch_bool_t media_bug_callback(
             sample_count = sizeof(encoded);
         }
 
-        if (ctx->pt == 8) {
+        if (ctx->streams[stream_idx].pt == 8) {
             for (size_t i = 0; i < sample_count; i++) {
                 encoded[i] = l16_to_alaw(samples[i]);
             }
@@ -269,7 +269,7 @@ static switch_bool_t media_bug_callback(
             ctx->streams[stream_idx].fd,
             (struct sockaddr *)&ctx->streams[stream_idx].dst,
             ctx->streams[stream_idx].dst_len,
-            ctx->pt,
+            ctx->streams[stream_idx].pt,
             ctx->streams[stream_idx].marker_pending,
             ctx->streams[stream_idx].ssrc,
             ctx->streams[stream_idx].sequence++,
@@ -312,10 +312,15 @@ switch_status_t siprec_media_attach(recording_t *recording)
         mctx->streams[i].fd = -1;
     }
 
-    /* PCMU is the v1 default; PCMA picked iff the original
-     * session negotiated payload type 8. */
+    /* Fallback codec for any stream whose SRS answer didn't
+     * carry a payload type our encoder produces (SIPREC_PT_UNSET
+     * from the no-SDP fallback path, or a non-G.711 PT). Mirrors
+     * the original call: PCMA iff the source leg negotiated
+     * payload type 8, else PCMU. The per-stream pt assigned in
+     * the loop below normally overrides this with the value the
+     * SRS actually negotiated. */
     switch_codec_t *read_codec = switch_core_session_get_read_codec(recording->session);
-    mctx->pt = (read_codec && read_codec->implementation
+    uint8_t fallback_pt = (read_codec && read_codec->implementation
         && read_codec->implementation->ianacode == 8) ? 8 : 0;
 
     /* One UDP socket per stream. The source port is left
@@ -367,6 +372,31 @@ switch_status_t siprec_media_attach(recording_t *recording)
             ictx->negotiated[i].remote_ip,
             sizeof(mctx->streams[i].remote_ip));
         mctx->streams[i].remote_port = ictx->negotiated[i].remote_port;
+
+        /* Encode and stamp the codec the SRS actually negotiated
+         * for this stream. Only the static G.711 types the v1
+         * encoder produces (0=PCMU, 8=PCMA) are honored; anything
+         * else falls back to the source-derived default. Because
+         * the offer lists only PCMU,PCMA (siprec_invite.c), a
+         * conformant SRS answer always lands in range — the
+         * fallback covers the no-SDP path and non-conformant
+         * answers. This is the fix for the advertised-vs-sent
+         * "payload mismatch": the bytes on the wire now follow
+         * the answer, not the original call leg. */
+        uint8_t neg_pt = ictx->negotiated[i].pt;
+        if (neg_pt == 0 || neg_pt == 8) {
+            mctx->streams[i].pt = neg_pt;
+        } else {
+            mctx->streams[i].pt = fallback_pt;
+            if (neg_pt != SIPREC_PT_UNSET) {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+                    SWITCH_LOG_WARNING,
+                    "siprec: stream[%zu] SRS answered payload type %u which "
+                    "the v1 fork can't encode (only PCMU/0, PCMA/8); "
+                    "falling back to PT %u\n",
+                    i, (unsigned)neg_pt, (unsigned)fallback_pt);
+            }
+        }
 
         /* RFC 3550 §8.1: SSRC must be chosen at random with
          * uniform distribution so collision detection works.

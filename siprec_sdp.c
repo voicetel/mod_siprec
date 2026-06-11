@@ -477,3 +477,73 @@ char *siprec_sdp_flip_direction(const char *src_sdp, int paused) {
 void siprec_sdp_free(char *buf) {
     free(buf);
 }
+
+/* ──────────────────────────────────────────────────────────── *
+ * SDP answer parsing (SRS → SRC)                              *
+ * ──────────────────────────────────────────────────────────── */
+
+int siprec_sdp_parse_remote_streams(
+    const char *sdp,
+    siprec_negotiated_t *out,
+    size_t out_max)
+{
+    if (!sdp || !out || out_max == 0) return 0;
+
+    char session_ip[64] = {0};
+    int  n        = 0;
+    int  seen_m   = 0;
+
+    const char *p = sdp;
+    while (*p) {
+        const char *eol = strpbrk(p, "\r\n");
+        size_t line_len = eol ? (size_t)(eol - p) : strlen(p);
+
+        if (line_len > 9 && memcmp(p, "c=IN IP4 ", 9) == 0) {
+            size_t addr_len = line_len - 9;
+            if (addr_len >= sizeof(session_ip)) addr_len = sizeof(session_ip) - 1;
+
+            if (!seen_m) {
+                memcpy(session_ip, p + 9, addr_len);
+                session_ip[addr_len] = '\0';
+            } else if (n > 0) {
+                /* Per-media c= — overrides the session-level
+                 * value for the most recently committed stream. */
+                memcpy(out[n - 1].remote_ip, p + 9, addr_len);
+                out[n - 1].remote_ip[addr_len] = '\0';
+            }
+        } else if (line_len > 8 && memcmp(p, "m=audio ", 8) == 0) {
+            /* m=audio <port> <transport> <pt> [<pt> ...]
+             * RFC 4566 §5.14. We capture the port and the FIRST
+             * payload type — RFC 3264 §6 makes the leading PT in
+             * the answer the answerer's selected/primary codec,
+             * which is the one we must send. The "%*s" skips the
+             * transport token (RTP/AVP, RTP/SAVP, …) without
+             * assuming its spelling. */
+            unsigned port = 0, pt = 0;
+            int got = sscanf(p + 8, "%u %*s %u", &port, &pt);
+            if (got >= 1
+                && port > 0 && port <= 65535
+                && (size_t)n < out_max) {
+                size_t ip_len = strlen(session_ip);
+                if (ip_len >= sizeof(out[n].remote_ip)) {
+                    ip_len = sizeof(out[n].remote_ip) - 1;
+                }
+                memcpy(out[n].remote_ip, session_ip, ip_len);
+                out[n].remote_ip[ip_len] = '\0';
+                out[n].remote_port = (uint16_t)port;
+                /* Store the answered PT when present (got == 2)
+                 * and within the 7-bit RTP space; otherwise mark
+                 * UNSET so the media fork uses its fallback. */
+                out[n].pt = (got == 2 && pt <= 0x7F)
+                    ? (uint8_t)pt : SIPREC_PT_UNSET;
+                n++;
+            }
+            seen_m = 1;
+        }
+
+        if (!eol) break;
+        p = eol + (eol[0] == '\r' && eol[1] == '\n' ? 2 : 1);
+    }
+
+    return n;
+}

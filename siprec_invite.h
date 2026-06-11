@@ -17,34 +17,16 @@
 #include <switch.h>
 #include "mod_siprec.h"
 
-/* Maximum recorded streams per SIPREC dialog. SIPREC v1
- * models a 2-leg call as one stream per direction (caller-
- * spoken / callee-spoken). The cap is also the size of the
- * fixed-allocation arrays in siprec_invite_ctx_t.negotiated[]
- * and siprec_media_ctx_t.streams[]; both arrays MUST be sized
- * to this constant so parse_remote_sdp_streams' sizeof-based
- * out_max stays in lockstep with the media path's stream_idx
- * (READ→0, WRITE→1) mapping. _Static_assert in siprec_invite.c
- * + siprec_media.c enforces the lockstep at compile time.
- *
- * Bumping this above 2 also requires extending the bug callback
- * to map additional ABC types onto stream_idx > 1, which doesn't
- * make sense for SMBF_READ_STREAM | SMBF_WRITE_STREAM today —
- * adding more streams would be a deliberate architectural change,
- * not a constant tweak. */
-#define SIPREC_MAX_STREAMS 2
-
-/* Per-stream negotiated remote endpoint state. Lives inside
- * siprec_invite_ctx_t.negotiated[] and is also the row type
- * parse_remote_sdp_streams writes into. The struct is named
- * (rather than anonymous in both places) because two textually-
- * separate anonymous structs are nominally distinct types in
- * C even when their members match — a named tag is the only
- * way to share the type across translation units. */
-typedef struct siprec_negotiated_s {
-    char     remote_ip[64];
-    uint16_t remote_port;
-} siprec_negotiated_t;
+/* SIPREC_MAX_STREAMS, SIPREC_PT_UNSET, and siprec_negotiated_t
+ * live in siprec_sdp.h alongside the SDP-answer parser
+ * (siprec_sdp_parse_remote_streams) that produces them — keeping
+ * the type with its producer is what lets the parser be
+ * unit-tested without the FreeSWITCH dependency this header
+ * pulls in. The arrays sized by SIPREC_MAX_STREAMS
+ * (siprec_invite_ctx_t.negotiated[] below, siprec_media_ctx_t.
+ * streams[]) and the _Static_assert that guards the lockstep
+ * stay here / in the .c files. */
+#include "siprec_sdp.h"
 
 /* Per-recording SIP context. Lives inside the recording_t
  * pool. NULL on entry to siprec_invite_send; populated when

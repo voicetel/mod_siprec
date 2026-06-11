@@ -61,14 +61,18 @@ typedef struct siprec_media_ctx {
          * is 1 so the first packet of the recording is also
          * marked. */
         uint8_t    marker_pending;
+
+        /* PCMU/PCMA payload type for THIS stream's encoded
+         * frames. Sourced from the SRS's SDP answer
+         * (siprec_negotiated_t.pt) so the codec we encode and
+         * stamp matches what offer/answer negotiated — encoding
+         * from the original call leg instead is the "payload
+         * mismatch" bug. The media bug receives raw L16 frames;
+         * we encode in-place before send. v1 supports payload
+         * type 0 (PCMU) and 8 (PCMA) only. */
+        uint8_t    pt;
     } streams[SIPREC_MAX_STREAMS];
     size_t stream_count;
-
-    /* PCMU/PCMA payload type for the encoded frames. The
-     * media bug receives raw L16 frames; we encode in-place
-     * before send. v1 supports payload type 0 (PCMU) and 8
-     * (PCMA) only. */
-    uint8_t pt;
 } siprec_media_ctx_t;
 
 /* siprec_media_attach: install the media bug on the original

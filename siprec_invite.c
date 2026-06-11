@@ -61,71 +61,9 @@ _Static_assert(
     == SIPREC_MAX_STREAMS,
     "negotiated[] must be sized to SIPREC_MAX_STREAMS");
 
-/* parse_remote_sdp_streams: walk the SRS-side SDP from
- * sip_remote_sdp_str and extract one (ip, port) per m=audio
- * block. RFC 4566 §5.7: a session-level c= applies to every
- * m= block unless the m= block has its own c= override.
- *
- * Returns the number of streams written into `out` (0..max).
- * Streams with port=0 are rejected per RFC 3264 §5.1 and
- * skipped — they consume an m= slot in the answer but are
- * not active media.
- *
- * Only IPv4 is parsed; IPv6 (c=IN IP6 …) is ignored — the
- * downstream RTP fork is IPv4-only in v1.
- */
-static int parse_remote_sdp_streams(
-    const char *sdp,
-    siprec_negotiated_t *out,
-    size_t out_max)
-{
-    if (!sdp || !out || out_max == 0) return 0;
-
-    char session_ip[64] = {0};
-    int  n        = 0;
-    int  seen_m   = 0;
-
-    const char *p = sdp;
-    while (*p) {
-        const char *eol = strpbrk(p, "\r\n");
-        size_t line_len = eol ? (size_t)(eol - p) : strlen(p);
-
-        if (line_len > 9 && memcmp(p, "c=IN IP4 ", 9) == 0) {
-            size_t addr_len = line_len - 9;
-            if (addr_len >= sizeof(session_ip)) addr_len = sizeof(session_ip) - 1;
-
-            if (!seen_m) {
-                memcpy(session_ip, p + 9, addr_len);
-                session_ip[addr_len] = '\0';
-            } else if (n > 0) {
-                /* Per-media c= — overrides the session-level
-                 * value for the most recently committed stream. */
-                memcpy(out[n - 1].remote_ip, p + 9, addr_len);
-                out[n - 1].remote_ip[addr_len] = '\0';
-            }
-        } else if (line_len > 8 && memcmp(p, "m=audio ", 8) == 0) {
-            unsigned port = 0;
-            if (sscanf(p + 8, "%u", &port) == 1
-                && port > 0 && port <= 65535
-                && (size_t)n < out_max) {
-                size_t ip_len = strlen(session_ip);
-                if (ip_len >= sizeof(out[n].remote_ip)) {
-                    ip_len = sizeof(out[n].remote_ip) - 1;
-                }
-                memcpy(out[n].remote_ip, session_ip, ip_len);
-                out[n].remote_ip[ip_len] = '\0';
-                out[n].remote_port = (uint16_t)port;
-                n++;
-            }
-            seen_m = 1;
-        }
-
-        if (!eol) break;
-        p = eol + (eol[0] == '\r' && eol[1] == '\n' ? 2 : 1);
-    }
-
-    return n;
-}
+/* The SDP-answer parser that fills ctx->negotiated[] lives in
+ * the FS-free siprec_sdp.c (siprec_sdp_parse_remote_streams) so
+ * it can be unit-tested without FreeSWITCH. */
 
 /* multipart_value: build the `<Content-Type>:~<headers>\r\n<body>`
  * string mod_sofia's process_mp() expects. The leading `~` opts
@@ -355,7 +293,7 @@ switch_status_t siprec_invite_send(
 
     int parsed = 0;
     if (!zstr(remote_sdp)) {
-        parsed = parse_remote_sdp_streams(
+        parsed = siprec_sdp_parse_remote_streams(
             remote_sdp, ctx->negotiated,
             sizeof(ctx->negotiated) / sizeof(ctx->negotiated[0]));
     }
@@ -376,6 +314,11 @@ switch_status_t siprec_invite_send(
                 switch_copy_string(ctx->negotiated[0].remote_ip, rip,
                     sizeof(ctx->negotiated[0].remote_ip));
                 ctx->negotiated[0].remote_port = (uint16_t)pn;
+                /* No SDP on this path — remote_media_* exposes
+                 * only ip/port, not the negotiated codec. Leave
+                 * the PT unset so the media fork falls back to
+                 * the read-codec default. */
+                ctx->negotiated[0].pt = SIPREC_PT_UNSET;
                 ctx->negotiated_count = 1;
             } else {
                 switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),

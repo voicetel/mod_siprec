@@ -59,6 +59,27 @@ static void check_not_contains(const char *got, const char *want, const char *wh
     }
 }
 
+static void check_int(long got, long want, const char *what) {
+    test_count++;
+    if (got == want) {
+        printf("PASS %s\n", what);
+    } else {
+        fprintf(stderr, "FAIL %s: got %ld want %ld\n", what, got, want);
+        fail_count++;
+    }
+}
+
+static void check_str(const char *got, const char *want, const char *what) {
+    test_count++;
+    if (got && strcmp(got, want) == 0) {
+        printf("PASS %s\n", what);
+    } else {
+        fprintf(stderr, "FAIL %s: got '%s' want '%s'\n",
+            what, got ? got : "(null)", want);
+        fail_count++;
+    }
+}
+
 /* ──────────────────────────────────────────────────────────── *
  * SDP tests                                                   *
  * ──────────────────────────────────────────────────────────── */
@@ -371,6 +392,185 @@ static void test_sdp_invalid_returns_null(void) {
 }
 
 /* ──────────────────────────────────────────────────────────── *
+ * SDP answer parser tests (siprec_sdp_parse_remote_streams)   *
+ * ──────────────────────────────────────────────────────────── */
+
+static void test_parse_remote_streams(void) {
+    siprec_negotiated_t out[SIPREC_MAX_STREAMS];
+
+    /* The regression case: a single-stream PCMA (PT 8) answer.
+     * The parser MUST surface pt=8 so the media fork encodes
+     * a-law instead of guessing from the original call leg. */
+    {
+        const char *sdp =
+            "v=0\r\n"
+            "o=- 1 1 IN IP4 203.0.113.5\r\n"
+            "s=-\r\n"
+            "c=IN IP4 203.0.113.5\r\n"
+            "t=0 0\r\n"
+            "m=audio 5004 RTP/AVP 8\r\n"
+            "a=rtpmap:8 PCMA/8000\r\n";
+        memset(out, 0, sizeof(out));
+        int n = siprec_sdp_parse_remote_streams(sdp, out, SIPREC_MAX_STREAMS);
+        check_int(n, 1, "parse:pcma single-stream count");
+        check_str(out[0].remote_ip, "203.0.113.5", "parse:pcma ip");
+        check_int(out[0].remote_port, 5004, "parse:pcma port");
+        check_int(out[0].pt, 8, "parse:pcma pt=8");
+    }
+
+    /* Single-stream PCMU (PT 0). */
+    {
+        const char *sdp =
+            "c=IN IP4 198.51.100.7\r\n"
+            "m=audio 6000 RTP/AVP 0\r\n";
+        memset(out, 0, sizeof(out));
+        int n = siprec_sdp_parse_remote_streams(sdp, out, SIPREC_MAX_STREAMS);
+        check_int(n, 1, "parse:pcmu count");
+        check_int(out[0].pt, 0, "parse:pcmu pt=0");
+    }
+
+    /* Two streams, session-level c= applies to both; each m=
+     * line carries a different codec. */
+    {
+        const char *sdp =
+            "v=0\r\n"
+            "c=IN IP4 192.0.2.10\r\n"
+            "m=audio 40000 RTP/AVP 0\r\n"
+            "a=rtpmap:0 PCMU/8000\r\n"
+            "m=audio 40002 RTP/AVP 8\r\n"
+            "a=rtpmap:8 PCMA/8000\r\n";
+        memset(out, 0, sizeof(out));
+        int n = siprec_sdp_parse_remote_streams(sdp, out, SIPREC_MAX_STREAMS);
+        check_int(n, 2, "parse:two-stream count");
+        check_str(out[0].remote_ip, "192.0.2.10", "parse:two-stream ip0");
+        check_int(out[0].remote_port, 40000, "parse:two-stream port0");
+        check_int(out[0].pt, 0, "parse:two-stream pt0");
+        check_str(out[1].remote_ip, "192.0.2.10", "parse:two-stream ip1");
+        check_int(out[1].remote_port, 40002, "parse:two-stream port1");
+        check_int(out[1].pt, 8, "parse:two-stream pt1");
+    }
+
+    /* Multiple PTs on the m= line: the FIRST is the answerer's
+     * selected codec (RFC 3264 §6). */
+    {
+        const char *sdp =
+            "c=IN IP4 198.51.100.7\r\n"
+            "m=audio 6000 RTP/AVP 8 0 101\r\n";
+        memset(out, 0, sizeof(out));
+        int n = siprec_sdp_parse_remote_streams(sdp, out, SIPREC_MAX_STREAMS);
+        check_int(n, 1, "parse:multi-pt count");
+        check_int(out[0].pt, 8, "parse:multi-pt first wins");
+    }
+
+    /* Secured transport token (RTP/SAVP) must not block PT
+     * parsing — the %*s skips whatever the transport spells. */
+    {
+        const char *sdp =
+            "c=IN IP4 198.51.100.7\r\n"
+            "m=audio 6000 RTP/SAVP 0\r\n";
+        memset(out, 0, sizeof(out));
+        int n = siprec_sdp_parse_remote_streams(sdp, out, SIPREC_MAX_STREAMS);
+        check_int(n, 1, "parse:savp count");
+        check_int(out[0].pt, 0, "parse:savp pt parsed");
+    }
+
+    /* m= line with no payload type → pt = SIPREC_PT_UNSET (the
+     * media fork then falls back to the read-codec default). */
+    {
+        const char *sdp =
+            "c=IN IP4 198.51.100.7\r\n"
+            "m=audio 6000 RTP/AVP\r\n";
+        memset(out, 0, sizeof(out));
+        int n = siprec_sdp_parse_remote_streams(sdp, out, SIPREC_MAX_STREAMS);
+        check_int(n, 1, "parse:no-pt count");
+        check_int(out[0].pt, SIPREC_PT_UNSET, "parse:no-pt is UNSET");
+    }
+
+    /* port=0 stream is rejected (RFC 3264 §5.1) and consumes no
+     * output slot; the following valid stream still lands at
+     * index 0. */
+    {
+        const char *sdp =
+            "c=IN IP4 198.51.100.7\r\n"
+            "m=audio 0 RTP/AVP 0\r\n"
+            "m=audio 7000 RTP/AVP 8\r\n";
+        memset(out, 0, sizeof(out));
+        int n = siprec_sdp_parse_remote_streams(sdp, out, SIPREC_MAX_STREAMS);
+        check_int(n, 1, "parse:port0 skipped count");
+        check_int(out[0].remote_port, 7000, "parse:port0 skipped survivor");
+        check_int(out[0].pt, 8, "parse:port0 skipped survivor pt");
+    }
+
+    /* Per-media c= after an m= line overrides the session c= for
+     * that stream only; the next stream falls back to session c=. */
+    {
+        const char *sdp =
+            "v=0\r\n"
+            "c=IN IP4 10.0.0.1\r\n"
+            "m=audio 8000 RTP/AVP 0\r\n"
+            "c=IN IP4 10.0.0.9\r\n"
+            "m=audio 8002 RTP/AVP 8\r\n";
+        memset(out, 0, sizeof(out));
+        int n = siprec_sdp_parse_remote_streams(sdp, out, SIPREC_MAX_STREAMS);
+        check_int(n, 2, "parse:per-media-c count");
+        check_str(out[0].remote_ip, "10.0.0.9", "parse:per-media-c override");
+        check_str(out[1].remote_ip, "10.0.0.1", "parse:per-media-c session fallback");
+    }
+
+    /* out_max caps the number of streams written — a third m=
+     * block must NOT overflow the 2-slot array (ASan build
+     * exercises the bound). */
+    {
+        const char *sdp =
+            "c=IN IP4 1.1.1.1\r\n"
+            "m=audio 1000 RTP/AVP 0\r\n"
+            "m=audio 1002 RTP/AVP 0\r\n"
+            "m=audio 1004 RTP/AVP 0\r\n";
+        memset(out, 0, sizeof(out));
+        int n = siprec_sdp_parse_remote_streams(sdp, out, SIPREC_MAX_STREAMS);
+        check_int(n, SIPREC_MAX_STREAMS, "parse:out_max cap");
+    }
+
+    /* IPv6 c= is ignored (v1 fork is IPv4-only): the stream is
+     * still committed but its remote_ip stays empty so the
+     * downstream inet_pton fails loudly rather than silently. */
+    {
+        const char *sdp =
+            "c=IN IP6 2001:db8::1\r\n"
+            "m=audio 9000 RTP/AVP 0\r\n";
+        memset(out, 0, sizeof(out));
+        int n = siprec_sdp_parse_remote_streams(sdp, out, SIPREC_MAX_STREAMS);
+        check_int(n, 1, "parse:ipv6 count");
+        check_int(out[0].remote_ip[0], '\0', "parse:ipv6 ip left empty");
+    }
+
+    /* Bare LF line endings (no CR) parse identically to CRLF. */
+    {
+        const char *sdp =
+            "c=IN IP4 5.5.5.5\n"
+            "m=audio 1234 RTP/AVP 8\n";
+        memset(out, 0, sizeof(out));
+        int n = siprec_sdp_parse_remote_streams(sdp, out, SIPREC_MAX_STREAMS);
+        check_int(n, 1, "parse:lf-only count");
+        check_str(out[0].remote_ip, "5.5.5.5", "parse:lf-only ip");
+        check_int(out[0].pt, 8, "parse:lf-only pt");
+    }
+
+    /* Defensive: NULL sdp, NULL out, and out_max==0 all return 0
+     * without dereferencing. */
+    {
+        check_int(siprec_sdp_parse_remote_streams(NULL, out, SIPREC_MAX_STREAMS),
+            0, "parse:null sdp");
+        check_int(siprec_sdp_parse_remote_streams("m=audio 1 RTP/AVP 0\r\n", NULL, 2),
+            0, "parse:null out");
+        check_int(siprec_sdp_parse_remote_streams("m=audio 1 RTP/AVP 0\r\n", out, 0),
+            0, "parse:zero out_max");
+        check_int(siprec_sdp_parse_remote_streams("", out, SIPREC_MAX_STREAMS),
+            0, "parse:empty sdp");
+    }
+}
+
+/* ──────────────────────────────────────────────────────────── *
  * Metadata tests                                              *
  * ──────────────────────────────────────────────────────────── */
 
@@ -648,6 +848,7 @@ int main(void) {
     test_sdp_flip_direction();
     test_sdp_inject_labels();
     test_sdp_invalid_returns_null();
+    test_parse_remote_streams();
 
     test_metadata_two_participants();
     test_metadata_xml_escaping();
