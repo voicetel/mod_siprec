@@ -99,15 +99,16 @@ static uint8_t l16_to_ulaw(int16_t pcm)
 
     int p    = pcm;
     int sign = (p < 0) ? 0x80 : 0;
+    int exponent = 7;
+    int mantissa;
     if (sign) p = -p;
     if (p > CLIP) p = CLIP;
     p += BIAS;
 
-    int exponent = 7;
     for (int mask = 0x4000; (p & mask) == 0 && exponent > 0; mask >>= 1) {
         exponent--;
     }
-    int mantissa = (p >> ((exponent == 0) ? 4 : (exponent + 3))) & 0x0F;
+    mantissa = (p >> ((exponent == 0) ? 4 : (exponent + 3))) & 0x0F;
     return (uint8_t)~(sign | (exponent << 4) | mantissa);
 }
 
@@ -119,17 +120,19 @@ static uint8_t l16_to_alaw(int16_t pcm)
      * symmetric-around-zero quantisation. */
     int p    = pcm;
     int sign = (p < 0) ? 0x80 : 0;
+    int exponent = 7;
+    int mantissa;
+    uint8_t alaw;
     if (sign) p = -p - 1;
     if (p > 32767) p = 32767;
 
-    int exponent = 7;
     for (int mask = 0x4000; (p & mask) == 0 && exponent > 0; mask >>= 1) {
         exponent--;
     }
-    int mantissa = (exponent < 1)
+    mantissa = (exponent < 1)
         ? (p >> 4) & 0x0F
         : (p >> (exponent + 3)) & 0x0F;
-    uint8_t alaw = (uint8_t)((exponent << 4) | mantissa);
+    alaw = (uint8_t)((exponent << 4) | mantissa);
     if (sign) alaw |= 0x80;
     return alaw ^ 0x55; /* per G.711 spec */
 }
@@ -146,6 +149,8 @@ static int rtp_pack_and_send(
     const uint8_t *payload, size_t payload_len)
 {
     uint8_t pkt[RTP_HEADER_LEN + 1500];
+    size_t pkt_len;
+    ssize_t n;
     if (payload_len > 1500) {
         return -1;
     }
@@ -170,9 +175,9 @@ static int rtp_pack_and_send(
     pkt[11] = ssrc & 0xFF;
 
     memcpy(pkt + RTP_HEADER_LEN, payload, payload_len);
-    size_t pkt_len = RTP_HEADER_LEN + payload_len;
+    pkt_len = RTP_HEADER_LEN + payload_len;
 
-    ssize_t n = sendto(fd, pkt, pkt_len,
+    n = sendto(fd, pkt, pkt_len,
         MSG_NOSIGNAL, dst, dst_len);
     if (n < 0) {
         /* sendto on a UDP socket only fails for packet-too-big
@@ -229,11 +234,16 @@ static switch_bool_t media_bug_callback(
         }
 
         for (;;) {
+            switch_status_t rs;
+            const int16_t  *samples;
+            size_t          sample_count;
+            uint8_t         encoded[1500];
+
             memset(&frame, 0, sizeof(frame));
             frame.data   = frame_buf;
             frame.buflen = sizeof(frame_buf);
 
-            switch_status_t rs = switch_core_media_bug_read(
+            rs = switch_core_media_bug_read(
                 bug, &frame, iteration++ == 0 ? SWITCH_FALSE : SWITCH_TRUE);
 
             if (rs != SWITCH_STATUS_SUCCESS || frame.datalen == 0) {
@@ -247,10 +257,9 @@ static switch_bool_t media_bug_callback(
                 continue;
             }
 
-            const int16_t *samples      = (const int16_t *)frame.data;
-            size_t         sample_count = frame.datalen / 2;
+            samples      = (const int16_t *)frame.data;
+            sample_count = frame.datalen / 2;
 
-            uint8_t encoded[1500];
             if (sample_count > sizeof(encoded)) {
                 sample_count = sizeof(encoded);
             }
@@ -301,15 +310,21 @@ static switch_bool_t media_bug_callback(
 
 switch_status_t siprec_media_attach(recording_t *recording)
 {
+    siprec_invite_ctx_t *ictx;
+    siprec_media_ctx_t *mctx;
+    switch_codec_t *read_codec;
+    uint8_t fallback_pt;
+    switch_status_t st;
+
     if (!recording || !recording->session || !recording->invite_ctx) {
         return SWITCH_STATUS_FALSE;
     }
-    siprec_invite_ctx_t *ictx = recording->invite_ctx;
+    ictx = recording->invite_ctx;
     if (ictx->negotiated_count == 0) {
         return SWITCH_STATUS_FALSE; /* SRS hasn't 200-OK'd yet */
     }
 
-    siprec_media_ctx_t *mctx = switch_core_alloc(
+    mctx = switch_core_alloc(
         recording->pool, sizeof(*mctx));
     memset(mctx, 0, sizeof(*mctx));
     /* Initialize fds to -1 so cleanup guards (fd >= 0) work
@@ -328,8 +343,8 @@ switch_status_t siprec_media_attach(recording_t *recording)
      * payload type 8, else PCMU. The per-stream pt assigned in
      * the loop below normally overrides this with the value the
      * SRS actually negotiated. */
-    switch_codec_t *read_codec = switch_core_session_get_read_codec(recording->session);
-    uint8_t fallback_pt = (read_codec && read_codec->implementation
+    read_codec = switch_core_session_get_read_codec(recording->session);
+    fallback_pt = (read_codec && read_codec->implementation
         && read_codec->implementation->ianacode == 8) ? 8 : 0;
 
     /* One UDP socket per stream. The source port is left
@@ -337,6 +352,8 @@ switch_status_t siprec_media_attach(recording_t *recording)
      * answer told us where to send. */
     mctx->stream_count = ictx->negotiated_count;
     for (size_t i = 0; i < mctx->stream_count; i++) {
+        uint8_t neg_pt;
+        int     rfd;
         /* IPv4-only RTP fork in v1. inet_pton returns 0 for a
          * well-formed IPv6 address (or for any other non-IPv4
          * string) — fail loudly here rather than open a socket
@@ -392,7 +409,7 @@ switch_status_t siprec_media_attach(recording_t *recording)
          * answers. This is the fix for the advertised-vs-sent
          * "payload mismatch": the bytes on the wire now follow
          * the answer, not the original call leg. */
-        uint8_t neg_pt = ictx->negotiated[i].pt;
+        neg_pt = ictx->negotiated[i].pt;
         if (neg_pt == 0 || neg_pt == 8) {
             mctx->streams[i].pt = neg_pt;
         } else {
@@ -417,7 +434,7 @@ switch_status_t siprec_media_attach(recording_t *recording)
          * endorses /dev/urandom for unpredictable values. */
         mctx->streams[i].ssrc =
             (uint32_t)switch_micro_time_now() ^ (uint32_t)i;
-        int rfd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+        rfd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
         if (rfd >= 0) {
             uint8_t ssrc_bytes[4];
             ssize_t got = read(rfd, ssrc_bytes, sizeof(ssrc_bytes));
@@ -447,7 +464,7 @@ switch_status_t siprec_media_attach(recording_t *recording)
      * flags are for codepaths that modify the in-flight stream
      * — not what SIPREC needs.)
      */
-    switch_status_t st = switch_core_media_bug_add(
+    st = switch_core_media_bug_add(
         recording->session,
         "siprec",
         NULL, /* no path */
@@ -473,10 +490,11 @@ switch_status_t siprec_media_attach(recording_t *recording)
 
 switch_status_t siprec_media_detach(recording_t *recording)
 {
+    siprec_media_ctx_t *mctx;
     if (!recording || !recording->media_ctx) {
         return SWITCH_STATUS_FALSE;
     }
-    siprec_media_ctx_t *mctx = recording->media_ctx;
+    mctx = recording->media_ctx;
 
     if (mctx->bug) {
         switch_core_media_bug_remove(recording->session, &mctx->bug);

@@ -76,12 +76,14 @@ static char *multipart_value(
     const char *content_disposition,
     const char *body)
 {
+    size_t cap;
+    char *buf;
     if (!content_type || !body) return NULL;
 
-    size_t cap = strlen(content_type) + strlen(body)
+    cap = strlen(content_type) + strlen(body)
                + (content_disposition ? strlen(content_disposition) : 0)
                + 128;
-    char *buf = switch_core_alloc(pool, cap);
+    buf = switch_core_alloc(pool, cap);
     if (!buf) return NULL;
 
     if (content_disposition) {
@@ -101,6 +103,20 @@ switch_status_t siprec_invite_send(
     const char *sdp_body,         /* reserved; see header docs */
     const char *metadata_body)
 {
+    siprec_invite_ctx_t *ctx;
+    char *mp_metadata;
+    switch_event_t *ovars = NULL;
+    char dial_string[512];
+    int dn;
+    switch_core_session_t *new_session = NULL;
+    switch_call_cause_t    cause       = SWITCH_CAUSE_NONE;
+    switch_status_t st;
+    switch_channel_t *rch;
+    const char *remote_sdp;
+    const char *local_sdp_now;
+    char *labelled_sdp = NULL;
+    int parsed = 0;
+
     if (!recording || !sofia_profile || !srs_uri || !metadata_body) {
         return SWITCH_STATUS_FALSE;
     }
@@ -112,13 +128,13 @@ switch_status_t siprec_invite_send(
      * that the SRS could never accept. */
     (void)sdp_body;
 
-    siprec_invite_ctx_t *ctx = switch_core_alloc(recording->pool, sizeof(*ctx));
+    ctx = switch_core_alloc(recording->pool, sizeof(*ctx));
     memset(ctx, 0, sizeof(*ctx));
 
     /* Allocate the metadata multipart value into the recording
      * pool — it has to outlive the originate call (sofia reads
      * the channel var as the INVITE goes out). */
-    char *mp_metadata = multipart_value(recording->pool,
+    mp_metadata = multipart_value(recording->pool,
         "application/rs-metadata+xml", "recording-session", metadata_body);
     if (!mp_metadata) {
         return SWITCH_STATUS_FALSE;
@@ -148,7 +164,6 @@ switch_status_t siprec_invite_send(
      * Without it the leg drops the moment the originate
      * returns and the media bug has nothing to forward to.
      */
-    switch_event_t *ovars = NULL;
     if (switch_event_create_plain(&ovars, SWITCH_EVENT_CHANNEL_DATA)
         != SWITCH_STATUS_SUCCESS) {
         return SWITCH_STATUS_FALSE;
@@ -204,8 +219,7 @@ switch_status_t siprec_invite_send(
      * mod_siprec's own RTP fork in siprec_media.c opens its own
      * UDP socket and sends to the negotiated SRS endpoint, so we
      * never use FS's RTP machinery on this leg anyway. */
-    char dial_string[512];
-    int dn = switch_snprintf(dial_string, sizeof(dial_string),
+    dn = switch_snprintf(dial_string, sizeof(dial_string),
         "{ignore_early_media=true,"
         "hangup_after_bridge=false,"
         "bypass_media=true,"
@@ -226,10 +240,7 @@ switch_status_t siprec_invite_send(
         return SWITCH_STATUS_FALSE;
     }
 
-    switch_core_session_t *new_session = NULL;
-    switch_call_cause_t    cause       = SWITCH_CAUSE_NONE;
-
-    switch_status_t st = switch_ivr_originate(
+    st = switch_ivr_originate(
         /*session*/      NULL,
         /*new_session*/  &new_session,
         /*cause*/        &cause,
@@ -287,11 +298,10 @@ switch_status_t siprec_invite_send(
      * effectively single-stream, but better than failing the
      * whole INVITE.
      */
-    switch_channel_t *rch = switch_core_session_get_channel(new_session);
-    const char *remote_sdp =
+    rch = switch_core_session_get_channel(new_session);
+    remote_sdp =
         switch_channel_get_variable(rch, "sip_remote_sdp_str");
 
-    int parsed = 0;
     if (!zstr(remote_sdp)) {
         parsed = siprec_sdp_parse_remote_streams(
             remote_sdp, ctx->negotiated,
@@ -337,9 +347,9 @@ switch_status_t siprec_invite_send(
      * unlock. zstr fallback covers the (rare) case where
      * sofia hasn't materialised sip_local_sdp_str by the time
      * originate returns. */
-    const char *local_sdp_now =
+    local_sdp_now =
         switch_channel_get_variable(rch, "sip_local_sdp_str");
-    char *labelled_sdp = NULL;
+    labelled_sdp = NULL;
     if (!zstr(local_sdp_now)) {
         labelled_sdp = siprec_sdp_inject_labels(local_sdp_now);
     }
@@ -420,13 +430,15 @@ static char *siprec_uri_for(
     switch_memory_pool_t *pool,
     const recording_server_t *srv)
 {
+    int  port;
+    const char *transport;
+    char buf[256];
     if (!srv || !srv->host) return NULL;
 
-    int  port = srv->port > 0 ? srv->port : 5060;
-    const char *transport = (srv->transport && *srv->transport)
+    port = srv->port > 0 ? srv->port : 5060;
+    transport = (srv->transport && *srv->transport)
         ? srv->transport : "udp";
 
-    char buf[256];
     if (!strcasecmp(transport, "tls")) {
         switch_snprintf(buf, sizeof(buf), "sips:%s:%d;transport=tls",
             srv->host, port);
@@ -446,10 +458,6 @@ switch_status_t siprec_invite_send_failover(
     const char *sdp_body,
     const char *metadata_body)
 {
-    if (!recording || !sofia_profile || !first) {
-        return SWITCH_STATUS_FALSE;
-    }
-
     /* Bound the walk: 16 candidates is comfortably more than
      * any sane deployment, and the cap stops us from spinning
      * if the chain accidentally cycles (operator pasted the
@@ -457,19 +465,26 @@ switch_status_t siprec_invite_send_failover(
      * loop, or future code bug). */
     enum { SIPREC_FAILOVER_MAX_ATTEMPTS = 16 };
     int attempts = 0;
+
+    if (!recording || !sofia_profile || !first) {
+        return SWITCH_STATUS_FALSE;
+    }
+
     for (const recording_server_t *srv = first;
          srv && attempts < SIPREC_FAILOVER_MAX_ATTEMPTS;
          srv = srv->next) {
+        char *uri;
+        switch_status_t st;
         attempts++;
 
-        char *uri = siprec_uri_for(recording->pool, srv);
+        uri = siprec_uri_for(recording->pool, srv);
         if (!uri) continue;
 
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
             SWITCH_LOG_INFO,
             "siprec: failover attempt %d → %s\n", attempts, uri);
 
-        switch_status_t st = siprec_invite_send(
+        st = siprec_invite_send(
             recording, sofia_profile, uri, sdp_body, metadata_body);
 
         if (st == SWITCH_STATUS_SUCCESS) {
@@ -490,10 +505,13 @@ switch_status_t siprec_invite_send_failover(
 
 switch_status_t siprec_invite_send_bye(recording_t *recording)
 {
+    siprec_invite_ctx_t *ctx;
+    switch_core_session_t *s;
+    switch_channel_t *ch;
     if (!recording || !recording->invite_ctx) {
         return SWITCH_STATUS_FALSE;
     }
-    siprec_invite_ctx_t *ctx = recording->invite_ctx;
+    ctx = recording->invite_ctx;
     if (!*ctx->recording_uuid) {
         return SWITCH_STATUS_FALSE;
     }
@@ -502,13 +520,13 @@ switch_status_t siprec_invite_send_bye(recording_t *recording)
      * returns NULL with no side effects when the session is
      * gone (SRS-side BYE arrived first, leg 4xx'd out, etc.) —
      * makes idempotency trivial. */
-    switch_core_session_t *s =
+    s =
         switch_core_session_locate(ctx->recording_uuid);
     if (!s) {
         return SWITCH_STATUS_SUCCESS;
     }
 
-    switch_channel_t *ch = switch_core_session_get_channel(s);
+    ch = switch_core_session_get_channel(s);
     switch_channel_hangup(ch, SWITCH_CAUSE_NORMAL_CLEARING);
     switch_core_session_rwunlock(s);
 
@@ -535,10 +553,15 @@ switch_status_t siprec_invite_reinvite(
     const char *new_sdp,
     const char *new_metadata)
 {
+    siprec_invite_ctx_t *ctx;
+    switch_core_session_t *s;
+    switch_core_session_message_t msg = { 0 };
+    switch_status_t st;
+
     if (!recording || !recording->invite_ctx || !new_sdp) {
         return SWITCH_STATUS_FALSE;
     }
-    siprec_invite_ctx_t *ctx = recording->invite_ctx;
+    ctx = recording->invite_ctx;
     if (!*ctx->recording_uuid) {
         return SWITCH_STATUS_FALSE;
     }
@@ -547,7 +570,7 @@ switch_status_t siprec_invite_reinvite(
      * siprec_invite_send_bye: the recording leg may have
      * been torn down between siprec_invite_send returning
      * and pause/resume firing. */
-    switch_core_session_t *s =
+    s =
         switch_core_session_locate(ctx->recording_uuid);
     if (!s) {
         /* Bind to the parent-call UUID via recording->session.
@@ -581,12 +604,11 @@ switch_status_t siprec_invite_reinvite(
     }
 
     /* Send the message that triggers the re-INVITE. */
-    switch_core_session_message_t msg = { 0 };
     msg.message_id   = SWITCH_MESSAGE_INDICATE_MEDIA_REDIRECT;
     msg.string_arg   = (char *)new_sdp;
     msg.from         = __FILE__;
 
-    switch_status_t st = switch_core_session_receive_message(s, &msg);
+    st = switch_core_session_receive_message(s, &msg);
 
     switch_core_session_rwunlock(s);
 

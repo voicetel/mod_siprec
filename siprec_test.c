@@ -29,9 +29,8 @@ static int fail_count = 0;
  * fprintf_s would satisfy clang-analyzer's check but glibc
  * doesn't ship it, and replacing fprintf with a vsnprintf_s
  * + fputs helper trades one analyzer complaint for another.
- * The block-scoped suppression below makes the rationale
- * explicit at the call-region level. */
-/* NOLINTBEGIN(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
+ * The Annex K checker is disabled project-wide in .clang-tidy;
+ * this comment records why these calls are bounds-safe. */
 
 static void check_contains(const char *got, const char *want, const char *what) {
     test_count++;
@@ -862,4 +861,3 @@ int main(void) {
     printf("\n%d/%d passed\n", test_count - fail_count, test_count);
     return fail_count == 0 ? 0 : 1;
 }
-/* NOLINTEND(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */

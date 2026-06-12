@@ -51,9 +51,10 @@ static switch_xml_config_item_t general_instructions[] = {
 
 static switch_status_t load_recording_server(switch_xml_t xml)
 {
-	switch_xml_t param, settings;
+	switch_xml_t settings;
 	char *name = (char *) switch_xml_attr_soft(xml, "name");
 	recording_server_t *recording_server;
+	recording_server_t *existing;
 	switch_memory_pool_t *recording_server_pool;
 
 	switch_core_new_memory_pool(&recording_server_pool);
@@ -63,7 +64,7 @@ static switch_status_t load_recording_server(switch_xml_t xml)
 	recording_server->pool = recording_server_pool;
 
 	if ((settings = switch_xml_child(xml, "settings"))) {
-		for (param = switch_xml_child(settings, "param"); param; param = param->next) {
+		for (switch_xml_t param = switch_xml_child(settings, "param"); param; param = param->next) {
 			const char *var = switch_xml_attr_soft(param, "name");
 			const char *val = switch_xml_attr_soft(param, "value");
 			/* Use switch_core_strdup (pool-bound) instead of bare
@@ -98,7 +99,7 @@ static switch_status_t load_recording_server(switch_xml_t xml)
 	/* If an entry with this name already exists, append the
 	 * new one to the end of the failover chain. siprec_invite
 	 * walks the chain on dial failure. */
-	recording_server_t *existing =
+	existing =
 		switch_core_hash_find(globals.recording_servers_hash, recording_server->name);
 	if (existing) {
 		while (existing->next) existing = existing->next;
@@ -114,7 +115,7 @@ static switch_status_t load_recording_server(switch_xml_t xml)
 
 static switch_status_t switch_xml_config_parse_module_recording_servers(const char *file, switch_bool_t reload)
 {
-	switch_xml_t cfg, xml, servers, xserver;
+	switch_xml_t cfg, xml, servers;
 	switch_status_t status = SWITCH_STATUS_SUCCESS;
 
 	if (!(xml = switch_xml_open_cfg(file, &cfg, NULL))) {
@@ -123,7 +124,7 @@ static switch_status_t switch_xml_config_parse_module_recording_servers(const ch
 	}
 
 	if ((servers = switch_xml_child(cfg, "recording-servers"))) {
-		for (xserver = switch_xml_child(servers, "recording-server"); xserver; xserver = xserver->next) {
+		for (switch_xml_t xserver = switch_xml_child(servers, "recording-server"); xserver; xserver = xserver->next) {
 			if (load_recording_server(xserver) != SWITCH_STATUS_SUCCESS) {
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "error loading recording server.\n");
 			}
@@ -213,15 +214,25 @@ static switch_status_t siprec_change_direction(
 	const char *server_name,
 	int paused)
 {
+	const char *uuid;
+	char *recording_key;
+	recording_t *recording;
+	switch_core_session_t *rs;
+	switch_channel_t *rch;
+	const char *local_sdp;
+	int   had_local_sdp;
+	char *new_sdp;
+	switch_status_t st;
+
 	if (zstr(server_name)) {
 		server_name = "default";
 	}
 
-	const char *uuid = switch_core_session_get_uuid(session);
-	char *recording_key = switch_mprintf("%s-%s", server_name, uuid);
+	uuid = switch_core_session_get_uuid(session);
+	recording_key = switch_mprintf("%s-%s", server_name, uuid);
 
 	switch_mutex_lock(globals.recordings_mutex);
-	recording_t *recording = switch_core_hash_find(globals.recordings_hash, recording_key);
+	recording = switch_core_hash_find(globals.recordings_hash, recording_key);
 	switch_mutex_unlock(globals.recordings_mutex);
 	switch_safe_free(recording_key);
 
@@ -252,7 +263,7 @@ static switch_status_t siprec_change_direction(
 	 * it after every successful negotiation), flip the
 	 * direction line, bump o=version. Locate-by-uuid so the
 	 * read can't UAF on a torn-down recording leg. */
-	switch_core_session_t *rs = switch_core_session_locate(
+	rs = switch_core_session_locate(
 		recording->invite_ctx->recording_uuid);
 	if (!rs) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
@@ -262,8 +273,8 @@ static switch_status_t siprec_change_direction(
 		return SWITCH_STATUS_FALSE;
 	}
 
-	switch_channel_t *rch = switch_core_session_get_channel(rs);
-	const char *local_sdp =
+	rch = switch_core_session_get_channel(rs);
+	local_sdp =
 		switch_channel_get_variable(rch, "sip_local_sdp_str");
 
 	/* Capture state and produce the rewritten SDP BEFORE
@@ -272,8 +283,8 @@ static switch_status_t siprec_change_direction(
 	 * sofia / FS-core finish tearing down the session. The
 	 * rewritten new_sdp is a fresh malloc, independent of the
 	 * channel's lifetime. */
-	int   had_local_sdp = !zstr(local_sdp);
-	char *new_sdp       = had_local_sdp
+	had_local_sdp = !zstr(local_sdp);
+	new_sdp       = had_local_sdp
 		? siprec_sdp_flip_direction(local_sdp, paused)
 		: NULL;
 
@@ -293,7 +304,7 @@ static switch_status_t siprec_change_direction(
 		return SWITCH_STATUS_FALSE;
 	}
 
-	switch_status_t st = siprec_invite_reinvite(recording, new_sdp, NULL);
+	st = siprec_invite_reinvite(recording, new_sdp, NULL);
 	siprec_sdp_free(new_sdp);
 
 	if (st != SWITCH_STATUS_SUCCESS) {

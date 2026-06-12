@@ -41,10 +41,12 @@ static void sb_init(sb_t *sb) {
 }
 
 static int sb_reserve(sb_t *sb, size_t want) {
+    size_t new_cap;
+    char *p;
     if (sb->err) return -1;
     if (want <= sb->cap) return 0;
     if (want > SB_MAX_CAP) { sb->err = 1; return -1; }
-    size_t new_cap = sb->cap ? sb->cap : 512;
+    new_cap = sb->cap ? sb->cap : 512;
     while (new_cap < want) {
         if (new_cap > SB_MAX_CAP / 2) {
             new_cap = want;
@@ -52,7 +54,7 @@ static int sb_reserve(sb_t *sb, size_t want) {
         }
         new_cap *= 2;
     }
-    char *p = realloc(sb->data, new_cap);
+    p = realloc(sb->data, new_cap);
     if (!p) { sb->err = 1; return -1; }
     sb->data = p; sb->cap = new_cap;
     return 0;
@@ -81,21 +83,21 @@ static void sb_append(sb_t *sb, const char *s, size_t n) {
     if (!sb->data) { sb->err = 1; return; }
     /* Bounded: n is the explicit length, sb_reserve above
      * guaranteed at least n+1 bytes of tail capacity. */
-    /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
     memcpy(sb->data + sb->len, s, n);
     sb->len += n;
     sb->data[sb->len] = '\0';
 }
 
 static void sb_appendf(sb_t *sb, const char *fmt, ...) {
+    va_list ap;
+    int n;
+    int written;
     if (sb->err) return;
     /* Sizing pass — vsnprintf(NULL, 0, ...) is the canonical
      * C99 way to learn the formatted length without writing
      * anything. Bounded by definition. */
-    va_list ap;
     va_start(ap, fmt);
-    /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
-    int n = vsnprintf(NULL, 0, fmt, ap);
+    n = vsnprintf(NULL, 0, fmt, ap);
     va_end(ap);
     if (n < 0) { sb->err = 1; return; }
     /* Reject overflowing / over-cap formatted appends. */
@@ -104,8 +106,7 @@ static void sb_appendf(sb_t *sb, const char *fmt, ...) {
     /* Bounded: dst capacity is the explicit second argument
      * and sb_reserve above guaranteed it covers n+1 bytes. */
     va_start(ap, fmt);
-    /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
-    int written = vsnprintf(sb->data + sb->len, sb->cap - sb->len, fmt, ap);
+    written = vsnprintf(sb->data + sb->len, sb->cap - sb->len, fmt, ap);
     va_end(ap);
     if (written < 0 || (size_t)written >= sb->cap - sb->len) {
         sb->err = 1; return;
@@ -114,6 +115,7 @@ static void sb_appendf(sb_t *sb, const char *fmt, ...) {
 }
 
 static char *sb_take(sb_t *sb) {
+    char *p;
     if (sb->err || !sb->data) {
         free(sb->data);
         return NULL;
@@ -122,7 +124,7 @@ static char *sb_take(sb_t *sb) {
      * buffer is still valid per C11 §7.22.3.5 — we just keep
      * the oversized one. cppcheck flags this as a leak; it
      * isn't, since the failure branch never frees. */
-    char *p = realloc(sb->data, sb->len + 1);
+    p = realloc(sb->data, sb->len + 1);
     /* cppcheck-suppress memleak */
     return p ? p : sb->data;
 }
@@ -179,11 +181,15 @@ static int validate_options(const siprec_metadata_options_t *opts) {
  * ──────────────────────────────────────────────────────────── */
 
 char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
+    sb_t sb;
+    const char *dm_str;
+    int group_has_body;
+    int session_has_body;
+
     if (!validate_options(opts)) {
         return NULL;
     }
 
-    sb_t sb;
     sb_init(&sb);
 
     /* XML prolog. RFC 7865 examples use UTF-8. */
@@ -195,7 +201,7 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
      * a full snapshot; "partial" is a delta update typically
      * carried on a re-INVITE so the SRS merges rather than
      * replaces existing state. */
-    const char *dm_str =
+    dm_str =
         (opts->datamode == SIPREC_DATAMODE_PARTIAL)
             ? "partial" : "complete";
     sb_appendf(&sb, "  <datamode>%s</datamode>\r\n", dm_str);
@@ -213,7 +219,7 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
      *
      * No <reason> child in the schema; only the timestamps
      * and extension elements. */
-    int group_has_body =
+    group_has_body =
         opts->group_id && *opts->group_id &&
         opts->associate_time_utc && *opts->associate_time_utc;
 
@@ -252,7 +258,7 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
     xml_escape_into(&sb, opts->session_id);
     sb_appendf(&sb, "\"");
 
-    int session_has_body =
+    session_has_body =
         (opts->session_reason && *opts->session_reason) ||
         (opts->group_id && *opts->group_id) ||
         (opts->associate_time_utc && *opts->associate_time_utc);
@@ -384,15 +390,16 @@ char *siprec_metadata_build(const siprec_metadata_options_t *opts) {
      * as a required attribute. */
     for (size_t i = 0; i < opts->stream_count; i++) {
         const siprec_metadata_stream_t *s = &opts->streams[i];
+        const siprec_metadata_participant_t *p;
+        const char *tag;
         if (s->participant_idx >= opts->participant_count) continue;
-        const siprec_metadata_participant_t *p =
-            &opts->participants[s->participant_idx];
+        p = &opts->participants[s->participant_idx];
 
         sb_appendf(&sb, "  <participantstreamassoc participant_id=\"");
         xml_escape_into(&sb, p->participant_id);
         sb_appendf(&sb, "\">\r\n");
 
-        const char *tag =
+        tag =
             (s->mode == SIPREC_STREAM_RECV) ? "recv" : "send";
         sb_appendf(&sb, "    <%s>", tag);
         xml_escape_into(&sb, s->stream_id);

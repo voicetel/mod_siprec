@@ -1,0 +1,11 @@
+# clang-tidy configuration.
+#
+# Disable ONLY the C11 Annex K buffer-handling checker
+# (clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling).
+# It demands the _s functions (memcpy_s, vsnprintf_s, sscanf_s, ...) from
+# C11 Annex K, which glibc does not implement -- so the check is
+# unsatisfiable on this platform for standard C. The flagged call sites
+# are each individually bounds-checked (see the per-call rationale
+# comments in the source). We disable the check project-wide here rather
+# than scatter per-call NOLINT suppressions through the code.
+Checks: '-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling'

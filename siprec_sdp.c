@@ -43,6 +43,8 @@ static void sb_init(sb_t *sb) {
 }
 
 static int sb_reserve(sb_t *sb, size_t want) {
+    size_t new_cap;
+    char *p;
     if (sb->err) {
         return -1;
     }
@@ -54,7 +56,7 @@ static int sb_reserve(sb_t *sb, size_t want) {
         sb->err = 1;
         return -1;
     }
-    size_t new_cap = sb->cap ? sb->cap : 256;
+    new_cap = sb->cap ? sb->cap : 256;
     /* Guard against new_cap *= 2 wrapping past SIZE_MAX/2 — at
      * that point new_cap stops increasing, which would loop
      * forever. SB_MAX_CAP < SIZE_MAX/2 by construction so the
@@ -68,7 +70,7 @@ static int sb_reserve(sb_t *sb, size_t want) {
         }
         new_cap *= 2;
     }
-    char *p = realloc(sb->data, new_cap);
+    p = realloc(sb->data, new_cap);
     if (!p) {
         sb->err = 1;
         return -1;
@@ -92,6 +94,10 @@ static int sb_can_grow_by(const sb_t *sb, size_t extra) {
 }
 
 static void sb_appendf(sb_t *sb, const char *fmt, ...) {
+    va_list ap;
+    int n;
+    size_t need;
+    int written;
     if (sb->err) {
         return;
     }
@@ -101,10 +107,8 @@ static void sb_appendf(sb_t *sb, const char *fmt, ...) {
      * the function is bounded by definition (writes nothing,
      * returns the would-have-been length). Annex K's
      * vsnprintf_s rejects size=0 so cannot replace this. */
-    va_list ap;
     va_start(ap, fmt);
-    /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
-    int n = vsnprintf(NULL, 0, fmt, ap);
+    n = vsnprintf(NULL, 0, fmt, ap);
     va_end(ap);
 
     if (n < 0) {
@@ -118,7 +122,7 @@ static void sb_appendf(sb_t *sb, const char *fmt, ...) {
         return;
     }
 
-    size_t need = sb->len + (size_t)n + 1; /* +1 for NUL */
+    need = sb->len + (size_t)n + 1; /* +1 for NUL */
     if (sb_reserve(sb, need) != 0) {
         return;
     }
@@ -127,8 +131,7 @@ static void sb_appendf(sb_t *sb, const char *fmt, ...) {
      * (sb->cap - sb->len), and sb_reserve above guarantees
      * it covers n+1 bytes. */
     va_start(ap, fmt);
-    /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
-    int written = vsnprintf(sb->data + sb->len, sb->cap - sb->len, fmt, ap);
+    written = vsnprintf(sb->data + sb->len, sb->cap - sb->len, fmt, ap);
     va_end(ap);
 
     if (written < 0 || (size_t)written >= sb->cap - sb->len) {
@@ -140,6 +143,7 @@ static void sb_appendf(sb_t *sb, const char *fmt, ...) {
 }
 
 static char *sb_take(sb_t *sb) {
+    char *p;
     if (sb->err || !sb->data) {
         free(sb->data);
         return NULL;
@@ -149,7 +153,7 @@ static char *sb_take(sb_t *sb) {
      * keeps the original (oversized) buffer per C11 §7.22.3.5;
      * cppcheck's "memleak" hint doesn't grok that. */
     /* cppcheck-suppress memleak */
-    char *p = realloc(sb->data, sb->len + 1);
+    p = realloc(sb->data, sb->len + 1);
     if (!p) {
         return sb->data;
     }
@@ -185,11 +189,11 @@ static int validate_options(const siprec_sdp_options_t *opts) {
 }
 
 char *siprec_sdp_build(const siprec_sdp_options_t *opts) {
+    sb_t sb;
     if (!validate_options(opts)) {
         return NULL;
     }
 
-    sb_t sb;
     sb_init(&sb);
 
     /* v=0 — RFC 4566 §5.1 */
@@ -296,7 +300,6 @@ static void sb_append(sb_t *sb, const char *s, size_t n) {
     if (!sb->data) { sb->err = 1; return; }
     /* Bounded: n is the explicit length, dst tail capacity
      * was just guaranteed by sb_reserve(len+n+1). */
-    /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
     memcpy(sb->data + sb->len, s, n);
     sb->len += n;
     sb->data[sb->len] = '\0';
@@ -328,19 +331,20 @@ static void sb_append(sb_t *sb, const char *s, size_t n) {
  * (block_index / current_block_has_label / label_emitted) that
  * doesn't fit a stateless filter cleanly. */
 char *siprec_sdp_inject_labels(const char *src_sdp) {
-    if (!src_sdp || !*src_sdp) return NULL;
-
     sb_t sb;
-    sb_init(&sb);
-
     /* block_index counts m= blocks observed so far (1-based at
      * emission time — incremented when we enter a block, so
      * the first m= block has block_index == 1). */
     int block_index             = 0;
     int current_block_has_label = 0;
     int label_emitted_for_block = 0;
+    const char *p;
 
-    const char *p = src_sdp;
+    if (!src_sdp || !*src_sdp) return NULL;
+
+    sb_init(&sb);
+
+    p = src_sdp;
     while (*p) {
         const char *eol = strpbrk(p, "\r\n");
         size_t line_len = eol ? (size_t)(eol - p) : strlen(p);
@@ -349,7 +353,6 @@ char *siprec_sdp_inject_labels(const char *src_sdp) {
             char     user[64], id[64], net[16], at[16], addr[64];
             unsigned long long ver = 0;
             /* Bounded by %63s / %15s widths. */
-            /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
             int n = sscanf(p, "o=%63s %63s %llu %15s %15s %63s",
                 user, id, &ver, net, at, addr);
             if (n == 6) {
@@ -408,15 +411,19 @@ char *siprec_sdp_inject_labels(const char *src_sdp) {
 }
 
 char *siprec_sdp_flip_direction(const char *src_sdp, int paused) {
+    const char *target;
+    size_t target_len;
+    sb_t sb;
+    const char *p;
+
     if (!src_sdp || !*src_sdp) return NULL;
 
-    const char *target = paused ? "a=inactive" : "a=sendonly";
-    const size_t target_len = strlen(target);
+    target = paused ? "a=inactive" : "a=sendonly";
+    target_len = strlen(target);
 
-    sb_t sb;
     sb_init(&sb);
 
-    const char *p = src_sdp;
+    p = src_sdp;
     while (*p) {
         /* Locate end-of-line. SDP lines are CRLF-terminated
          * per RFC 4566 §6 but accept LF-only for tolerance. */
@@ -435,7 +442,6 @@ char *siprec_sdp_flip_direction(const char *src_sdp, int paused) {
             /* Bounded: every %s specifier carries an explicit
              * width (%63s / %15s) that fits its destination
              * buffer with room for the trailing NUL. */
-            /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
             int n = sscanf(p, "o=%63s %63s %llu %15s %15s %63s",
                 user, id, &ver, net, at, addr);
             if (n == 6) {
@@ -487,13 +493,14 @@ int siprec_sdp_parse_remote_streams(
     siprec_negotiated_t *out,
     size_t out_max)
 {
-    if (!sdp || !out || out_max == 0) return 0;
-
     char session_ip[64] = {0};
     int  n        = 0;
     int  seen_m   = 0;
+    const char *p;
 
-    const char *p = sdp;
+    if (!sdp || !out || out_max == 0) return 0;
+
+    p = sdp;
     while (*p) {
         const char *eol = strpbrk(p, "\r\n");
         size_t line_len = eol ? (size_t)(eol - p) : strlen(p);

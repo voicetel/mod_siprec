@@ -172,6 +172,18 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
     const char *uuid = switch_core_session_get_uuid(session);
     char *recording_key = NULL;
     switch_memory_pool_t *recording_pool = NULL;
+    switch_channel_t *orig_ch;
+    const char *caller_aor;
+    const char *callee_aor;
+    char p_caller_id[80];
+    char p_callee_id[80];
+    siprec_metadata_participant_t parts[2];
+    siprec_metadata_stream_t streams_arr[1];
+    char associate_time[64] = {0};
+    siprec_metadata_options_t mopts;
+    char *metadata_body;
+    const char *profile;
+    switch_status_t inv;
 
     /* Reject NULL server name early. APR's switch_core_hash_find with
      * APR_HASH_KEY_STRING calls strlen() on the key — passing NULL
@@ -264,15 +276,15 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
      * (caller-spoken); WRITE receives what FS sends back to
      * the carrier (callee-spoken via FS-internal apps).
      */
-    switch_channel_t *orig_ch = switch_core_session_get_channel(session);
+    orig_ch = switch_core_session_get_channel(session);
 
-    const char *caller_aor = switch_channel_get_variable(orig_ch, "sip_from_uri");
+    caller_aor = switch_channel_get_variable(orig_ch, "sip_from_uri");
     if (!caller_aor) {
         caller_aor = switch_channel_get_variable(orig_ch, "caller_id_number");
     }
     if (!caller_aor) caller_aor = "sip:unknown@unknown";
 
-    const char *callee_aor = switch_channel_get_variable(orig_ch, "sip_to_uri");
+    callee_aor = switch_channel_get_variable(orig_ch, "sip_to_uri");
     if (!callee_aor) {
         callee_aor = switch_channel_get_variable(orig_ch, "destination_number");
     }
@@ -281,16 +293,15 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
     /* participant IDs are derived from the call-uuid +
      * suffix so they're unique within the recording session
      * but stable across re-INVITEs. */
-    char p_caller_id[80], p_callee_id[80];
     switch_snprintf(p_caller_id, sizeof(p_caller_id), "%s-caller", uuid);
     switch_snprintf(p_callee_id, sizeof(p_callee_id), "%s-callee", uuid);
 
-    siprec_metadata_participant_t parts[2] = {
-        { .participant_id = p_caller_id,
-          .aor = caller_aor, .display_name = NULL },
-        { .participant_id = p_callee_id,
-          .aor = callee_aor, .display_name = NULL },
-    };
+    parts[0].participant_id = p_caller_id;
+    parts[0].aor            = caller_aor;
+    parts[0].display_name   = NULL;
+    parts[1].participant_id = p_callee_id;
+    parts[1].aor            = callee_aor;
+    parts[1].display_name   = NULL;
 
     /* RFC 7865 §5 + RFC 7866 §8.5: the metadata's <stream>
      * entries cross-reference the SDP offer's a=label:N lines.
@@ -321,13 +332,11 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
      * track. A more precise leg-direction attribution is the
      * v1.4.0 follow-up alongside making both directions
      * actually flow on the wire. */
-    siprec_metadata_stream_t streams_arr[1] = {
-        { .stream_id = "stream-1", .mode = SIPREC_STREAM_SEND,
-          .participant_idx = 0,
-          .label = "1" },
-    };
+    streams_arr[0].stream_id       = "stream-1";
+    streams_arr[0].mode            = SIPREC_STREAM_SEND;
+    streams_arr[0].participant_idx = 0;
+    streams_arr[0].label           = "1";
 
-    char associate_time[64] = {0};
     {
         time_t now = time(NULL);
         struct tm tm_utc;
@@ -336,17 +345,16 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
             "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
     }
 
-    siprec_metadata_options_t mopts = {
-        .session_id        = uuid,
-        .group_id          = uuid,
-        .associate_time_utc = associate_time,
-        .datamode          = SIPREC_DATAMODE_COMPLETE,
-        .participants      = parts,
-        .participant_count = 2,
-        .streams           = streams_arr,
-        .stream_count      = sizeof(streams_arr) / sizeof(streams_arr[0]),
-    };
-    char *metadata_body = siprec_metadata_build(&mopts);
+    memset(&mopts, 0, sizeof(mopts));
+    mopts.session_id         = uuid;
+    mopts.group_id           = uuid;
+    mopts.associate_time_utc = associate_time;
+    mopts.datamode           = SIPREC_DATAMODE_COMPLETE;
+    mopts.participants       = parts;
+    mopts.participant_count  = 2;
+    mopts.streams            = streams_arr;
+    mopts.stream_count       = sizeof(streams_arr) / sizeof(streams_arr[0]);
+    metadata_body = siprec_metadata_build(&mopts);
     if (!metadata_body) {
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
             SWITCH_LOG_ERROR, "siprec: metadata build failed\n");
@@ -368,7 +376,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
      * legacy, mod_skinny, …) — SIPREC isn't applicable in
      * those cases. Fail loud rather than guess at a default.
      */
-    const char *profile = switch_channel_get_variable(
+    profile = switch_channel_get_variable(
         switch_core_session_get_channel(session),
         "sofia_profile_name");
     if (zstr(profile)) {
@@ -385,7 +393,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
      * siprec_invite_send_failover is therefore NULL — reserved
      * for the future multi-track offer bring-up that needs an
      * offer-time SDP-override hook through mod_sofia. */
-    switch_status_t inv = siprec_invite_send_failover(
+    inv = siprec_invite_send_failover(
         recording, profile, server, /*sdp_body*/ NULL, metadata_body);
 
     siprec_metadata_free(metadata_body);

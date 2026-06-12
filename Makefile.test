@@ -65,10 +65,12 @@ analyzer:
 	$(CC) -fanalyzer -Wall -Wextra -std=c11 -c siprec_metadata.c -o /dev/null
 	$(CC) -fanalyzer -Wall -Wextra -std=c11 -c siprec_test.c -o /dev/null
 
-# clang-tidy with default checks. The libc-call sites that
-# trip clang-analyzer-security.insecureAPI carry per-call
-# NOLINT-with-rationale comments in the source — no .clang-tidy
-# config and no global suppressions.
+# clang-tidy with default checks minus the C11 Annex K buffer
+# checker (clang-analyzer-security.insecureAPI.Deprecated...),
+# which demands the _s functions glibc doesn't implement and is
+# therefore unsatisfiable here. It is disabled project-wide in
+# .clang-tidy; the flagged libc-call sites keep per-call
+# rationale comments explaining why each is bounds-safe.
 #
 # Install with `apt install clang-tidy`. scan-build is a
 # separate package (clang-tools) and not currently wired in.
