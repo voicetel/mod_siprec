@@ -38,9 +38,13 @@
 
 /* Compile-time invariants:
  *
- *  1. The bug callback maps SWITCH_ABC_TYPE_READ → stream 0
- *     and SWITCH_ABC_TYPE_WRITE → stream 1. The streams[]
- *     array therefore MUST hold at least 2 entries.
+ *  1. The bug callback MIXES the READ and WRITE directions into
+ *     a single mono stream (switch_core_media_bug_read sums both
+ *     directions when SMBF_READ_STREAM | SMBF_WRITE_STREAM are
+ *     set — see media_bug_callback) and forks that mix to
+ *     streams[0]. streams[1] is reserved for the future
+ *     separated-track work and is not sent today, so streams[]
+ *     MUST hold at least one entry.
  *
  *  2. invite_ctx->negotiated[] and media_ctx->streams[] are
  *     paired (one negotiated entry feeds one streams entry).
@@ -50,8 +54,8 @@
  * If anyone changes SIPREC_MAX_STREAMS or either array size
  * without updating its peer, these assertions fire at
  * compile time. */
-_Static_assert(SIPREC_MAX_STREAMS >= 2,
-    "SIPREC_MAX_STREAMS must cover the READ→0 / WRITE→1 mapping");
+_Static_assert(SIPREC_MAX_STREAMS >= 1,
+    "SIPREC_MAX_STREAMS must provide streams[0] for the mixed fork");
 _Static_assert(
     sizeof(((siprec_media_ctx_t *)0)->streams)
         / sizeof(((siprec_media_ctx_t *)0)->streams[0])
@@ -196,88 +200,93 @@ static switch_bool_t media_bug_callback(
          * siprec_media_detach. */
         return SWITCH_TRUE;
 
-    case SWITCH_ABC_TYPE_READ:
-    case SWITCH_ABC_TYPE_WRITE: {
-        /* Pull a frame copy from the bug's queue. SMBF_*_STREAM
-         * (observe-only) is the canonical recording pattern;
-         * the frame returned here is L16 mono at the channel's
-         * native rate (8 kHz for our PCMU-only carrier leg).
-         * fill=FALSE means we don't synthesise silence on
-         * underrun — drop the slot if no frame is ready.
-         */
+    case SWITCH_ABC_TYPE_READ_PING: {
+        /* Single mixed fork (RFC 7866 §7 permits one mixed
+         * stream). Because the bug is attached with BOTH
+         * SMBF_READ_STREAM | SMBF_WRITE_STREAM,
+         * switch_core_media_bug_read returns a MONO MIX of the
+         * two directions — it sums the read- and write-side L16
+         * samples and normalises to 16-bit (switch_core_media_
+         * bug.c). So one read yields both parties' audio; we
+         * encode it and fork it to streams[0].
+         *
+         * READ_PING gives a steady per-read-frame tick that
+         * drains the bug regardless of which direction currently
+         * carries voice, so a one-sided talkspurt can't strand
+         * frames in the opposite buffer. The drain loop mirrors
+         * mod's session_record: the first read uses fill=FALSE
+         * (emit only when there's real audio); subsequent reads
+         * use fill=TRUE, which bug_read returns only while BOTH
+         * direction buffers still hold backlog — that bounds the
+         * loop and keeps the two sides time-aligned. */
         switch_frame_t  frame;
         uint8_t         frame_buf[SWITCH_RECOMMENDED_BUFFER_SIZE];
+        int             sent_any = 0;
+        int             iteration = 0;
 
-        memset(&frame, 0, sizeof(frame));
-        frame.data    = frame_buf;
-        frame.buflen  = sizeof(frame_buf);
-
-        size_t stream_idx = (type == SWITCH_ABC_TYPE_READ) ? 0 : 1;
-
-        /* Always drain the bug's queue, even if this direction
-         * has no configured stream (e.g. SRS only negotiated
-         * one m=audio block, so stream_count == 1 and the WRITE
-         * callback has nowhere to send). Skipping the read
-         * leaves frames buffered on the bug, which back-pressures
-         * the original session and eventually drops audio. */
-        switch_status_t rs =
-            switch_core_media_bug_read(bug, &frame, SWITCH_FALSE);
-
-        if (stream_idx >= ctx->stream_count) {
-            /* Discarded — but we did consume the frame slot. */
+        if (ctx->stream_count == 0) {
             return SWITCH_TRUE;
         }
 
-        if (rs != SWITCH_STATUS_SUCCESS) {
-            /* No frame ready this tick: the next packet we
-             * actually send opens a new talkspurt → mark it. */
-            ctx->streams[stream_idx].marker_pending = 1;
-            return SWITCH_TRUE;
-        }
-        if (frame.datalen == 0) {
-            ctx->streams[stream_idx].marker_pending = 1;
-            return SWITCH_TRUE;
-        }
-        /* CNG / discontinuous-transmission frames signal silence
-         * — treat them like an empty read so the next real
-         * audio packet carries M=1. */
-        if (frame.flags & SFF_CNG) {
-            ctx->streams[stream_idx].marker_pending = 1;
-            return SWITCH_TRUE;
-        }
+        for (;;) {
+            memset(&frame, 0, sizeof(frame));
+            frame.data   = frame_buf;
+            frame.buflen = sizeof(frame_buf);
 
-        const int16_t *samples      = (const int16_t *)frame.data;
-        size_t         sample_count = frame.datalen / 2;
+            switch_status_t rs = switch_core_media_bug_read(
+                bug, &frame, iteration++ == 0 ? SWITCH_FALSE : SWITCH_TRUE);
 
-        uint8_t encoded[1500];
-        if (sample_count > sizeof(encoded)) {
-            sample_count = sizeof(encoded);
-        }
-
-        if (ctx->streams[stream_idx].pt == 8) {
-            for (size_t i = 0; i < sample_count; i++) {
-                encoded[i] = l16_to_alaw(samples[i]);
+            if (rs != SWITCH_STATUS_SUCCESS || frame.datalen == 0) {
+                break;
             }
-        } else {
-            /* default + PT 0 = PCMU */
-            for (size_t i = 0; i < sample_count; i++) {
-                encoded[i] = l16_to_ulaw(samples[i]);
+            /* CNG / discontinuous-transmission frames signal
+             * silence — skip them and mark the next real packet
+             * as a fresh talkspurt (M=1). */
+            if (frame.flags & SFF_CNG) {
+                ctx->streams[0].marker_pending = 1;
+                continue;
             }
+
+            const int16_t *samples      = (const int16_t *)frame.data;
+            size_t         sample_count = frame.datalen / 2;
+
+            uint8_t encoded[1500];
+            if (sample_count > sizeof(encoded)) {
+                sample_count = sizeof(encoded);
+            }
+
+            if (ctx->streams[0].pt == 8) {
+                for (size_t i = 0; i < sample_count; i++) {
+                    encoded[i] = l16_to_alaw(samples[i]);
+                }
+            } else {
+                /* default + PT 0 = PCMU */
+                for (size_t i = 0; i < sample_count; i++) {
+                    encoded[i] = l16_to_ulaw(samples[i]);
+                }
+            }
+
+            rtp_pack_and_send(
+                ctx->streams[0].fd,
+                (struct sockaddr *)&ctx->streams[0].dst,
+                ctx->streams[0].dst_len,
+                ctx->streams[0].pt,
+                ctx->streams[0].marker_pending,
+                ctx->streams[0].ssrc,
+                ctx->streams[0].sequence++,
+                ctx->streams[0].timestamp,
+                encoded, sample_count);
+
+            ctx->streams[0].marker_pending = 0;
+            ctx->streams[0].timestamp += sample_count;
+            sent_any = 1;
         }
 
-        rtp_pack_and_send(
-            ctx->streams[stream_idx].fd,
-            (struct sockaddr *)&ctx->streams[stream_idx].dst,
-            ctx->streams[stream_idx].dst_len,
-            ctx->streams[stream_idx].pt,
-            ctx->streams[stream_idx].marker_pending,
-            ctx->streams[stream_idx].ssrc,
-            ctx->streams[stream_idx].sequence++,
-            ctx->streams[stream_idx].timestamp,
-            encoded, sample_count);
-
-        ctx->streams[stream_idx].marker_pending = 0;
-        ctx->streams[stream_idx].timestamp += sample_count;
+        if (!sent_any) {
+            /* Nothing emitted this tick (silence on both sides):
+             * the next real packet opens a new talkspurt. */
+            ctx->streams[0].marker_pending = 1;
+        }
         return SWITCH_TRUE;
     }
 
@@ -428,11 +437,15 @@ switch_status_t siprec_media_attach(recording_t *recording)
     }
 
     /* Attach the bug. SMBF_READ_STREAM | SMBF_WRITE_STREAM is
-     * the observe-only pattern used by session_record: the
-     * callback receives SWITCH_ABC_TYPE_READ / WRITE events
-     * and fetches a frame via switch_core_media_bug_read.
-     * (REPLACE flags are for codepaths that modify the in-
-     * flight stream — not what SIPREC needs.)
+     * the observe-only pattern used by session_record; with
+     * both set, switch_core_media_bug_read returns a mono MIX
+     * of the two directions. SMBF_READ_PING adds a steady
+     * per-read-frame tick (SWITCH_ABC_TYPE_READ_PING) so the
+     * callback drains the bug on a fixed cadence rather than
+     * racing the separate READ/WRITE events — this is how
+     * session_record clocks its own mixed capture. (REPLACE
+     * flags are for codepaths that modify the in-flight stream
+     * — not what SIPREC needs.)
      */
     switch_status_t st = switch_core_media_bug_add(
         recording->session,
@@ -441,7 +454,7 @@ switch_status_t siprec_media_attach(recording_t *recording)
         media_bug_callback,
         mctx,
         0,    /* stop_time = 0 (never) */
-        SMBF_READ_STREAM | SMBF_WRITE_STREAM,
+        SMBF_READ_STREAM | SMBF_WRITE_STREAM | SMBF_READ_PING,
         &mctx->bug);
 
     if (st != SWITCH_STATUS_SUCCESS) {
