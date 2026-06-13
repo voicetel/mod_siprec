@@ -70,6 +70,41 @@ static switch_state_handler_table_t state_handlers = {
 };
 
 
+/* teardown_recording: fully retire one recording_t — detach
+ * the media fork, BYE the SRS leg, drop the hash entry, free
+ * the pool. Shared by every stop path (on-hangup, the explicit
+ * siprec_stop app, and the half-built-recording cleanup) so the
+ * ordering and the pool-free stay in exactly one place.
+ *
+ * Order matters: detach the media bug FIRST (stops new RTP from
+ * being forked — the PCI-relevant guarantee), then BYE the
+ * recording leg (lets the SRS flush any pending write before
+ * the dialog closes). The bug callback may still fire while the
+ * bug is being removed; siprec_media_detach handles that
+ * ordering safely (switch_core_media_bug_remove is synchronous).
+ * Both detach and BYE are idempotent, so calling this twice for
+ * the same recording (e.g. siprec_stop then on_destroy) is safe
+ * as long as the caller only invokes it on a recording it just
+ * found in the hash — the hash delete below makes the second
+ * lookup miss. */
+static void teardown_recording(recording_t *recording)
+{
+    siprec_media_detach(recording);
+    siprec_invite_send_bye(recording);
+
+    switch_mutex_lock(globals.recordings_mutex);
+    switch_core_hash_delete(globals.recordings_hash, recording->key);
+    switch_mutex_unlock(globals.recordings_mutex);
+
+    /* Tear down the recording's pool. The original code removed
+     * the hash entry but never destroyed the pool — every stop
+     * leaked the recording_t struct and its pool's full
+     * allocation arena until module shutdown rolled them up via
+     * the shutdown function's hash walk. With per-call dispatch
+     * on a multi-tenant box, the leak compounds. */
+    switch_core_destroy_memory_pool(&recording->pool);
+}
+
 switch_status_t stop_recording_session(switch_core_session_t *session)
 {
     char *recording_key = NULL;
@@ -96,34 +131,42 @@ switch_status_t stop_recording_session(switch_core_session_t *session)
             continue;
         }
 
-        /* Tear down media + signalling BEFORE removing the
-         * hash entry — the bug callback may still fire while
-         * the bug is being removed; siprec_media_detach
-         * handles that ordering safely.
-         *
-         * The order matters: detach the media bug first
-         * (stops new RTP from being sent), then BYE the
-         * recording leg (allows the SRS to flush any pending
-         * write before the dialog closes).
-         */
-        siprec_media_detach(recording);
-        siprec_invite_send_bye(recording);
-
-        switch_mutex_lock(globals.recordings_mutex);
-        switch_core_hash_delete(globals.recordings_hash, recording->key);
-        switch_mutex_unlock(globals.recordings_mutex);
-
-        /* Tear down the recording's pool. The original code
-         * removed the hash entry but never destroyed the
-         * pool — every <Stop><Siprec/> leaked the recording_t
-         * struct and its pool's full allocation arena until
-         * module shutdown rolled them up via the shutdown
-         * function's hash walk. With per-call dispatch on a
-         * multi-tenant box, the leak compounds. */
-        switch_core_destroy_memory_pool(&recording->pool);
+        teardown_recording(recording);
     }
     switch_mutex_unlock(globals.recording_servers_mutex);
 
+    return SWITCH_STATUS_SUCCESS;
+}
+
+/* stop_recording_session_for_server: stop just the recording on
+ * THIS leg that belongs to `server_name`. With no server name,
+ * fall back to stopping every recording on the leg — the
+ * PCI-safe default, so an explicit `siprec_stop` with no
+ * argument can't leave a second SRS still receiving audio.
+ * Returns SUCCESS if at least one recording was found and torn
+ * down, FALSE if there was nothing to stop. */
+switch_status_t stop_recording_session_for_server(switch_core_session_t *session, const char *server_name)
+{
+    char *recording_key;
+    recording_t *recording;
+
+    if (zstr(server_name)) {
+        return stop_recording_session(session);
+    }
+
+    recording_key = switch_mprintf("%s-%s", server_name, switch_core_session_get_uuid(session));
+
+    switch_mutex_lock(globals.recordings_mutex);
+    recording = switch_core_hash_find(globals.recordings_hash, recording_key);
+    switch_mutex_unlock(globals.recordings_mutex);
+
+    switch_safe_free(recording_key);
+
+    if (!recording) {
+        return SWITCH_STATUS_FALSE;
+    }
+
+    teardown_recording(recording);
     return SWITCH_STATUS_SUCCESS;
 }
 
@@ -153,16 +196,10 @@ static void discard_pending_recording(recording_t *recording)
     if (!recording) return;
 
     /* Best-effort tear-down of any partially-attached state.
-     * Both detach and BYE are NULL-safe and idempotent — they
-     * no-op when invite_ctx / media_ctx aren't populated. */
-    siprec_media_detach(recording);
-    siprec_invite_send_bye(recording);
-
-    switch_mutex_lock(globals.recordings_mutex);
-    switch_core_hash_delete(globals.recordings_hash, recording->key);
-    switch_mutex_unlock(globals.recordings_mutex);
-
-    switch_core_destroy_memory_pool(&recording->pool);
+     * teardown_recording's detach and BYE are NULL-safe and
+     * idempotent — they no-op when invite_ctx / media_ctx aren't
+     * populated yet. */
+    teardown_recording(recording);
 }
 
 switch_status_t start_recording_session(switch_core_session_t *session, const char *recording_server_name)

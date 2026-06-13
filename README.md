@@ -43,7 +43,8 @@ verification path; production interop is verified against
 | `+sip.src` Contact feature tag | [RFC 7866 §5.2.1][rfc7866-5.2.1] | ✅ via `sip_invite_contact_params=~+sip.src` ovar; the leading `~` tells `sofia_overcome_sip_uri_weakness` (sofia_glue.c:854,891) to place the tag AFTER the closing `>`, yielding `Contact: <sip:src@host:port>;+sip.src` per the spec |
 | `multipart/mixed` (SDP + metadata) | [RFC 7866 §6.1.2][rfc7866-6.1.2] / [RFC 2046][rfc2046] | ✅ `sip_multipart` channel var |
 | BYE on hangup | [RFC 7866 §6.4][rfc7866-6.4] | ✅ on_destroy state-handler |
-| pause / resume re-INVITE | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_pause` / `siprec_resume` apps; SDP direction-flip preserves negotiated session |
+| pause / resume re-INVITE | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_pause` / `siprec_resume` apps; SDP direction-flip preserves negotiated session. **PCI-safe**: pause gates the local RTP fork OFF (no audio leaves the box) *before* sending `a=inactive`, and drains/discards buffered frames so resume can't burst paused-period audio |
+| explicit stop | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_stop` app — detaches the media fork + BYEs the SRS leg mid-call; no-arg form stops every recording on the leg (PCI-safe default). Not resumable; start a fresh `siprec` to record again |
 | sendonly direction on SRC streams | [RFC 7866 §7.4][rfc7866-7.4] | ✅ sofia auto-gen offer |
 | `a=label:N` per stream | [RFC 7866 §8.5][rfc7866-8.5] | ✅ per-block sequential labels (1st m= → `label:1`, 2nd → `label:2`, …) injected via post-originate re-INVITE on the auto-generated SDP. mod_sofia's auto-gen is single-track today, so the wire effect is `label:1`; the moment a multi-track offer path lands (sofia SDP-override hook OR `siprec_sdp_build`-driven originate) the same call site picks up `label:1` + `label:2` + … without code changes |
 | Single mixed-audio stream (both directions) | [RFC 7866 §7][rfc7866-7] | ✅ one `m=audio` block in the offer, one `<stream>` in metadata. The audio bug observes both directions (`SMBF_READ_STREAM \| SMBF_WRITE_STREAM`); `switch_core_media_bug_read` returns them already mixed (read+write summed, normalized to 16-bit), so the single forked stream carries **both** parties. Drained on a fixed `SMBF_READ_PING` tick, the same way mod_sofia's `session_record` clocks its mixed capture. RFC 7866 §7 permits "MAY" send multiple streams; we send one mixed stream. Separated per-direction (labelled) tracks are a planned follow-up, gated on the multi-track offer path noted in the §8.5 row above — which needs the recording leg placed in proxy mode so mod_sofia emits a custom SDP instead of regenerating it |
@@ -157,13 +158,32 @@ Pause and resume:
 
 ```xml
 <action application="siprec_pause"  data="default"/>
-<!-- audio bug stays attached, SRS records silence (a=inactive) -->
+<!-- RTP fork is gated OFF immediately: no audio leaves the box,
+     and a re-INVITE (a=inactive) tells the SRS to expect none.
+     The SIP dialog stays up so resume is a fast re-INVITE. -->
 <action application="siprec_resume" data="default"/>
 ```
 
-Hang-up tears the recording dialog down automatically — the
-module installs an `on_destroy` state-handler when the recording
-starts.
+`siprec_pause` is **PCI-DSS safe**: it stops the local RTP fork
+*before* the re-INVITE is even sent, so sensitive audio (a card
+number / CVV read aloud) never reaches the recorder while paused.
+Buffered frames captured during the pause are drained and
+discarded, so resume cannot burst out paused-period audio. Wrap
+the card-capture step in `siprec_pause` / `siprec_resume`.
+
+Stop a recording outright:
+
+```xml
+<action application="siprec_stop" data="default"/>
+<!-- detaches the media fork (RTP stops at once) and BYEs the
+     SRS leg. Not resumable — start a fresh `siprec` to record
+     again. With no data argument, stops EVERY recording on the
+     leg (the PCI-safe default). -->
+```
+
+Hang-up tears any remaining recording dialog down automatically —
+the module installs an `on_destroy` state-handler when the
+recording starts, so an explicit `siprec_stop` is optional.
 
 ## Architecture
 

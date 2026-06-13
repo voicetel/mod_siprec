@@ -344,6 +344,45 @@ SWITCH_STANDARD_APP(siprec_resume_app_function)
 	siprec_change_direction(session, data, /*paused*/ 0);
 }
 
+SWITCH_STANDARD_APP(siprec_stop_app_function)
+{
+	const char *server_name = NULL;
+
+	/* Optional <recording_server> argument. With none, stop
+	 * EVERY recording on this leg — the PCI-safe default, so a
+	 * "stop now" can't accidentally leave a second SRS still
+	 * receiving cardholder audio. */
+	if (!zstr(data)) {
+		char *argv[4] = { 0 };
+		char *mydata = switch_core_session_strdup(session, data);
+		int   argc;
+
+		if (!mydata) {
+			return;
+		}
+		argc = switch_separate_string(mydata, ' ', argv,
+			(sizeof(argv) / sizeof(argv[0])));
+		if (argc >= 1 && !zstr(argv[0])) {
+			server_name = argv[0];
+		}
+	}
+
+	/* Hard stop: detach the media fork (RTP stops leaving the
+	 * box at once) and BYE the SRS leg. Unlike pause this is not
+	 * resumable — to record again, start a fresh `siprec`, which
+	 * opens a new SRS recording with new metadata. Idempotent
+	 * with the on-hangup teardown: if nothing is active this is a
+	 * no-op. */
+	if (stop_recording_session_for_server(session, server_name)
+		== SWITCH_STATUS_FALSE) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+			SWITCH_LOG_WARNING,
+			"siprec_stop: no active recording to stop%s%s\n",
+			server_name ? " for server " : "",
+			server_name ? server_name : "");
+	}
+}
+
 SWITCH_MODULE_LOAD_FUNCTION(mod_siprec_load)
 {
 	switch_status_t status = SWITCH_STATUS_SUCCESS;
@@ -372,6 +411,10 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_siprec_load)
 		"Resume a SIPREC recording (re-INVITE a=sendonly)",
 		"", siprec_resume_app_function,
 		"<recording_server>", SAF_NONE);
+	SWITCH_ADD_APP(app_interface, "siprec_stop",
+		"Stop a SIPREC recording (detach media fork + BYE)",
+		"", siprec_stop_app_function,
+		"[<recording_server>]", SAF_NONE);
 
 	done:
 	return status;
