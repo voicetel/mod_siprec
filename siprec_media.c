@@ -257,18 +257,6 @@ static switch_bool_t media_bug_callback(
                 continue;
             }
 
-            /* PCI pause: drain-and-discard. We keep READING (so
-             * the bug's ring buffer can't accumulate the paused
-             * period's audio and burst it out on resume — that
-             * backlog could carry the cardholder audio we're
-             * pausing to avoid), but we never encode or send it.
-             * The next real packet after resume opens a fresh
-             * talkspurt. */
-            if (ctx->paused) {
-                ctx->streams[0].marker_pending = 1;
-                continue;
-            }
-
             samples      = (const int16_t *)frame.data;
             sample_count = frame.datalen / 2;
 
@@ -525,11 +513,30 @@ switch_status_t siprec_media_detach(recording_t *recording)
 
 void siprec_media_set_paused(recording_t *recording, int paused)
 {
+    siprec_media_ctx_t *mctx;
+
     if (!recording || !recording->media_ctx) {
         return;
     }
-    /* Single-byte flag write; the media thread reads it on its
-     * next tick. No lock needed — see the field comment in
-     * siprec_media.h. */
-    recording->media_ctx->paused = paused ? 1 : 0;
+    mctx = recording->media_ctx;
+    if (!mctx->bug) {
+        return;
+    }
+
+    /* Native per-bug pause: with SMBF_PAUSE set, FreeSWITCH skips
+     * this bug in the io frame pump (switch_core_io.c), so no
+     * audio is ever written into the bug's buffer while paused —
+     * cardholder audio is never captured or forked, and nothing
+     * buffers to burst on resume. Per-bug, so other bugs on the
+     * leg are unaffected (unlike channel-wide CF_PAUSE_BUGS). */
+    if (paused) {
+        switch_core_media_bug_set_flag(mctx->bug, SMBF_PAUSE);
+    } else {
+        /* Mark the next forwarded packet as a fresh talkspurt so
+         * the SRS sees the pause as a discontinuity boundary.
+         * Set before clearing the flag: while paused the callback
+         * doesn't run, so there's no concurrent writer here. */
+        mctx->streams[0].marker_pending = 1;
+        switch_core_media_bug_clear_flag(mctx->bug, SMBF_PAUSE);
+    }
 }

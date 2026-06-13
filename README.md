@@ -43,7 +43,7 @@ verification path; production interop is verified against
 | `+sip.src` Contact feature tag | [RFC 7866 §5.2.1][rfc7866-5.2.1] | ✅ via `sip_invite_contact_params=~+sip.src` ovar; the leading `~` tells `sofia_overcome_sip_uri_weakness` (sofia_glue.c:854,891) to place the tag AFTER the closing `>`, yielding `Contact: <sip:src@host:port>;+sip.src` per the spec |
 | `multipart/mixed` (SDP + metadata) | [RFC 7866 §6.1.2][rfc7866-6.1.2] / [RFC 2046][rfc2046] | ✅ `sip_multipart` channel var |
 | BYE on hangup | [RFC 7866 §6.4][rfc7866-6.4] | ✅ on_destroy state-handler |
-| pause / resume re-INVITE | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_pause` / `siprec_resume` apps; SDP direction-flip preserves negotiated session. **PCI-safe**: pause gates the local RTP fork OFF (no audio leaves the box) *before* sending `a=inactive`, and drains/discards buffered frames so resume can't burst paused-period audio |
+| pause / resume re-INVITE | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_pause` / `siprec_resume` apps; SDP direction-flip preserves negotiated session. **PCI-safe**: pause sets the recording bug's native `SMBF_PAUSE` (FreeSWITCH stops capturing audio at the io pump — no frames forked, nothing buffered to burst on resume) *before* sending `a=inactive`, so cardholder audio never leaves the box |
 | explicit stop | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_stop` app — detaches the media fork + BYEs the SRS leg mid-call; no-arg form stops every recording on the leg (PCI-safe default). Not resumable; start a fresh `siprec` to record again |
 | sendonly direction on SRC streams | [RFC 7866 §7.4][rfc7866-7.4] | ✅ sofia auto-gen offer |
 | `a=label:N` per stream | [RFC 7866 §8.5][rfc7866-8.5] | ✅ per-block sequential labels (1st m= → `label:1`, 2nd → `label:2`, …) injected via post-originate re-INVITE on the auto-generated SDP. mod_sofia's auto-gen is single-track today, so the wire effect is `label:1`; the moment a multi-track offer path lands (sofia SDP-override hook OR `siprec_sdp_build`-driven originate) the same call site picks up `label:1` + `label:2` + … without code changes |
@@ -164,12 +164,12 @@ Pause and resume:
 <action application="siprec_resume" data="default"/>
 ```
 
-`siprec_pause` is **PCI-DSS safe**: it stops the local RTP fork
-*before* the re-INVITE is even sent, so sensitive audio (a card
-number / CVV read aloud) never reaches the recorder while paused.
-Buffered frames captured during the pause are drained and
-discarded, so resume cannot burst out paused-period audio. Wrap
-the card-capture step in `siprec_pause` / `siprec_resume`.
+`siprec_pause` is **PCI-DSS safe**: it pauses the recording bug
+natively (`SMBF_PAUSE`) *before* the re-INVITE is even sent, so the
+FreeSWITCH core stops feeding audio to the bug entirely — sensitive
+audio (a card number / CVV read aloud) is never captured, never
+forked, and nothing is buffered to burst out on resume. Wrap the
+card-capture step in `siprec_pause` / `siprec_resume`.
 
 Stop a recording outright:
 

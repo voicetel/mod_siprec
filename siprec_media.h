@@ -73,16 +73,6 @@ typedef struct siprec_media_ctx {
         uint8_t    pt;
     } streams[SIPREC_MAX_STREAMS];
     size_t stream_count;
-
-    /* PCI pause gate. When set, the media-bug callback drains
-     * the bug but discards frames instead of forking them to
-     * the SRS — so no audio (e.g. a card number read aloud)
-     * leaves this box while paused. Toggled by
-     * siprec_media_set_paused from the pause/resume apps and
-     * read on the FS media thread. A plain flag (single-byte
-     * write) is sufficient: worst case the gate takes effect on
-     * the next read tick (~20 ms). */
-    int paused;
 } siprec_media_ctx_t;
 
 /* siprec_media_attach: install the media bug on the original
@@ -103,12 +93,14 @@ switch_status_t siprec_media_attach(recording_t *recording);
  * sockets. Idempotent. Safe to call from on_destroy. */
 switch_status_t siprec_media_detach(recording_t *recording);
 
-/* siprec_media_set_paused: gate the RTP fork without tearing
- * it down. paused != 0 → the callback drains the bug but
- * discards frames, so no RTP leaves the box; 0 → forking
- * resumes. No-op if the media context isn't attached. Lets the
- * pause/resume apps make pause a real PCI guarantee rather than
- * just an a=inactive signalling courtesy. */
+/* siprec_media_set_paused: gate the RTP fork without tearing it
+ * down, using FreeSWITCH's native per-bug SMBF_PAUSE. paused != 0
+ * → the core skips this bug in the io frame pump, so no audio is
+ * ever captured or forked while paused (and nothing buffers to
+ * burst on resume); 0 → forking resumes. No-op if the media
+ * context / bug isn't attached. Lets the pause/resume apps make
+ * pause a real PCI guarantee rather than just an a=inactive
+ * signalling courtesy. */
 void siprec_media_set_paused(recording_t *recording, int paused);
 
 #endif /* SIPREC_MEDIA_H */
