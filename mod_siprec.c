@@ -251,6 +251,20 @@ static switch_status_t siprec_change_direction(
 		return SWITCH_STATUS_FALSE;
 	}
 
+	/* PCI: on PAUSE, stop the local RTP fork IMMEDIATELY —
+	 * before the re-INVITE even reaches the SRS. The a=inactive
+	 * re-INVITE alone is not a guarantee: the media bug keeps
+	 * forking RTP to the SRS, so cardholder audio would still
+	 * leave this box during the "pause". Gating the fork here is
+	 * the hard guarantee; the re-INVITE is the SIP-level
+	 * courtesy. We deliberately gate BEFORE the re-INVITE (and
+	 * leave it gated even if the re-INVITE fails) so the
+	 * fail-safe direction is "not recording". RESUME re-opens the
+	 * fork only AFTER the re-INVITE succeeds (below). */
+	if (paused) {
+		siprec_media_set_paused(recording, 1);
+	}
+
 	/* RFC 7866 §6.4 pause/resume: re-INVITE on the existing
 	 * dialog with the SDP direction flipped. The new SDP MUST
 	 * keep the negotiated ports, codec, c= address, and crypto
@@ -311,6 +325,11 @@ static switch_status_t siprec_change_direction(
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
 			"siprec: re-INVITE for %s failed: %d\n",
 			paused ? "pause" : "resume", (int)st);
+	} else if (!paused) {
+		/* Resume negotiated cleanly — re-open the RTP fork so
+		 * audio flows to the SRS again. (PAUSE already gated the
+		 * fork above, before the re-INVITE.) */
+		siprec_media_set_paused(recording, 0);
 	}
 	return st;
 }
