@@ -27,7 +27,7 @@ SRS's 200 OK answer.
 ## Status
 
 All paths build, lint clean, and the unit-test suite for the
-SDP / metadata builders passes 93/93 assertions. The dispatch /
+SDP / metadata builders passes 124/124 assertions. The dispatch /
 media / signalling pipeline has been audited and the broken
 pieces from the original fork have been replaced. Live
 integration against `cb-srs` is documented in

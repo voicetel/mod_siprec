@@ -27,8 +27,8 @@ captured audio to the negotiated RTP endpoints.
 mod_siprec.c          module entry, app dispatch, config load
 mod_siprec.h          public types (recording_t, recording_server_t, globals_t)
 
-siprec_session.c      lifecycle: start/stop/pause/resume
-siprec_session.h
+recording_session.c   lifecycle: start/stop/pause/resume
+recording_session.h
 
 siprec_sdp.c          SDP body builder (RFC 7866 §7)
 siprec_sdp.h
@@ -126,7 +126,17 @@ siprec_media.h
       through `siprec_sdp_flip_direction` (bumps
       `o=session-version` per RFC 4566 §5.2 and swaps
       `a=sendonly` ⇄ `a=inactive`), and dispatches the
-      re-INVITE through `siprec_invite_reinvite`.
+      re-INVITE through `siprec_invite_reinvite`. PCI-safe:
+      pause also sets the media bug's native `SMBF_PAUSE`
+      (`siprec_media_set_paused`) before the re-INVITE, so the
+      FS core stops capturing audio at the io pump — cardholder
+      audio is never forked while paused.
+- [x] `siprec_stop` app — explicit mid-call teardown via
+      `stop_recording_session_for_server`: detaches the media
+      fork and BYEs the SRS leg without hanging up the call. No
+      `<recording_server>` arg stops every recording on the leg
+      (PCI-safe default). Not resumable; idempotent with the
+      on-hangup teardown.
 
 ### Phase 5 — config
 
@@ -181,12 +191,14 @@ siprec_media.h
   auto-generates that body single-track and there's no
   per-call hook today that lets mod_siprec inject a
   pre-built SDP. Until this lands, the SRC sends a
-  single-track offer and records only the READ direction
-  (RFC 7866 §7 explicitly permits this — "MAY send multiple
-  streams" — but bidirectional recording is the obvious next
-  step). SRTP via SDES (RFC 4568) is also gated on the same
-  override — keymat must travel in the initial offer, which
-  we don't control today.
+  single-track offer carrying **both** call directions mixed
+  into one stream (`switch_core_media_bug_read` sums read+write
+  and normalizes to 16-bit) — RFC 7866 §7 explicitly permits a
+  single mixed stream ("MAY send multiple streams"). What's
+  still gated on the override is **separated**, per-direction
+  `a=label:N` tracks. SRTP via SDES (RFC 4568) is also gated on
+  the same override — keymat must travel in the initial offer,
+  which we don't control today.
 
 ## Non-goals (deferred)
 
