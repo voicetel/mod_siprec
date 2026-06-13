@@ -70,6 +70,11 @@ static switch_state_handler_table_t state_handlers = {
 };
 
 
+char *siprec_recording_key(const char *server_name, const char *uuid)
+{
+    return switch_mprintf("%s-%s", server_name, uuid);
+}
+
 /* teardown_recording: fully retire one recording_t — detach
  * the media fork, BYE the SRS leg, drop the hash entry, free
  * the pool. Shared by every stop path (on-hangup, the explicit
@@ -109,7 +114,7 @@ switch_status_t stop_recording_session(switch_core_session_t *session)
 {
     char *recording_key = NULL;
     recording_t *recording = NULL;
-    recording_server_t *recording_server = NULL;
+    const recording_server_t *recording_server = NULL;
     switch_hash_index_t *hi;
     void *val;
     const void *vvar;
@@ -119,7 +124,7 @@ switch_status_t stop_recording_session(switch_core_session_t *session)
         switch_core_hash_this(hi, &vvar, NULL, &val);
         recording_server = (recording_server_t *) val;
 
-        recording_key = switch_mprintf("%s-%s", recording_server->name, switch_core_session_get_uuid(session));
+        recording_key = siprec_recording_key(recording_server->name, switch_core_session_get_uuid(session));
 
         switch_mutex_lock(globals.recordings_mutex);
         recording = switch_core_hash_find(globals.recordings_hash, recording_key);
@@ -154,7 +159,7 @@ switch_status_t stop_recording_session_for_server(switch_core_session_t *session
         return stop_recording_session(session);
     }
 
-    recording_key = switch_mprintf("%s-%s", server_name, switch_core_session_get_uuid(session));
+    recording_key = siprec_recording_key(server_name, switch_core_session_get_uuid(session));
 
     switch_mutex_lock(globals.recordings_mutex);
     recording = switch_core_hash_find(globals.recordings_hash, recording_key);
@@ -242,7 +247,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
         return SWITCH_STATUS_FALSE;
     }
 
-    recording_key = switch_mprintf("%s-%s", recording_server_name, uuid);
+    recording_key = siprec_recording_key(recording_server_name, uuid);
 
     /* Duplicate-detect against the recordings hash, NOT the
      * recording_servers hash. The original code looked up the new

@@ -40,6 +40,14 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 switch_status_t stop_recording_session(switch_core_session_t *session);
 switch_status_t stop_recording_session_for_server(switch_core_session_t *session, const char *server_name);
 
+/* siprec_recording_key: build the globals.recordings_hash key for
+ * a recording — "<server_name>-<uuid>". The key format is a
+ * correctness-critical invariant: start_recording_session must
+ * produce the exact same string that stop/pause look up, so it
+ * lives in one place. Returns a switch_mprintf allocation the
+ * caller frees with switch_safe_free. */
+char *siprec_recording_key(const char *server_name, const char *uuid);
+
 #endif
 
 

@@ -177,9 +177,15 @@ Stop a recording outright:
 <action application="siprec_stop" data="default"/>
 <!-- detaches the media fork (RTP stops at once) and BYEs the
      SRS leg. Not resumable — start a fresh `siprec` to record
-     again. With no data argument, stops EVERY recording on the
-     leg (the PCI-safe default). -->
+     again. -->
 ```
+
+Note the argument asymmetry: `siprec_pause` / `siprec_resume` with
+no `data` act on the server named `"default"`, but `siprec_stop`
+with no `data` stops **every** recording on the leg — the PCI-safe
+choice, so a "stop now" can't accidentally leave a second SRS still
+receiving audio. Pass a `<recording_server>` name to `siprec_stop`
+to stop just that one.
 
 Hang-up tears any remaining recording dialog down automatically —
 the module installs an `on_destroy` state-handler when the

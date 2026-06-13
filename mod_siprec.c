@@ -229,7 +229,7 @@ static switch_status_t siprec_change_direction(
 	}
 
 	uuid = switch_core_session_get_uuid(session);
-	recording_key = switch_mprintf("%s-%s", server_name, uuid);
+	recording_key = siprec_recording_key(server_name, uuid);
 
 	switch_mutex_lock(globals.recordings_mutex);
 	recording = switch_core_hash_find(globals.recordings_hash, recording_key);
