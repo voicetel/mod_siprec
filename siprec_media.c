@@ -25,6 +25,7 @@
  * hot path).
  */
 #include "siprec_media.h"
+#include "siprec_g711.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -75,67 +76,13 @@ _Static_assert(
 #define RTP_HEADER_LEN 12
 
 /* ──────────────────────────────────────────────────────────── *
- * G.711 encoders.                                             *
- * Pre-built tables would be marginally faster but the per-    *
- * frame cost is dominated by sendmsg(); inline encoders keep  *
- * the module dependency-free.                                  *
+ * G.711 encoding lives in siprec_g711.{c,h}: branch-free table  *
+ * lookups (siprec_l16_to_ulaw / _alaw) built once at module      *
+ * load. Measured ~7× faster per sample than the old inline       *
+ * branch encoders (~24% off the whole per-tick cost); the tables *
+ * are FreeSWITCH-free so the table-vs-reference equivalence is a *
+ * standalone unit test. See siprec_g711.h for the numbers.       *
  * ──────────────────────────────────────────────────────────── */
-
-static uint8_t l16_to_ulaw(int16_t pcm)
-{
-    /* Standard µ-law encoder (G.711). Bias 0x84, exponent
-     * cap 7. Widely-published implementation; matches
-     * libsndfile's lookup-free version.
-     *
-     * Promote to int before negation so INT16_MIN (-32768)
-     * doesn't overflow: -INT16_MIN = 32768, which fits int
-     * but not int16_t (max 32767). The previous version
-     * stored the result back into a int16_t local and the
-     * truncation was implementation-defined per C11 §6.3.1.3
-     * — gcc/clang both wrap to -32768 again, producing the
-     * wrong PCMU code for one sample value. */
-    const int BIAS = 0x84;
-    const int CLIP = 32635;
-
-    int p    = pcm;
-    int sign = (p < 0) ? 0x80 : 0;
-    int exponent = 7;
-    int mantissa;
-    if (sign) p = -p;
-    if (p > CLIP) p = CLIP;
-    p += BIAS;
-
-    for (int mask = 0x4000; (p & mask) == 0 && exponent > 0; mask >>= 1) {
-        exponent--;
-    }
-    mantissa = (p >> ((exponent == 0) ? 4 : (exponent + 3))) & 0x0F;
-    return (uint8_t)~(sign | (exponent << 4) | mantissa);
-}
-
-static uint8_t l16_to_alaw(int16_t pcm)
-{
-    /* Same INT16_MIN consideration as l16_to_ulaw — promote
-     * before negation. The A-law negative-side adjustment is
-     * `-p - 1` (rather than just `-p`) per G.711's
-     * symmetric-around-zero quantisation. */
-    int p    = pcm;
-    int sign = (p < 0) ? 0x80 : 0;
-    int exponent = 7;
-    int mantissa;
-    uint8_t alaw;
-    if (sign) p = -p - 1;
-    if (p > 32767) p = 32767;
-
-    for (int mask = 0x4000; (p & mask) == 0 && exponent > 0; mask >>= 1) {
-        exponent--;
-    }
-    mantissa = (exponent < 1)
-        ? (p >> 4) & 0x0F
-        : (p >> (exponent + 3)) & 0x0F;
-    alaw = (uint8_t)((exponent << 4) | mantissa);
-    if (sign) alaw |= 0x80;
-    return alaw ^ 0x55; /* per G.711 spec */
-}
 
 /* ──────────────────────────────────────────────────────────── *
  * RTP send                                                    *
@@ -266,12 +213,12 @@ static switch_bool_t media_bug_callback(
 
             if (ctx->streams[0].pt == 8) {
                 for (size_t i = 0; i < sample_count; i++) {
-                    encoded[i] = l16_to_alaw(samples[i]);
+                    encoded[i] = siprec_l16_to_alaw(samples[i]);
                 }
             } else {
                 /* default + PT 0 = PCMU */
                 for (size_t i = 0; i < sample_count; i++) {
-                    encoded[i] = l16_to_ulaw(samples[i]);
+                    encoded[i] = siprec_l16_to_ulaw(samples[i]);
                 }
             }
 

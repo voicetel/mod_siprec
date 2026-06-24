@@ -97,8 +97,9 @@ siprec_media.h
       `siprec_invite.c:parse_remote_sdp_streams`.
 - [x] Codec passthrough: `read_codec->ianacode` selects PCMU/PCMA
       at attach time. v1 assumes 8 kHz mono 20 ms ptime.
-- [x] RTP framing: inline G.711 encoders (l16_to_ulaw /
-      l16_to_alaw, INT16_MIN-safe via int promotion) +
+- [x] RTP framing: G.711 encoding via branch-free lookup tables
+      (`siprec_g711.c`, built once at load from INT16_MIN-safe
+      reference encoders, bit-verified for all 65536 inputs) +
       RFC 3550 §5.1 header packing. SSRC pulled from
       `/dev/urandom` per RFC 3550 §8.1; sequence + timestamp
       incremented in lock-step with each frame; M-bit set on

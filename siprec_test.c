@@ -13,6 +13,7 @@
  */
 #include "siprec_sdp.h"
 #include "siprec_metadata.h"
+#include "siprec_g711.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -841,6 +842,34 @@ static void test_metadata_invalid_returns_null(void) {
  * Main                                                        *
  * ──────────────────────────────────────────────────────────── */
 
+/* The media-bug hot path encodes via the G.711 lookup tables
+ * (siprec_l16_to_ulaw / _alaw). Those tables MUST be bit-identical
+ * to the reference encoders for every one of the 65536 possible
+ * int16 samples — a faster encoder that changes even one sample's
+ * output corrupts the recording. This sweep is the equivalence gate
+ * that lets the hot path trust the tables. */
+static void test_g711_tables_match_reference(void) {
+    int v;
+    int ulaw_mismatch = 0;
+    int alaw_mismatch = 0;
+
+    siprec_g711_init();
+
+    for (v = -32768; v <= 32767; v++) {
+        int16_t s = (int16_t)v;
+        if (siprec_l16_to_ulaw(s) != siprec_l16_to_ulaw_ref(s)) ulaw_mismatch++;
+        if (siprec_l16_to_alaw(s) != siprec_l16_to_alaw_ref(s)) alaw_mismatch++;
+    }
+    check_int(ulaw_mismatch, 0, "g711 ulaw table == reference for all 65536 inputs");
+    check_int(alaw_mismatch, 0, "g711 alaw table == reference for all 65536 inputs");
+
+    /* init() is idempotent — a second call must not corrupt the
+     * tables (guards against an accidental re-zero on reload). */
+    siprec_g711_init();
+    check_int(siprec_l16_to_ulaw(0), siprec_l16_to_ulaw_ref(0),
+        "g711 init is idempotent (ulaw[0] stable after re-init)");
+}
+
 int main(void) {
     test_sdp_two_track_pcmu();
     test_sdp_stereo_opus();
@@ -857,6 +886,8 @@ int main(void) {
     test_metadata_reason_elements();
     test_metadata_assoc_elements();
     test_metadata_element_ordering();
+
+    test_g711_tables_match_reference();
 
     printf("\n%d/%d passed\n", test_count - fail_count, test_count);
     return fail_count == 0 ? 0 : 1;

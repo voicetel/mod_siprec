@@ -33,6 +33,7 @@
 #include "recording_session.h"
 #include "siprec_invite.h"
 #include "siprec_media.h"
+#include "siprec_g711.h"
 #include "siprec_sdp.h"
 
 globals_t globals;
@@ -387,6 +388,10 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_siprec_load)
 {
 	switch_status_t status = SWITCH_STATUS_SUCCESS;
 	switch_application_interface_t *app_interface;
+
+	/* Build the G.711 encode tables once, before any recording can
+	 * attach a media bug. Idempotent. */
+	siprec_g711_init();
 
 	switch_mutex_init(&globals.recording_servers_mutex, SWITCH_MUTEX_NESTED, pool);
 	switch_mutex_init(&globals.recordings_mutex, SWITCH_MUTEX_NESTED, pool);

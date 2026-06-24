@@ -27,7 +27,7 @@ SRS's 200 OK answer.
 ## Status
 
 All paths build, lint clean, and the unit-test suite for the
-SDP / metadata builders passes 124/124 assertions. The dispatch /
+SDP / metadata / G.711 builders passes 127/127 assertions. The dispatch /
 media / signalling pipeline has been audited and the broken
 pieces from the original fork have been replaced. Live
 integration against `cb-srs` is documented in
@@ -57,7 +57,7 @@ verification path; production interop is verified against
 | Pause/resume SDP direction-flip with `o=` version bump | [RFC 4566 §5.2][rfc4566] | ✅ `siprec_sdp_flip_direction` |
 | RTP packet framing (V=2, M-bit at talkspurt start, big-endian seq/ts/SSRC) | [RFC 3550 §5.1][rfc3550] / [RFC 3551 §4.1][rfc3551] | ✅ `siprec_media.c` |
 | Random SSRC | [RFC 3550 §8.1][rfc3550] | ✅ /dev/urandom seed |
-| G.711 µ-law / A-law encoders | [G.711][g711] | ✅ inline encoders, INT16_MIN-safe |
+| G.711 µ-law / A-law encoders | [G.711][g711] | ✅ branch-free lookup tables (`siprec_g711.c`), INT16_MIN-safe, bit-verified vs reference for all 65536 inputs |
 | `<recording>` schema (top-level element + sequence) | [RFC 7865 §5 / Appendix A][rfc7865] | ✅ |
 | `<datamode>` (`complete` + `partial`) | [RFC 7865 §5.1][rfc7865] | ✅ |
 | `<group>` (`group_id`, `<associate-time>`) | [RFC 7865 Appendix A][rfc7865] | ✅ |
@@ -231,7 +231,10 @@ Files:
 - **`siprec_invite.{c,h}`** — SIP INVITE / BYE / re-INVITE via
   FreeSWITCH's sofia profile.
 - **`siprec_media.{c,h}`** — media bug callback + RFC 3550 RTP
-  fork, inline G.711 µ-law / A-law encoders.
+  fork; encodes via the `siprec_g711` lookup tables.
+- **`siprec_g711.{c,h}`** — G.711 µ-law / A-law reference encoders
+  + the branch-free lookup tables the media hot path uses (built
+  once at module load, bit-identical to the reference encoders).
 - **`siprec_sdp.{c,h}`** — [RFC 7866 §7][rfc7866-7] SDP body
   builder + `siprec_sdp_flip_direction` helper used by the
   pause/resume re-INVITE path.
