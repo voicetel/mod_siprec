@@ -7,6 +7,7 @@
 #   make -f Makefile.test test          strict-warnings build + run
 #   make -f Makefile.test lint          cppcheck --enable=all
 #   make -f Makefile.test asan          ASan + UBSan + LSan
+#   make -f Makefile.test coverage      gcov line coverage of the units
 #   make -f Makefile.test analyzer      gcc -fanalyzer
 #   make -f Makefile.test tidy          clang-tidy
 #   make -f Makefile.test all-checks    every layer above
@@ -30,7 +31,14 @@ SAN_LDFLAGS = -fsanitize=address,undefined
 SAN_RUN_ENV = UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
               ASAN_OPTIONS=detect_leaks=1:halt_on_error=1
 
-.PHONY: test lint asan analyzer tidy all-checks clean
+# Coverage build. -O0 keeps line<->statement mapping faithful so
+# gcov's per-line counts aren't smeared by optimisation. We only
+# report the units actually under test (the FS-free builders),
+# NOT the harness driver siprec_test.c itself.
+COV_CFLAGS = -O0 -g -std=c11 --coverage
+COV_UNITS  = siprec_sdp.c siprec_metadata.c siprec_g711.c
+
+.PHONY: test lint asan analyzer tidy coverage all-checks clean
 
 test: $(TEST)
 	./$(TEST)
@@ -79,7 +87,29 @@ tidy:
 	clang-tidy siprec_sdp.c siprec_metadata.c siprec_g711.c siprec_test.c \
 	    -- -Wall -Wextra -std=c11 -I.
 
+# gcov line coverage of the FS-free units under test. Builds with
+# --coverage, runs the suite (which drops .gcda next to each .gcno),
+# then aggregates gcov's per-file "Lines executed" into one
+# HOST_COVERAGE figure weighted by line count. Mirrors the
+# freeswitch-module-testing-playbook Layer 2 coverage step.
+coverage:
+	rm -f $(TEST) *.gcno *.gcda *.gcov *.o
+	for s in $(SOURCES:.c=); do $(CC) $(COV_CFLAGS) -c $$s.c -o $$s.o; done
+	$(CC) --coverage $(SOURCES:.c=.o) -o $(TEST)
+	./$(TEST) >/dev/null
+	@gcov -n $(COV_UNITS) 2>/dev/null | awk '\
+	  /^File/ { f=$$2; seen=1 } \
+	  /Lines executed/ { \
+	      if (!seen) next; \
+	      split($$2,c,":"); split(c[2],d,"%"); p=d[1]+0; \
+	      n=$$NF+0; ex+=p/100*n; tot+=n; seen=0; \
+	      printf "  %-26s %s%% of %d lines\n", f, d[1], n } \
+	  END { if (tot>0) \
+	      printf "HOST_COVERAGE=%.1f%% (~%d/%d lines, units under test)\n", \
+	             ex/tot*100, ex, tot }'
+	@rm -f *.gcno *.gcda *.gcov *.o
+
 all-checks: test lint analyzer asan tidy
 
 clean:
-	rm -f $(TEST)
+	rm -f $(TEST) *.gcno *.gcda *.gcov *.o

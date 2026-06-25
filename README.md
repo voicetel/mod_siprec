@@ -27,10 +27,13 @@ SRS's 200 OK answer.
 ## Status
 
 All paths build, lint clean, and the unit-test suite for the
-SDP / metadata / G.711 builders passes 127/127 assertions. The dispatch /
-media / signalling pipeline has been audited and the broken
-pieces from the original fork have been replaced. Live
-integration against `cb-srs` is documented in
+SDP / metadata / G.711 builders passes 127/127 assertions. The
+module also links and loads in a real FreeSWITCH built from
+source — the [`tests/load/`](tests/load/) Docker gate boots FS
+and confirms `module_exists mod_siprec` with all four apps
+registered. The dispatch / media / signalling pipeline has been
+audited and the broken pieces from the original fork have been
+replaced. Live integration against `cb-srs` is documented in
 [`tests/README.md`](tests/README.md) as the operator
 verification path; production interop is verified against
 [TransNexus ClearIP][clearip] as well.
@@ -107,13 +110,31 @@ fs_cli -x 'reload mod_siprec'
 
 ### Standalone unit tests + lint (no FS required)
 
-The SDP and metadata builders are pure C and exercised by a
-standalone test target:
+The SDP, metadata, and G.711 builders are pure C and exercised
+by a standalone test target:
 
 ```sh
-make -f Makefile.test test    # 77 / 77 assertions
-make -f Makefile.test lint    # cppcheck --enable=all clean
+make -f Makefile.test test      # 127 / 127 assertions
+make -f Makefile.test lint      # cppcheck --enable=all clean
+make -f Makefile.test asan      # ASan + UBSan + LSan clean
+make -f Makefile.test coverage  # gcov: HOST_COVERAGE ~92% of the FS-free units
 ```
+
+### Docker load gate (links + dlopens in a real FreeSWITCH)
+
+The unit suite proves the pure builders; it cannot prove the
+module links and loads. `tests/load/` builds FreeSWITCH from
+source with mod_siprec, boots it, and asserts (via
+`module_exists`, not `load`-output parsing) that the module
+loaded with every `switch_*` symbol resolved and registered its
+four apps:
+
+```sh
+tests/load/run.sh   # ~30-45 min FS-from-source build, then the gate
+```
+
+This does NOT exercise live RTP/SRS — that remains the operator
+verification path in [`tests/README.md`](tests/README.md).
 
 ## Configuration
 

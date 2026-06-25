@@ -8,3 +8,8 @@
 
 # Test binary
 siprec_test
+
+# Coverage artifacts (make -f Makefile.test coverage)
+*.gcda
+*.gcno
+*.gcov
