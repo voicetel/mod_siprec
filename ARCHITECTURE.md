@@ -112,8 +112,12 @@ siprec_media.h
 
 - [x] `stop_recording_session` drives the ordered teardown:
       `siprec_media_detach` (removes bug + closes UDP sockets) →
-      `siprec_invite_send_bye` (BYE on recording dialog) → mutex /
-      pool free.
+      `siprec_invite_send_bye` (BYE on recording dialog) → pool
+      free. Removal from the recordings hash is an atomic claim
+      (`claim_recording`: find + delete under one lock hold) so
+      exactly one thread frees a recording even if two stop paths
+      race — the `recording_t` lives in that pool, so a
+      non-atomic find-then-free would double-free it.
 - [x] `start_recording_session` builds the metadata XML, dispatches
       the INVITE via `siprec_invite_send`, then attaches the media
       bug with `siprec_media_attach`.
@@ -172,6 +176,18 @@ siprec_media.h
       Run with `make -f Makefile.test test`; lint with
       `make -f Makefile.test lint` (cppcheck
       `--enable=all --check-level=exhaustive` clean).
+- [x] Unit tests for `siprec_g711.c` — the branch-free encode
+      tables are swept against the reference quantisers for all
+      65536 int16 inputs (PCMU + PCMA) plus an idempotent-init
+      check; suite total is 127/127.
+- [x] Host coverage — `make -f Makefile.test coverage` (gcov;
+      ~92% of the FS-free units).
+- [x] Docker load gate — `tests/load/run.sh` builds FreeSWITCH
+      from source with mod_siprec and asserts `module_exists
+      mod_siprec` (it links + dlopens with every `switch_*`
+      symbol resolved) plus all four apps register. Closes the
+      compiled-but-never-loaded gap; live RTP is still the `[ ]`
+      item below.
 - [x] `tests/README.md` — operator-facing first-deploy
       verification checklist with one row per code-path
       (multipart insertion, per-stream endpoint parsing,
