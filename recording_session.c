@@ -75,11 +75,39 @@ char *siprec_recording_key(const char *server_name, const char *uuid)
     return switch_mprintf("%s-%s", server_name, uuid);
 }
 
-/* teardown_recording: fully retire one recording_t — detach
- * the media fork, BYE the SRS leg, drop the hash entry, free
- * the pool. Shared by every stop path (on-hangup, the explicit
- * siprec_stop app, and the half-built-recording cleanup) so the
- * ordering and the pool-free stay in exactly one place.
+/* claim_recording: atomically remove the recording for `key` from
+ * the recordings hash and return it, or NULL if it wasn't there.
+ * The find and the delete happen under a SINGLE recordings_mutex
+ * hold, so the removal is the unambiguous transfer of ownership:
+ * the one caller that gets a non-NULL pointer back is the sole
+ * owner and the only thread that may tear it down / free its pool.
+ *
+ * This is what makes teardown safe against concurrent stop paths.
+ * recording_t is allocated FROM recording->pool, so the pool-free
+ * in teardown_recording frees the recording_t itself; if two
+ * threads could both pull the same pointer out of the hash (a
+ * find-then-unlock-then-free TOCTOU) they would double-free the
+ * pool and use-after-free recording->media_ctx. Folding find+delete
+ * into one locked claim collapses that window: a second claimer for
+ * the same key gets NULL and does nothing. */
+static recording_t *claim_recording(const char *key)
+{
+    recording_t *recording;
+
+    switch_mutex_lock(globals.recordings_mutex);
+    recording = switch_core_hash_find(globals.recordings_hash, key);
+    if (recording) {
+        switch_core_hash_delete(globals.recordings_hash, key);
+    }
+    switch_mutex_unlock(globals.recordings_mutex);
+
+    return recording;
+}
+
+/* teardown_recording: fully retire one recording_t — detach the
+ * media fork, BYE the SRS leg, free the pool. The caller MUST have
+ * already removed it from the hash via claim_recording, so this
+ * runs as the recording's sole owner; it does NOT touch the hash.
  *
  * Order matters: detach the media bug FIRST (stops new RTP from
  * being forked — the PCI-relevant guarantee), then BYE the
@@ -87,26 +115,16 @@ char *siprec_recording_key(const char *server_name, const char *uuid)
  * the dialog closes). The bug callback may still fire while the
  * bug is being removed; siprec_media_detach handles that
  * ordering safely (switch_core_media_bug_remove is synchronous).
- * Both detach and BYE are idempotent, so calling this twice for
- * the same recording (e.g. siprec_stop then on_destroy) is safe
- * as long as the caller only invokes it on a recording it just
- * found in the hash — the hash delete below makes the second
- * lookup miss. */
+ *
+ * The pool-free retires the recording_t and its whole allocation
+ * arena. The original code removed the hash entry but never
+ * destroyed the pool — every stop leaked the recording_t struct
+ * until module shutdown rolled them up via the shutdown hash walk;
+ * with per-call dispatch on a multi-tenant box the leak compounds. */
 static void teardown_recording(recording_t *recording)
 {
     siprec_media_detach(recording);
     siprec_invite_send_bye(recording);
-
-    switch_mutex_lock(globals.recordings_mutex);
-    switch_core_hash_delete(globals.recordings_hash, recording->key);
-    switch_mutex_unlock(globals.recordings_mutex);
-
-    /* Tear down the recording's pool. The original code removed
-     * the hash entry but never destroyed the pool — every stop
-     * leaked the recording_t struct and its pool's full
-     * allocation arena until module shutdown rolled them up via
-     * the shutdown function's hash walk. With per-call dispatch
-     * on a multi-tenant box, the leak compounds. */
     switch_core_destroy_memory_pool(&recording->pool);
 }
 
@@ -126,9 +144,10 @@ switch_status_t stop_recording_session(switch_core_session_t *session)
 
         recording_key = siprec_recording_key(recording_server->name, switch_core_session_get_uuid(session));
 
-        switch_mutex_lock(globals.recordings_mutex);
-        recording = switch_core_hash_find(globals.recordings_hash, recording_key);
-        switch_mutex_unlock(globals.recordings_mutex);
+        /* Atomic claim: removing it from the hash here is what
+         * makes us its sole owner, so the teardown/pool-free below
+         * can't double-free against a concurrent stop path. */
+        recording = claim_recording(recording_key);
 
         switch_safe_free(recording_key);
 
@@ -161,9 +180,11 @@ switch_status_t stop_recording_session_for_server(switch_core_session_t *session
 
     recording_key = siprec_recording_key(server_name, switch_core_session_get_uuid(session));
 
-    switch_mutex_lock(globals.recordings_mutex);
-    recording = switch_core_hash_find(globals.recordings_hash, recording_key);
-    switch_mutex_unlock(globals.recordings_mutex);
+    /* Atomic claim — see claim_recording. Removing it from the
+     * hash under one lock hold is what guarantees only this thread
+     * frees it, even if on_destroy / another siprec_stop fires for
+     * the same recording concurrently. */
+    recording = claim_recording(recording_key);
 
     switch_safe_free(recording_key);
 
@@ -194,17 +215,23 @@ switch_status_t stop_recording_session_for_server(switch_core_session_t *session
  * Called from every failure path between hash-insert and
  * state-handler-bind in start_recording_session — without it,
  * any failure between those two points leaks the recording_t
- * (and its mutex + pool) until module unload, since nothing
- * else will ever reap it. */
+ * (and its pool) until module unload, since nothing else will
+ * ever reap it. */
 static void discard_pending_recording(recording_t *recording)
 {
     if (!recording) return;
 
-    /* Best-effort tear-down of any partially-attached state.
-     * teardown_recording's detach and BYE are NULL-safe and
-     * idempotent — they no-op when invite_ctx / media_ctx aren't
-     * populated yet. */
-    teardown_recording(recording);
+    /* Claim it out of the hash first (it was inserted before this
+     * failure path ran) so teardown runs as sole owner — same
+     * single-owner discipline as the stop paths. If something else
+     * already claimed it, claim_recording returns NULL and we leave
+     * the free to that owner. Best-effort tear-down of any
+     * partially-attached state: teardown_recording's detach and BYE
+     * are NULL-safe and idempotent — they no-op when invite_ctx /
+     * media_ctx aren't populated yet. */
+    if (claim_recording(recording->key) == recording) {
+        teardown_recording(recording);
+    }
 }
 
 switch_status_t start_recording_session(switch_core_session_t *session, const char *recording_server_name)
