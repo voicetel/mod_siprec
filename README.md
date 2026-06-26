@@ -117,10 +117,10 @@ The SDP, metadata, and G.711 builders are pure C and exercised
 by a standalone test target:
 
 ```sh
-make -f Makefile.test test      # 127 / 127 assertions
+make -f Makefile.test test      # 139 / 139 assertions
 make -f Makefile.test lint      # cppcheck --enable=all clean
 make -f Makefile.test asan      # ASan + UBSan + LSan clean
-make -f Makefile.test coverage  # gcov: HOST_COVERAGE ~92% of the FS-free units
+make -f Makefile.test coverage  # gcov: HOST_COVERAGE ~94% of the FS-free units
 ```
 
 ### Docker load gate (links + dlopens in a real FreeSWITCH)
