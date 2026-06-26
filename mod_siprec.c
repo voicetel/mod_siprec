@@ -165,10 +165,11 @@ SWITCH_STANDARD_APP(siprec_app_function)
 	int argc;
 	char *mydata = NULL;
 	const char *recording_server_name = NULL;
+	const char *srs_uri = NULL;
 
 	if (zstr(data)) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-			"siprec: no arguments — usage: siprec <recording_server>\n");
+			"siprec: no arguments — usage: siprec <recording_server> [<srs-sip-uri>]\n");
 		return;
 	}
 
@@ -176,7 +177,18 @@ SWITCH_STANDARD_APP(siprec_app_function)
 		return;
 	}
 
-	/* Original code required argc == 2 to populate the server name —
+	/* Grammar: siprec <handle> [<srs-sip-uri>]
+	 *   argv[0]  recording handle — selects the siprec.conf
+	 *            <recording-server> (config path) AND is the key for
+	 *            siprec_pause/resume/stop. Required.
+	 *   argv[1]  optional ad-hoc SRS endpoint, a complete SIP URI
+	 *            ("sip:host:port;transport=tls"). When present the
+	 *            config lookup is skipped and the recording targets
+	 *            this URI directly — the per-call endpoint convention
+	 *            (no siprec.conf entry needed). A SIP URI carries no
+	 *            spaces, so the space-split keeps it in one token.
+	 *
+	 * Original code required argc == 2 to populate the server name —
 	 * which meant a single-arg invocation like `siprec default` left
 	 * recording_server_name as NULL and crashed inside
 	 * start_recording_session. Accept any non-empty first token.
@@ -185,8 +197,20 @@ SWITCH_STANDARD_APP(siprec_app_function)
 	if (argc >= 1 && !zstr(argv[0])) {
 		recording_server_name = argv[0];
 	}
+	if (argc >= 2 && !zstr(argv[1])) {
+		/* Validate the scheme up front so a malformed token can't
+		 * reach the dial-string as "sofia/<profile>/garbage". Only
+		 * sip:/sips: are valid SRS targets (RFC 7866 §6.1). */
+		if (strncasecmp(argv[1], "sip:", 4) && strncasecmp(argv[1], "sips:", 5)) {
+			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+				"siprec: ad-hoc SRS endpoint '%s' is not a sip:/sips: URI — ignoring\n",
+				argv[1]);
+			return;
+		}
+		srs_uri = argv[1];
+	}
 
-	start_recording_session(session, recording_server_name);
+	start_recording_session(session, recording_server_name, srs_uri);
 }
 
 /* siprec_pause / siprec_resume: send a re-INVITE on the

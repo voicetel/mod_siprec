@@ -51,6 +51,16 @@ struct recording_server {
      * Default ("udp" / NULL) keeps the v1 plain-UDP path. */
     char *transport;
 
+    /* Per-call ad-hoc SRS endpoint. When set, this is a complete
+     * SIP URI ("sip:host:port;transport=tls" / "sips:...") supplied
+     * at dispatch time via the `siprec <handle> <uri>` second app
+     * argument, NOT from siprec.conf. siprec_uri_for returns it
+     * verbatim, bypassing the host/port/transport assembly. NULL for
+     * every config-loaded recording-server. An ad-hoc server is
+     * allocated from the recording's own pool (not a long-lived
+     * server pool) and is a single entry with next == NULL. */
+    char *uri;
+
     switch_memory_pool_t *pool;
 
     /* Forward-pointer for the next entry in the failover

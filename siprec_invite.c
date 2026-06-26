@@ -433,7 +433,16 @@ static char *siprec_uri_for(
     int  port;
     const char *transport;
     char buf[256];
-    if (!srv || !srv->host) return NULL;
+    if (!srv) return NULL;
+
+    /* Ad-hoc per-call endpoint: a complete SIP URI was supplied at
+     * dispatch time (siprec <handle> <uri>). Use it verbatim — the
+     * host/port/transport fields are not populated for this path. */
+    if (srv->uri && *srv->uri) {
+        return switch_core_strdup(pool, srv->uri);
+    }
+
+    if (!srv->host) return NULL;
 
     port = srv->port > 0 ? srv->port : 5060;
     transport = (srv->transport && *srv->transport)

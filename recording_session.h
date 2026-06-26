@@ -36,7 +36,19 @@
 #include <switch_curl.h>
 #include <switch_types.h>
 
-switch_status_t start_recording_session(switch_core_session_t *session, const char *recording_server_name);
+/* start_recording_session: open a SIPREC recording on `session`.
+ *
+ *   recording_server_name — the recording handle. Selects the
+ *       siprec.conf <recording-server> when `srs_uri` is NULL, and
+ *       is ALWAYS the key an operator passes to
+ *       siprec_pause/resume/stop to address this recording later.
+ *   srs_uri — optional per-call ad-hoc SRS endpoint, a complete SIP
+ *       URI ("sip:host:port;transport=tls"). When non-NULL the
+ *       config lookup is skipped and the recording targets this URI
+ *       directly (the handle is used only for keying). NULL keeps
+ *       the config-driven path.
+ */
+switch_status_t start_recording_session(switch_core_session_t *session, const char *recording_server_name, const char *srs_uri);
 switch_status_t stop_recording_session(switch_core_session_t *session);
 switch_status_t stop_recording_session_for_server(switch_core_session_t *session, const char *server_name);
 

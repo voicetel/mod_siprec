@@ -2,11 +2,16 @@
                description="SIPREC (RFC 7866) module config">
 
   <!-- Top-level module settings.
-       src-enabled: Session Recording Client mode — sends
-                    SIPREC INVITEs out to a configured SRS for
-                    each recording. THIS MODULE only implements
-                    SRC; SRS-mode is reserved for a future
-                    rewrite (mod_siprec_srs).
+       src-enabled: Session Recording Client master switch. When
+                    false, the `siprec` app refuses to start any
+                    recording (config OR ad-hoc) as a logged
+                    no-op — no SIPREC INVITE, no RTP fork, no
+                    audio transmitted. Teardown verbs
+                    (siprec_pause/resume/stop) still work so an
+                    in-flight recording can be retired after a
+                    reload flips this off. THIS MODULE only
+                    implements SRC; SRS-mode is reserved for a
+                    future rewrite (mod_siprec_srs). Default true.
        srs-enabled: Reserved. v1 ignores it. -->
   <settings>
     <param name="src-enabled" value="true"/>
@@ -19,11 +24,21 @@
        and mod_siprec opens the SIPREC INVITE to the matching
        entry's host:port.
 
+       AD-HOC (per-call) SRS: pass a complete SIP URI as an
+       optional SECOND argument to target an SRS that is NOT in
+       this file — `siprec <handle> sip:host:port;transport=tls`.
+       The config lookup is skipped; <handle> is then used only
+       as the key for siprec_pause/resume/stop. Use this when the
+       recording destination is chosen per call (e.g. supplied by
+       an upstream API) rather than provisioned here.
+
        FAILOVER: declare multiple <recording-server> entries
        with the same name. mod_siprec walks them in config
        order, trying each (host, port, transport) candidate
        until one accepts the INVITE. The first declaration
        is the primary; subsequent declarations are backups.
+       (Failover applies to config entries only; an ad-hoc URI
+       is a single endpoint.)
 
        Voicetel default deployment: cb-srs (Go SRS) on
        127.0.0.1:5070. -->

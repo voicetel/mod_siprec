@@ -130,34 +130,73 @@ static void teardown_recording(recording_t *recording)
 
 switch_status_t stop_recording_session(switch_core_session_t *session)
 {
-    char *recording_key = NULL;
-    recording_t *recording = NULL;
-    const recording_server_t *recording_server = NULL;
-    switch_hash_index_t *hi;
-    void *val;
-    const void *vvar;
+    const char *uuid = switch_core_session_get_uuid(session);
 
-    switch_mutex_lock(globals.recording_servers_mutex);
-    for (hi = switch_core_hash_first(globals.recording_servers_hash); hi; hi = switch_core_hash_next(&hi)) {
-        switch_core_hash_this(hi, &vvar, NULL, &val);
-        recording_server = (recording_server_t *) val;
+    /* Stop EVERY recording on this leg by matching the call uuid in
+     * the recordings hash. The previous implementation derived keys
+     * from the CONFIGURED recording-servers hash, so it could only
+     * find config-backed recordings — an ad-hoc per-call SRS
+     * (siprec <handle> <uri>) whose handle was never in siprec.conf
+     * would be invisible here and leak (its BYE + pool-free never
+     * run) until module shutdown. Matching by uuid covers both kinds.
+     *
+     * We can't tear a recording down while iterating: teardown frees
+     * the pool the recording_t itself lives in, BYE/media-detach may
+     * block or take other locks, and deleting from the hash
+     * mid-iteration is unsafe. So under the lock we snapshot the keys
+     * of this leg's recordings into a small stack buffer — the key
+     * strings are pool-owned and the recordings are still in the hash,
+     * so the copies are safe — then drop the lock and claim+teardown
+     * each. claim_recording re-finds atomically, so a concurrent stop
+     * path that already took one just yields NULL here. A leg
+     * recording to more SRSes than the buffer holds is handled by
+     * re-scanning until a pass finds none. */
+    for (;;) {
+        enum { SIPREC_STOP_BATCH = 16 };
+        char *keys[SIPREC_STOP_BATCH];
+        int n = 0, i;
+        switch_hash_index_t *hi;
+        void *val;
+        const void *vvar;
+        recording_t *recording;
 
-        recording_key = siprec_recording_key(recording_server->name, switch_core_session_get_uuid(session));
+        switch_mutex_lock(globals.recordings_mutex);
+        for (hi = switch_core_hash_first(globals.recordings_hash); hi; hi = switch_core_hash_next(&hi)) {
+            switch_core_hash_this(hi, &vvar, NULL, &val);
+            recording = (recording_t *) val;
+            /* Keep iterating to the end even once the batch is full so
+             * the hash index is freed (early break leaks it); just
+             * stop collecting. */
+            if (n < SIPREC_STOP_BATCH && recording->uuid && !strcmp(recording->uuid, uuid)) {
+                /* Copy the (pool-owned) key out under the lock so it
+                 * survives the unlock; freed with switch_safe_free
+                 * after the claim. */
+                keys[n++] = switch_mprintf("%s", recording->key);
+            }
+        }
+        switch_mutex_unlock(globals.recordings_mutex);
 
-        /* Atomic claim: removing it from the hash here is what
-         * makes us its sole owner, so the teardown/pool-free below
-         * can't double-free against a concurrent stop path. */
-        recording = claim_recording(recording_key);
-
-        switch_safe_free(recording_key);
-
-        if (!recording) {
-            continue;
+        if (n == 0) {
+            break;
         }
 
-        teardown_recording(recording);
+        for (i = 0; i < n; i++) {
+            /* Atomic claim: removing it from the hash here is what
+             * makes us its sole owner, so the teardown/pool-free
+             * can't double-free against a concurrent stop path. */
+            recording = claim_recording(keys[i]);
+            switch_safe_free(keys[i]);
+            if (recording) {
+                teardown_recording(recording);
+            }
+        }
+
+        /* A non-full batch means we saw every match this pass; a full
+         * batch might have left more behind, so scan again. */
+        if (n < SIPREC_STOP_BATCH) {
+            break;
+        }
     }
-    switch_mutex_unlock(globals.recording_servers_mutex);
 
     return SWITCH_STATUS_SUCCESS;
 }
@@ -234,11 +273,17 @@ static void discard_pending_recording(recording_t *recording)
     }
 }
 
-switch_status_t start_recording_session(switch_core_session_t *session, const char *recording_server_name)
+switch_status_t start_recording_session(switch_core_session_t *session, const char *recording_server_name, const char *srs_uri)
 {
     recording_server_t *server = NULL;
     recording_t *recording = NULL;
     const char *uuid = switch_core_session_get_uuid(session);
+    /* Ad-hoc per-call endpoint: a complete SRS SIP URI was supplied
+     * at dispatch time (siprec <handle> <uri>). The config lookup is
+     * skipped and an ephemeral recording_server_t is built from the
+     * recording's own pool below; recording_server_name is then used
+     * purely as the recording handle (keying for pause/resume/stop). */
+    int adhoc = !zstr(srs_uri);
     char *recording_key = NULL;
     switch_memory_pool_t *recording_pool = NULL;
     switch_channel_t *orig_ch;
@@ -254,6 +299,20 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
     const char *profile;
     switch_status_t inv;
 
+    /* Master switch (src-enabled, siprec.conf <settings>). When SRC
+     * mode is disabled, refuse to start ANY recording — config or
+     * ad-hoc — as a logged no-op. Nothing is forked, so no audio
+     * leaves the box (soft fail-closed). Teardown paths
+     * (pause/resume/stop) are deliberately NOT gated, so a recording
+     * already in flight can still be retired if a reload flips this
+     * off mid-call. */
+    if (!globals.src_enabled) {
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
+            "siprec: SRC disabled (src-enabled=false) — recording NOT "
+            "started, no audio transmitted\n");
+        return SWITCH_STATUS_FALSE;
+    }
+
     /* Reject NULL server name early. APR's switch_core_hash_find with
      * APR_HASH_KEY_STRING calls strlen() on the key — passing NULL
      * segfaults FreeSWITCH.
@@ -264,14 +323,30 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
         return SWITCH_STATUS_FALSE;
     }
 
-    switch_mutex_lock(globals.recording_servers_mutex);
-    server = switch_core_hash_find(globals.recording_servers_hash, recording_server_name);
-    switch_mutex_unlock(globals.recording_servers_mutex);
+    /* Config path only: resolve the named <recording-server> from
+     * siprec.conf. The ad-hoc path has no config entry — its server
+     * is built from the recording pool once that pool exists (below),
+     * so an operator can point a recording at an SRS that was never
+     * provisioned in siprec.conf. */
+    if (!adhoc) {
+        switch_mutex_lock(globals.recording_servers_mutex);
+        server = switch_core_hash_find(globals.recording_servers_hash, recording_server_name);
+        switch_mutex_unlock(globals.recording_servers_mutex);
 
-    if (!server) {
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-            "siprec: recording server %s not found in siprec.conf\n", recording_server_name);
-        return SWITCH_STATUS_FALSE;
+        if (!server) {
+            /* Soft fail-closed: no SRS resolved (handle not in
+             * siprec.conf and no ad-hoc URI given). Warn clearly that
+             * NOTHING is recording/transmitting and let the call go on.
+             * Add the named server to siprec.conf, or pass an ad-hoc
+             * SRS URI as the second app argument
+             * (siprec <handle> sip:host:port). */
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
+                "siprec: recording '%s' NOT active — no SRS resolved "
+                "(no '%s' in siprec.conf and no ad-hoc SRS URI supplied); "
+                "no audio transmitted\n",
+                recording_server_name, recording_server_name);
+            return SWITCH_STATUS_FALSE;
+        }
     }
 
     recording_key = siprec_recording_key(recording_server_name, uuid);
@@ -319,6 +394,23 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
     recording->uuid = switch_core_strdup(recording->pool, uuid);
     recording->start_epoch = switch_epoch_time_now(NULL);
     recording->session = session;
+
+    /* Ad-hoc per-call SRS: build the ephemeral recording_server_t now
+     * that the recording pool exists. It lives and dies with this
+     * recording (no entry in globals.recording_servers_hash, no
+     * shutdown reaping). switch_core_alloc zero-fills, so host/port/
+     * transport/auth stay NULL/0 and siprec_uri_for takes the
+     * verbatim-URI branch. Single entry — no failover chain. */
+    if (adhoc) {
+        server = (recording_server_t *) switch_core_alloc(recording->pool, sizeof(*server));
+        server->name = switch_core_strdup(recording->pool, recording_server_name);
+        server->uri  = switch_core_strdup(recording->pool, srs_uri);
+        server->next = NULL;
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
+            "siprec: ad-hoc SRS endpoint %s (handle '%s')\n",
+            srs_uri, recording_server_name);
+    }
+
     recording->server = server;
 
     switch_mutex_lock(globals.recordings_mutex);
