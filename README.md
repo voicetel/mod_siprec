@@ -27,11 +27,12 @@ SRS's 200 OK answer.
 ## Status
 
 All paths build, lint clean, and the unit-test suite for the
-SDP / metadata / G.711 builders passes 127/127 assertions. The
-module also links and loads in a real FreeSWITCH built from
-source — the [`tests/load/`](tests/load/) Docker gate boots FS
-and confirms `module_exists mod_siprec` with all four apps
-registered. The dispatch / media / signalling pipeline has been
+SDP / metadata / G.711 builders passes 139/139 assertions
+(~94% line coverage of the FreeSWITCH-free units; the remainder
+is allocator-fault / OOM defensive code). The module also links
+and loads in a real FreeSWITCH built from source — the
+[`tests/load/`](tests/load/) Docker gate boots FS and confirms
+`module_exists mod_siprec` with all four apps registered. The dispatch / media / signalling pipeline has been
 audited and the broken pieces from the original fork have been
 replaced. Live integration against `cb-srs` is documented in
 [`tests/README.md`](tests/README.md) as the operator
@@ -54,6 +55,8 @@ verification path; production interop is verified against
 | DTMF tone forking | [RFC 7866 §8.4][rfc7866-8.4] | ✅ passes through the audio bug |
 | communication-failure soft-fail | [RFC 7866 §11.1.1][rfc7866-11.1.1] | ✅ original call unaffected on dispatch failure |
 | SRS failover (multiple endpoints, ordered) | [RFC 7866 §11.1.1][rfc7866-11.1.1] | ✅ multiple `<recording-server>` entries, walked in config order |
+| Per-call (ad-hoc) SRS endpoint | [RFC 7866 §6.1][rfc7866-6.1] | ✅ pass a SIP URI as a second `siprec` arg (`siprec <handle> sip:host:port;transport=tls`) to record to an SRS chosen per call, with no `siprec.conf` entry. The handle remains the key for `siprec_pause`/`resume`/`stop` |
+| Fail-closed when no SRS resolves | — | ✅ `src-enabled="false"` makes `siprec` a logged no-op (no INVITE, no RTP fork); an unresolved handle with no ad-hoc URI warns and records nothing — the call proceeds, no audio is transmitted |
 | SRTP for the recording RTP fork | [RFC 7866 §11.2][rfc7866-11.2] / [RFC 3711][rfc3711] / [RFC 4568][rfc4568] | ❌ not supported. SDES keymat must travel in the initial offer (RFC 4568 §5.1) and our offer is sofia auto-gen which doesn't carry `a=crypto`. The clean path needs the same offer-time SDP-override hook the multi-track work needs. SRSes that require SRTP will reject our `RTP/AVP` offer with `488 Not Acceptable Here`; failover or pin a strict-SRTP-not-required SRS. |
 | SIPS transport for SRC→SRS | [RFC 7866 §11.3][rfc7866-11.3] | ✅ `transport=tls` config |
 | SDP body shape (`v=`, `o=`, `s=`, `c=`, `t=`, `m=`, `a=rtpmap`, `a=ptime`, `a=label`, `a=sendonly`) | [RFC 4566][rfc4566] / [RFC 7866 §7][rfc7866-7] | ✅ `siprec_sdp_build` (offered to operators that build their own; sofia auto-gen used otherwise) |
@@ -161,8 +164,17 @@ verification path in [`tests/README.md`](tests/README.md).
 </configuration>
 ```
 
+`src-enabled` is the master switch: set it `false` to make the
+`siprec` app a logged no-op (nothing forked, no audio transmitted)
+without unloading the module — the teardown verbs
+(`siprec_pause`/`resume`/`stop`) still work so an in-flight
+recording can be retired.
+
 Multiple `<recording-server>` entries can coexist; the dialplan
-chooses one by name.
+chooses one by name. A recording can also target an SRS that is
+**not** in this file by passing a SIP URI as a second `siprec`
+argument (see below) — useful when the destination is chosen
+per call rather than provisioned here.
 
 ## Dialplan usage
 
@@ -173,6 +185,19 @@ chooses one by name.
     <!-- ...the rest of your call flow... -->
   </condition>
 </extension>
+```
+
+`siprec <handle>` resolves `<handle>` against `siprec.conf`. To
+record to an SRS chosen **per call** — with no config entry —
+pass a complete SIP URI as a second argument:
+
+```xml
+<action application="siprec"
+        data="myrec sip:198.51.100.5:5070;transport=tls"/>
+<!-- The URI is the per-call SRS; `myrec` is just the handle you
+     pass to siprec_pause / siprec_resume / siprec_stop. A SIP URI
+     has no spaces, so it stays a single token. udp/tcp use sip:,
+     tls uses sips:/;transport=tls. -->
 ```
 
 Pause and resume:

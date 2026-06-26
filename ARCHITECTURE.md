@@ -117,7 +117,13 @@ siprec_media.h
       (`claim_recording`: find + delete under one lock hold) so
       exactly one thread frees a recording even if two stop paths
       race — the `recording_t` lives in that pool, so a
-      non-atomic find-then-free would double-free it.
+      non-atomic find-then-free would double-free it. The on-hangup
+      teardown finds this leg's recordings by **uuid** in the
+      recordings hash (snapshot keys under the lock, then
+      claim+teardown each), not by re-deriving keys from the
+      configured servers — so a per-call ad-hoc recording whose
+      handle was never in `siprec.conf` is reaped too, instead of
+      leaking until module shutdown.
 - [x] `start_recording_session` builds the metadata XML, dispatches
       the INVITE via `siprec_invite_send`, then attaches the media
       bug with `siprec_media_attach`.
@@ -162,6 +168,22 @@ siprec_media.h
       </configuration>
       ```
 
+- [x] **Ad-hoc per-call SRS**: `siprec <handle> <sip-uri>` skips
+      the config lookup and builds an ephemeral `recording_server_t`
+      from the recording's own pool (no hash entry, no shutdown
+      reaping; `siprec_uri_for` returns the URI verbatim). The
+      handle stays the key for pause/resume/stop. Lets the recording
+      target be chosen per call (e.g. supplied by an upstream API)
+      instead of provisioned in `siprec.conf`.
+
+- [x] **`src-enabled` master switch** (now enforced — was parsed
+      but dead): `false` makes `start_recording_session` a logged
+      no-op, so no INVITE or RTP fork happens. Soft fail-closed: an
+      unresolved handle with no ad-hoc URI warns ("recording NOT
+      active … no audio transmitted") and lets the call continue.
+      Teardown verbs stay ungated so a reload that flips this off
+      can't strand an in-flight recording.
+
 ### Phase 6 — testing
 
 - [x] Unit tests for `siprec_sdp.c` — assertions covering
@@ -179,9 +201,13 @@ siprec_media.h
 - [x] Unit tests for `siprec_g711.c` — the branch-free encode
       tables are swept against the reference quantisers for all
       65536 int16 inputs (PCMU + PCMA) plus an idempotent-init
-      check; suite total is 127/127.
+      check; suite total is 139/139.
 - [x] Host coverage — `make -f Makefile.test coverage` (gcov;
-      ~92% of the FS-free units).
+      ~94% of the FS-free units). The uncovered remainder is
+      allocator-fault / OOM / 64 MB-cap defensive paths in the
+      string builder plus one provably-dead IP-clamp (the source
+      buffer is pre-clamped) — none reachable without fault
+      injection, so not chased with synthetic tests.
 - [x] Docker load gate — `tests/load/run.sh` builds FreeSWITCH
       from source with mod_siprec and asserts `module_exists
       mod_siprec` (it links + dlopens with every `switch_*`
