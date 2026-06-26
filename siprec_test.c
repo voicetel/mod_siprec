@@ -194,6 +194,37 @@ static void test_sdp_flip_direction(void) {
         "flip:inactive→sendonly bumps version");
     siprec_sdp_free(back);
 
+    /* Malformed o= line (sscanf < 6 fields): flip passes it
+     * through verbatim (no version bump) while still flipping the
+     * direction attribute. */
+    const char *bad_o =
+        "v=0\r\n"
+        "o=malformed\r\n"
+        "s=-\r\n"
+        "m=audio 9 RTP/AVP 0\r\n"
+        "a=sendonly\r\n";
+    char *bad_o_out = siprec_sdp_flip_direction(bad_o, 1);
+    check_contains(bad_o_out, "o=malformed\r\n",
+        "flip:malformed o= passed through verbatim");
+    check_contains(bad_o_out, "a=inactive\r\n",
+        "flip:direction still flipped with malformed o=");
+    siprec_sdp_free(bad_o_out);
+
+    /* LF-only line endings (bare \n, no CR): flip handles a \n
+     * terminator — o= still bumps, direction still flips. */
+    const char *lf_only =
+        "v=0\n"
+        "o=- 5 1 IN IP4 1.2.3.4\n"
+        "s=-\n"
+        "m=audio 9 RTP/AVP 0\n"
+        "a=sendonly\n";
+    char *lf_out = siprec_sdp_flip_direction(lf_only, 1);
+    check_contains(lf_out, "o=- 5 2 IN IP4 1.2.3.4",
+        "flip:LF-only o= version bumped");
+    check_contains(lf_out, "a=inactive",
+        "flip:LF-only direction flipped");
+    siprec_sdp_free(lf_out);
+
     /* Empty / NULL input must reject — no point producing an
      * empty body for a re-INVITE that would be malformed. */
     test_count++;
@@ -353,6 +384,63 @@ static void test_sdp_inject_labels(void) {
     char *trail = siprec_sdp_inject_labels(no_direction);
     check_contains(trail, "a=label:1\r\n", "inject:trailing-block label");
     siprec_sdp_free(trail);
+
+    /* Malformed o= line (sscanf < 6 fields): passed through
+     * verbatim — the injector doesn't guess at a fix — and the
+     * label is still injected. */
+    const char *bad_o =
+        "v=0\r\n"
+        "o=garbage\r\n"
+        "s=-\r\n"
+        "m=audio 9 RTP/AVP 0\r\n"
+        "a=sendonly\r\n";
+    char *bad_o_out = siprec_sdp_inject_labels(bad_o);
+    check_contains(bad_o_out, "o=garbage\r\n",
+        "inject:malformed o= passed through verbatim");
+    check_contains(bad_o_out, "a=label:1\r\n",
+        "inject:label still injected with malformed o=");
+    siprec_sdp_free(bad_o_out);
+
+    /* First m= block unlabelled AND with no direction attribute,
+     * followed by a second m= block: the first block's label is
+     * emitted at the m= boundary (not deferred to end-of-SDP). */
+    const char *first_unlabelled =
+        "v=0\r\n"
+        "o=- 1 1 IN IP4 1.2.3.4\r\n"
+        "s=-\r\n"
+        "m=audio 30000 RTP/AVP 0\r\n"
+        "a=rtpmap:0 PCMU/8000\r\n"
+        "m=audio 30002 RTP/AVP 0\r\n"
+        "a=sendonly\r\n";
+    char *fu = siprec_sdp_inject_labels(first_unlabelled);
+    check_contains(fu, "a=label:1\r\n",
+        "inject:first-block label emitted at m= boundary");
+    check_contains(fu, "a=label:2\r\n",
+        "inject:second-block label emitted");
+    test_count++;
+    {
+        const char *l1 = fu ? strstr(fu, "a=label:1") : NULL;
+        const char *m2 = fu ? strstr(fu, "m=audio 30002") : NULL;
+        if (l1 && m2 && l1 < m2) {
+            printf("PASS inject:first-block label precedes second m=\n");
+        } else {
+            fprintf(stderr, "FAIL inject:first-block label should precede second m=\n");
+            fail_count++;
+        }
+    }
+    siprec_sdp_free(fu);
+
+    /* LF-only line endings (bare \n, no CR): the injector handles
+     * a \n terminator, not just \r\n. */
+    const char *lf_only =
+        "v=0\n"
+        "o=- 1 1 IN IP4 1.2.3.4\n"
+        "s=-\n"
+        "m=audio 9 RTP/AVP 0\n"
+        "a=sendonly\n";
+    char *lf_out = siprec_sdp_inject_labels(lf_only);
+    check_contains(lf_out, "a=label:1", "inject:LF-only line endings handled");
+    siprec_sdp_free(lf_out);
 
     /* Reject NULL / empty inputs. */
     test_count++;
@@ -672,6 +760,29 @@ static void test_metadata_partial_datamode(void) {
     siprec_metadata_free(xml);
 }
 
+static void test_metadata_group_self_close(void) {
+    /* A <group> with a group_id but no associate-time has no
+     * body, so it must emit a self-closing <group .../> rather
+     * than an open/close pair. Covers the group_has_body == false
+     * branch. */
+    const siprec_metadata_participant_t parts[] = {
+        { .participant_id = "p1", .aor = "sip:a@x", .display_name = NULL },
+    };
+    siprec_metadata_options_t opts = {
+        .session_id   = "sess",
+        .group_id     = "grp-nobody",
+        /* associate_time_utc deliberately unset → no group body. */
+        .datamode     = SIPREC_DATAMODE_COMPLETE,
+        .participants = parts, .participant_count = 1,
+    };
+    char *xml = siprec_metadata_build(&opts);
+    check_contains(xml, "<group group_id=\"grp-nobody\"/>",
+        "meta:group self-closes without associate-time");
+    check_not_contains(xml, "</group>",
+        "meta:no group close tag when self-closed");
+    siprec_metadata_free(xml);
+}
+
 static void test_metadata_reason_elements(void) {
     /* RFC 7865 Appendix A: <reason> is a child of <session>
      * only. <participant> and <group> do not allow it in the
@@ -883,6 +994,7 @@ int main(void) {
     test_metadata_invalid_returns_null();
     test_metadata_partial_datamode();
     test_metadata_stream_self_closes_when_unlabelled();
+    test_metadata_group_self_close();
     test_metadata_reason_elements();
     test_metadata_assoc_elements();
     test_metadata_element_ordering();
