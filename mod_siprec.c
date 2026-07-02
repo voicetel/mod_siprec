@@ -207,6 +207,23 @@ SWITCH_STANDARD_APP(siprec_app_function)
 				argv[1]);
 			return;
 		}
+		/* The URI is concatenated verbatim into the originate
+		 * dial-string ("...}sofia/<profile>/<uri>", siprec_invite.c).
+		 * switch_ivr_originate splits a bridge string on ',' (parallel
+		 * targets) and ':_:' (enterprise), and treats '{'/'['/'|' as
+		 * variable/gateway grammar. A URI carrying any of those — e.g.
+		 * "sip:srs,loopback/9999" from an untrusted channel variable —
+		 * would inject an attacker-chosen extra leg that receives the
+		 * INVITE with Require: siprec and the RFC 7865 metadata (call
+		 * participants' AORs / PII). A legitimate SIP URI never
+		 * contains these, so reject rather than try to escape them. */
+		if (strpbrk(argv[1], ",|{}[]<> \t\r\n")) {
+			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+				"siprec: ad-hoc SRS endpoint '%s' contains dial-string "
+				"metacharacters — refusing to originate\n",
+				argv[1]);
+			return;
+		}
 		srs_uri = argv[1];
 	}
 
