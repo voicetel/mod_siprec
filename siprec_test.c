@@ -605,6 +605,58 @@ static void test_parse_remote_streams(void) {
         check_str(out[1].remote_ip, "10.0.0.1", "parse:per-media-c session fallback");
     }
 
+    /* Regression: a per-media c= belonging to a DECLINED (port-0)
+     * audio block must NOT clobber the previously committed
+     * stream's remote IP. The old code attributed any media c= to
+     * out[n-1] and silently redirected out[0]'s RTP. */
+    {
+        const char *sdp =
+            "v=0\r\n"
+            "c=IN IP4 10.0.0.1\r\n"
+            "m=audio 40000 RTP/AVP 0\r\n"
+            "m=audio 0 RTP/AVP 0\r\n"
+            "c=IN IP4 203.0.113.9\r\n";
+        memset(out, 0, sizeof(out));
+        int n = siprec_sdp_parse_remote_streams(sdp, out, SIPREC_MAX_STREAMS);
+        check_int(n, 1, "parse:declined-block c= count");
+        check_str(out[0].remote_ip, "10.0.0.1",
+            "parse:declined-block c= does not clobber prior stream");
+    }
+
+    /* Regression: a per-media c= belonging to a NON-AUDIO block
+     * (m=video / m=image) must likewise not touch a prior audio
+     * stream. The old parser didn't recognise non-audio m= lines
+     * at all, so their c= fell onto out[n-1]. */
+    {
+        const char *sdp =
+            "v=0\r\n"
+            "c=IN IP4 10.0.0.1\r\n"
+            "m=audio 40000 RTP/AVP 0\r\n"
+            "m=video 50000 RTP/AVP 96\r\n"
+            "c=IN IP4 203.0.113.9\r\n";
+        memset(out, 0, sizeof(out));
+        int n = siprec_sdp_parse_remote_streams(sdp, out, SIPREC_MAX_STREAMS);
+        check_int(n, 1, "parse:non-audio-block c= count");
+        check_str(out[0].remote_ip, "10.0.0.1",
+            "parse:non-audio-block c= does not clobber audio stream");
+    }
+
+    /* A non-audio m= block appearing BEFORE the audio block must
+     * not consume the session c=; the audio stream still inherits
+     * the session-level address. */
+    {
+        const char *sdp =
+            "v=0\r\n"
+            "c=IN IP4 10.0.0.1\r\n"
+            "m=video 50000 RTP/AVP 96\r\n"
+            "m=audio 40000 RTP/AVP 0\r\n";
+        memset(out, 0, sizeof(out));
+        int n = siprec_sdp_parse_remote_streams(sdp, out, SIPREC_MAX_STREAMS);
+        check_int(n, 1, "parse:leading-video count");
+        check_str(out[0].remote_ip, "10.0.0.1",
+            "parse:audio after video inherits session c=");
+    }
+
     /* out_max caps the number of streams written — a third m=
      * block must NOT overflow the 2-slot array (ASan build
      * exercises the bound). */
