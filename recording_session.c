@@ -262,6 +262,62 @@ switch_status_t stop_recording_session(switch_core_session_t *session)
     return SWITCH_STATUS_SUCCESS;
 }
 
+/* siprec_teardown_all_recordings: retire every recording in the hash,
+ * used by module shutdown. Same snapshot-then-claim discipline as
+ * stop_recording_session (minus the uuid filter): under the lock we
+ * copy a batch of pool-owned keys, drop the lock, then claim+teardown
+ * each so no blocking teardown (media detach, BYE) runs while holding
+ * recordings_mutex and no recording is freed non-atomically. Re-scan
+ * until a pass finds none.
+ *
+ * claim_recording removes each entry from the hash before (or instead
+ * of, when pinned) tearing it down, so when this returns the hash is
+ * empty and the caller can safely destroy it. A recording still pinned
+ * by an in-flight pause/resume at unload is removed from the hash and
+ * marked doomed here; its teardown is deferred to release_recording —
+ * best-effort, as with any module-unload-with-live-traffic race. */
+void siprec_teardown_all_recordings(void)
+{
+    for (;;) {
+        enum { SIPREC_STOP_BATCH = 16 };
+        char *keys[SIPREC_STOP_BATCH];
+        int n = 0, i;
+        switch_hash_index_t *hi;
+        void *val;
+        const void *vvar;
+        recording_t *recording;
+
+        switch_mutex_lock(globals.recordings_mutex);
+        for (hi = switch_core_hash_first(globals.recordings_hash); hi; hi = switch_core_hash_next(&hi)) {
+            switch_core_hash_this(hi, &vvar, NULL, &val);
+            recording = (recording_t *) val;
+            /* Keep iterating to the end even once the batch is full so
+             * the hash index is freed (early break leaks it); just
+             * stop collecting. */
+            if (n < SIPREC_STOP_BATCH && recording->key) {
+                keys[n++] = switch_mprintf("%s", recording->key);
+            }
+        }
+        switch_mutex_unlock(globals.recordings_mutex);
+
+        if (n == 0) {
+            break;
+        }
+
+        for (i = 0; i < n; i++) {
+            recording = claim_recording(keys[i]);
+            switch_safe_free(keys[i]);
+            if (recording) {
+                teardown_recording(recording);
+            }
+        }
+
+        if (n < SIPREC_STOP_BATCH) {
+            break;
+        }
+    }
+}
+
 /* stop_recording_session_for_server: stop just the recording on
  * THIS leg that belongs to `server_name`. With no server name,
  * fall back to stopping every recording on the leg — the

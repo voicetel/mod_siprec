@@ -54,6 +54,13 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 switch_status_t stop_recording_session(switch_core_session_t *session);
 switch_status_t stop_recording_session_for_server(switch_core_session_t *session, const char *server_name);
 
+/* siprec_teardown_all_recordings: retire every active recording (module
+ * shutdown). Drains globals.recordings_hash via the same atomic
+ * claim-then-teardown discipline as the stop paths, without holding
+ * recordings_mutex across the blocking teardown; the hash is empty on
+ * return. */
+void siprec_teardown_all_recordings(void);
+
 /* acquire_recording / release_recording: pin a recording by key for
  * use outside recordings_mutex (pause/resume), then drop the pin.
  * A concurrent stop that arrives while pinned is deferred to the

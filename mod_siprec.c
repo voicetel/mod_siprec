@@ -483,34 +483,27 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_siprec_shutdown)
 	switch_hash_index_t *hi;
 	void *val;
 	const void *vvar;
-	recording_t *recording = NULL;
 	recording_server_t *recording_server = NULL;
 
 	switch_xml_config_cleanup(general_instructions);
 
+	/* Tear down every active recording via the shared atomic
+	 * claim-then-teardown drain. The previous inline walk held
+	 * recordings_mutex across the blocking teardown (media
+	 * bug_remove + BYE) and freed each recording->pool without the
+	 * claim discipline, so a call thread blocked in
+	 * claim_recording / a pause pinning a recording could wake onto
+	 * a freed pool or a destroyed mutex. siprec_teardown_all_recordings
+	 * snapshots keys under the lock and tears down outside it, leaving
+	 * the hash empty so the destroy below is safe.
+	 *
+	 * siprec_media_detach calls switch_core_media_bug_remove, which is
+	 * synchronous — it blocks until any in-flight callback on the FS
+	 * media thread has returned, so no callback can touch a
+	 * pool-allocated media ctx after this. */
+	siprec_teardown_all_recordings();
+
 	switch_mutex_lock(globals.recordings_mutex);
-	for (hi = switch_core_hash_first(globals.recordings_hash); hi; hi = switch_core_hash_next(&hi)) {
-		switch_core_hash_this(hi, &vvar, NULL, &val);
-		recording = (recording_t *) val;
-
-		/* Tear down active state before freeing the pool.
-		 * Without this, the media-bug callback can still fire
-		 * on the FS media thread while user_data
-		 * (siprec_media_ctx_t) is allocated from the pool we're
-		 * about to destroy → use-after-free on module unload
-		 * with active recordings.
-		 *
-		 * siprec_media_detach calls switch_core_media_bug_remove
-		 * which is synchronous — it blocks until any in-flight
-		 * callback has returned. siprec_invite_send_bye is
-		 * idempotent and best-effort; if the recording leg's
-		 * session is already gone the BYE is a no-op. */
-		siprec_media_detach(recording);
-		siprec_invite_send_bye(recording);
-
-		switch_core_destroy_memory_pool(&recording->pool);
-	}
-	
 	switch_core_hash_destroy(&globals.recordings_hash);
 	switch_mutex_unlock(globals.recordings_mutex);
 
