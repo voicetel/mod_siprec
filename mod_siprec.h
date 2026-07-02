@@ -86,6 +86,23 @@ struct recording {
     recording_server_t *server;
     switch_memory_pool_t *pool;
 
+    /* Lifetime pinning for readers that must use the recording
+     * OUTSIDE recordings_mutex (pause/resume). Both fields are
+     * guarded by globals.recordings_mutex.
+     *
+     * use_count — number of live acquire_recording() pins.
+     * doomed    — a teardown was requested (the entry was already
+     *             removed from recordings_hash) while use_count > 0,
+     *             so the last releaser performs the teardown instead
+     *             of freeing recording->pool out from under a pin.
+     *
+     * The stop paths (claim_recording) and the readers
+     * (acquire/release_recording) coordinate through these so
+     * exactly one thread ever tears a recording down, even when a
+     * stop races an in-flight pause/resume. */
+    int use_count;
+    int doomed;
+
     /* SIP signalling context — populated by siprec_invite_send.
      * Owns the recording-leg session pointer + dialog
      * negotiation state. NULL until siprec_invite_send fires. */

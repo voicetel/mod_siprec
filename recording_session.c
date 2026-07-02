@@ -75,6 +75,10 @@ char *siprec_recording_key(const char *server_name, const char *uuid)
     return switch_mprintf("%s-%s", server_name, uuid);
 }
 
+/* Forward declaration: release_recording (below) may run the deferred
+ * teardown, but teardown_recording is defined further down. */
+static void teardown_recording(recording_t *recording);
+
 /* claim_recording: atomically remove the recording for `key` from
  * the recordings hash and return it, or NULL if it wasn't there.
  * The find and the delete happen under a SINGLE recordings_mutex
@@ -97,11 +101,68 @@ static recording_t *claim_recording(const char *key)
     switch_mutex_lock(globals.recordings_mutex);
     recording = switch_core_hash_find(globals.recordings_hash, key);
     if (recording) {
+        /* Remove it so no new acquire/claim can find it. */
         switch_core_hash_delete(globals.recordings_hash, key);
+        if (recording->use_count > 0) {
+            /* A reader (pause/resume) is pinning it right now. We
+             * must NOT tear it down under them — mark it doomed and
+             * let the last release_recording do it. Return NULL so
+             * this caller performs no teardown. */
+            recording->doomed = 1;
+            recording = NULL;
+        }
     }
     switch_mutex_unlock(globals.recordings_mutex);
 
     return recording;
+}
+
+/* acquire_recording: find the recording for `key` and pin it so it
+ * stays alive while the caller uses it OUTSIDE recordings_mutex.
+ * Returns NULL if it isn't in the hash. Every non-NULL return MUST
+ * be balanced by exactly one release_recording.
+ *
+ * This is the safe alternative to the old pause/resume pattern of
+ * find-under-lock, unlock, then dereference: without a pin a
+ * concurrent stop path could claim + teardown (freeing the pool the
+ * recording_t itself lives in) between the unlock and the use. A
+ * recording that is in the hash is by construction not yet doomed
+ * (claim_recording deletes before it dooms), so a successful find
+ * can always take the pin. */
+recording_t *acquire_recording(const char *key)
+{
+    recording_t *recording;
+
+    switch_mutex_lock(globals.recordings_mutex);
+    recording = switch_core_hash_find(globals.recordings_hash, key);
+    if (recording) {
+        recording->use_count++;
+    }
+    switch_mutex_unlock(globals.recordings_mutex);
+
+    return recording;
+}
+
+/* release_recording: drop a pin taken by acquire_recording. If a
+ * stop path doomed the recording while it was pinned, the last
+ * releaser (use_count reaches 0 with doomed set) runs the deferred
+ * teardown — the hash entry was already removed by claim_recording,
+ * so this thread is the sole owner and the pool-free is safe. */
+void release_recording(recording_t *recording)
+{
+    int do_teardown = 0;
+
+    if (!recording) return;
+
+    switch_mutex_lock(globals.recordings_mutex);
+    if (--recording->use_count == 0 && recording->doomed) {
+        do_teardown = 1;
+    }
+    switch_mutex_unlock(globals.recordings_mutex);
+
+    if (do_teardown) {
+        teardown_recording(recording);
+    }
 }
 
 /* teardown_recording: fully retire one recording_t — detach the

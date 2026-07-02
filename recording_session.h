@@ -36,6 +36,8 @@
 #include <switch_curl.h>
 #include <switch_types.h>
 
+#include "mod_siprec.h"   /* recording_t (acquire/release return type) */
+
 /* start_recording_session: open a SIPREC recording on `session`.
  *
  *   recording_server_name — the recording handle. Selects the
@@ -51,6 +53,15 @@
 switch_status_t start_recording_session(switch_core_session_t *session, const char *recording_server_name, const char *srs_uri);
 switch_status_t stop_recording_session(switch_core_session_t *session);
 switch_status_t stop_recording_session_for_server(switch_core_session_t *session, const char *server_name);
+
+/* acquire_recording / release_recording: pin a recording by key for
+ * use outside recordings_mutex (pause/resume), then drop the pin.
+ * A concurrent stop that arrives while pinned is deferred to the
+ * last releaser, so the recording_t's pool is never freed under a
+ * live user. acquire returns NULL if the key isn't active; every
+ * non-NULL acquire MUST be balanced by exactly one release. */
+recording_t *acquire_recording(const char *key);
+void release_recording(recording_t *recording);
 
 /* siprec_recording_key: build the globals.recordings_hash key for
  * a recording — "<server_name>-<uuid>". The key format is a

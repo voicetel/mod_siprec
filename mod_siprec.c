@@ -273,9 +273,16 @@ static switch_status_t siprec_change_direction(
 	uuid = switch_core_session_get_uuid(session);
 	recording_key = siprec_recording_key(server_name, uuid);
 
-	switch_mutex_lock(globals.recordings_mutex);
-	recording = switch_core_hash_find(globals.recordings_hash, recording_key);
-	switch_mutex_unlock(globals.recordings_mutex);
+	/* Pin the recording for the whole operation. acquire_recording
+	 * takes a use-count under recordings_mutex so a concurrent stop
+	 * path (another thread's siprec_stop, module shutdown) can't
+	 * claim + teardown — and free recording->pool, which the
+	 * recording_t itself lives in — while we dereference it below
+	 * after dropping the lock. release_recording at every exit drops
+	 * the pin; if a stop arrived while pinned, that release performs
+	 * the deferred teardown. The old find-under-lock/unlock/use
+	 * pattern had no pin and was a use-after-free window. */
+	recording = acquire_recording(recording_key);
 	switch_safe_free(recording_key);
 
 	if (!recording) {
@@ -290,6 +297,7 @@ static switch_status_t siprec_change_direction(
 			SWITCH_LOG_ERROR,
 			"siprec: recording '%s' has no live SIP dialog\n",
 			server_name);
+		release_recording(recording);
 		return SWITCH_STATUS_FALSE;
 	}
 
@@ -326,6 +334,7 @@ static switch_status_t siprec_change_direction(
 			SWITCH_LOG_ERROR,
 			"siprec: recording leg %s is gone — cannot pause/resume\n",
 			recording->invite_ctx->recording_uuid);
+		release_recording(recording);
 		return SWITCH_STATUS_FALSE;
 	}
 
@@ -351,12 +360,14 @@ static switch_status_t siprec_change_direction(
 			SWITCH_LOG_ERROR,
 			"siprec: recording leg has no sip_local_sdp_str — "
 			"cannot pause/resume\n");
+		release_recording(recording);
 		return SWITCH_STATUS_FALSE;
 	}
 	if (!new_sdp) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
 			SWITCH_LOG_ERROR,
 			"siprec: SDP direction-flip allocation failed\n");
+		release_recording(recording);
 		return SWITCH_STATUS_FALSE;
 	}
 
@@ -373,6 +384,7 @@ static switch_status_t siprec_change_direction(
 		 * fork above, before the re-INVITE.) */
 		siprec_media_set_paused(recording, 0);
 	}
+	release_recording(recording);
 	return st;
 }
 
