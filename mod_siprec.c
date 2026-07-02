@@ -230,6 +230,36 @@ SWITCH_STANDARD_APP(siprec_app_function)
 	start_recording_session(session, recording_server_name, srs_uri);
 }
 
+/* siprec_arg_handle: extract the recording handle — the first
+ * whitespace-delimited token — from an app's data string, or NULL if
+ * there is none. siprec and siprec_stop already tokenize their args;
+ * pause/resume/stop share this so the handle they look up matches the
+ * one start_recording_session inserted. Passing the raw data string
+ * (as pause/resume previously did) meant a trailing token or trailing
+ * whitespace — "default " from XML templating — became part of
+ * server_name, so the "<handle>-<uuid>" key never matched and the verb
+ * silently no-op'd while audio kept flowing. */
+static const char *siprec_arg_handle(switch_core_session_t *session, const char *data)
+{
+	char *argv[4] = { 0 };
+	char *mydata;
+	int   argc;
+
+	if (zstr(data)) {
+		return NULL;
+	}
+	mydata = switch_core_session_strdup(session, data);
+	if (!mydata) {
+		return NULL;
+	}
+	argc = switch_separate_string(mydata, ' ', argv,
+		(sizeof(argv) / sizeof(argv[0])));
+	if (argc >= 1 && !zstr(argv[0])) {
+		return argv[0];
+	}
+	return NULL;
+}
+
 /* siprec_pause / siprec_resume: send a re-INVITE on the
  * recording dialog with an updated SDP direction attribute
  * per RFC 7866 §6.4.
@@ -404,36 +434,23 @@ static switch_status_t siprec_change_direction(
 
 SWITCH_STANDARD_APP(siprec_pause_app_function)
 {
-	siprec_change_direction(session, data, /*paused*/ 1);
+	siprec_change_direction(session, siprec_arg_handle(session, data),
+		/*paused*/ 1);
 }
 
 SWITCH_STANDARD_APP(siprec_resume_app_function)
 {
-	siprec_change_direction(session, data, /*paused*/ 0);
+	siprec_change_direction(session, siprec_arg_handle(session, data),
+		/*paused*/ 0);
 }
 
 SWITCH_STANDARD_APP(siprec_stop_app_function)
 {
-	const char *server_name = NULL;
-
 	/* Optional <recording_server> argument. With none, stop
 	 * EVERY recording on this leg — the PCI-safe default, so a
 	 * "stop now" can't accidentally leave a second SRS still
 	 * receiving cardholder audio. */
-	if (!zstr(data)) {
-		char *argv[4] = { 0 };
-		char *mydata = switch_core_session_strdup(session, data);
-		int   argc;
-
-		if (!mydata) {
-			return;
-		}
-		argc = switch_separate_string(mydata, ' ', argv,
-			(sizeof(argv) / sizeof(argv[0])));
-		if (argc >= 1 && !zstr(argv[0])) {
-			server_name = argv[0];
-		}
-	}
+	const char *server_name = siprec_arg_handle(session, data);
 
 	/* Hard stop: detach the media fork (RTP stops leaving the
 	 * box at once) and BYE the SRS leg. Unlike pause this is not
