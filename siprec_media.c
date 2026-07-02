@@ -296,8 +296,21 @@ switch_status_t siprec_media_attach(recording_t *recording)
 
     /* One UDP socket per stream. The source port is left
      * unbound (the kernel picks an ephemeral); the SRS's SDP
-     * answer told us where to send. */
-    mctx->stream_count = ictx->negotiated_count;
+     * answer told us where to send.
+     *
+     * Fork only ONE stream today, even if the SRS answered more.
+     * The media-bug callback mixes the read/write directions into a
+     * single mono stream and sends just streams[0] (streams[1] is
+     * reserved for the future separated-track work), and the RFC 7865
+     * metadata built in start_recording_session declares exactly one
+     * <stream label="1">. Provisioning a fork per negotiated endpoint
+     * left the two inconsistent — a second stream received RTP with no
+     * metadata binding (RFC 7866 §8.5) — wasted a socket that never
+     * carried a packet, and let a non-IPv4 stream[1] abort the whole
+     * attach even when stream[0] was fine. negotiated_count is >= 1
+     * here (guarded above). Widen this in lockstep with multi-track
+     * metadata when separated tracks land. */
+    mctx->stream_count = 1;
     for (size_t i = 0; i < mctx->stream_count; i++) {
         uint8_t neg_pt;
         int     rfd;
