@@ -266,6 +266,20 @@ static switch_status_t siprec_change_direction(
 	char *new_sdp;
 	switch_status_t st;
 
+	/* Master switch (src-enabled). RESUME re-starts audio transmission
+	 * to the SRS, so it is gated exactly like starting a recording: if
+	 * SRC mode was disabled (e.g. via a reload while a recording sits
+	 * paused), refuse the resume and leave the fork gated so no audio
+	 * leaves the box. PAUSE is a stop-direction action (it only removes
+	 * audio) and is deliberately left ungated so an in-flight recording
+	 * can always be quiesced. Mirrors start_recording_session's gate. */
+	if (!paused && !globals.src_enabled) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
+			"siprec: SRC disabled (src-enabled=false) — resume refused; "
+			"recording stays paused, no audio transmitted\n");
+		return SWITCH_STATUS_FALSE;
+	}
+
 	if (zstr(server_name)) {
 		server_name = "default";
 	}
