@@ -27,7 +27,7 @@ SRS's 200 OK answer.
 ## Status
 
 All paths build, lint clean, and the unit-test suite for the
-SDP / metadata / G.711 builders passes 139/139 assertions
+SDP / metadata / G.711 builders passes 145/145 assertions
 (~94% line coverage of the FreeSWITCH-free units; the remainder
 is allocator-fault / OOM defensive code). The module also links
 and loads in a real FreeSWITCH built from source — the
@@ -117,7 +117,7 @@ The SDP, metadata, and G.711 builders are pure C and exercised
 by a standalone test target:
 
 ```sh
-make -f Makefile.test test      # 139 / 139 assertions
+make -f Makefile.test test      # 145 / 145 assertions
 make -f Makefile.test lint      # cppcheck --enable=all clean
 make -f Makefile.test asan      # ASan + UBSan + LSan clean
 make -f Makefile.test coverage  # gcov: HOST_COVERAGE ~94% of the FS-free units
@@ -199,6 +199,12 @@ pass a complete SIP URI as a second argument:
      has no spaces, so it stays a single token. udp/tcp use sip:,
      tls uses sips:/;transport=tls. -->
 ```
+
+The URI must be a `sip:`/`sips:` scheme and must not contain
+dial-string metacharacters (`, | { } [ ] < >` or whitespace); such a
+value is refused rather than originated. If you build this argument
+from an untrusted source (e.g. an upstream API), that validation is
+what stops a crafted URI from injecting an extra originate leg.
 
 Pause and resume:
 

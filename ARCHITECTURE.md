@@ -124,6 +124,21 @@ siprec_media.h
       configured servers — so a per-call ad-hoc recording whose
       handle was never in `siprec.conf` is reaped too, instead of
       leaking until module shutdown.
+- [x] **Reader pin for pause/resume.** Paths that must use a
+      recording *outside* `recordings_mutex` (pause/resume) take a
+      use-count pin via `acquire_recording` / `release_recording`
+      (`use_count` + `doomed` on `recording_t`, both under the
+      mutex). A stop that races an in-flight pause finds `use_count
+      > 0`, removes the hash entry, marks the recording `doomed`,
+      and defers the teardown to the last releaser — so the pool the
+      `recording_t` lives in is never freed under a live user. The
+      old find-under-lock / unlock / dereference pattern had no pin
+      and was a use-after-free window against any concurrent stop.
+- [x] **Shutdown drains atomically.** `mod_siprec_shutdown` calls
+      `siprec_teardown_all_recordings`, the same snapshot-then-claim
+      drain as the stop paths, so no blocking teardown (bug remove,
+      BYE) runs while holding `recordings_mutex`; the hash is empty
+      before it is destroyed.
 - [x] `start_recording_session` builds the metadata XML, dispatches
       the INVITE via `siprec_invite_send`, then attaches the media
       bug with `siprec_media_attach`.
@@ -141,7 +156,12 @@ siprec_media.h
       pause also sets the media bug's native `SMBF_PAUSE`
       (`siprec_media_set_paused`) before the re-INVITE, so the
       FS core stops capturing audio at the io pump — cardholder
-      audio is never forked while paused.
+      audio is never forked while paused. Resume re-starts
+      transmission, so it is gated by the `src-enabled` master
+      switch (pause, which only removes audio, is not). The handle
+      argument is tokenized (`siprec_arg_handle`) the same way as
+      `siprec` / `siprec_stop`, so trailing whitespace/tokens can't
+      desync the `<handle>-<uuid>` key.
 - [x] `siprec_stop` app — explicit mid-call teardown via
       `stop_recording_session_for_server`: detaches the media
       fork and BYEs the SRS leg without hanging up the call. No
@@ -174,7 +194,11 @@ siprec_media.h
       reaping; `siprec_uri_for` returns the URI verbatim). The
       handle stays the key for pause/resume/stop. Lets the recording
       target be chosen per call (e.g. supplied by an upstream API)
-      instead of provisioned in `siprec.conf`.
+      instead of provisioned in `siprec.conf`. The URI is validated
+      for a `sip:`/`sips:` scheme **and** rejected if it carries
+      dial-string metacharacters (`, | { } [ ] < >` or whitespace),
+      so an untrusted per-call value can't inject an extra originate
+      leg through the `sofia/<profile>/<uri>` bridge string.
 
 - [x] **`src-enabled` master switch** (now enforced — was parsed
       but dead): `false` makes `start_recording_session` a logged
@@ -201,7 +225,7 @@ siprec_media.h
 - [x] Unit tests for `siprec_g711.c` — the branch-free encode
       tables are swept against the reference quantisers for all
       65536 int16 inputs (PCMU + PCMA) plus an idempotent-init
-      check; suite total is 139/139.
+      check; suite total is 145/145.
 - [x] Host coverage — `make -f Makefile.test coverage` (gcov;
       ~94% of the FS-free units). The uncovered remainder is
       allocator-fault / OOM / 64 MB-cap defensive paths in the
