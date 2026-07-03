@@ -16,7 +16,7 @@
 CC      ?= gcc
 CFLAGS  ?= -Wall -Wextra -Wpedantic -Werror -O2 -g -std=c11
 TEST    = siprec_test
-SOURCES = siprec_test.c siprec_sdp.c siprec_metadata.c siprec_g711.c
+SOURCES = siprec_test.c siprec_sdp.c siprec_metadata.c siprec_g711.c siprec_sb.c
 
 # Sanitizer flags. -O1 keeps reports readable;
 # -fno-omit-frame-pointer gets accurate stacks. Do NOT combine
@@ -36,7 +36,7 @@ SAN_RUN_ENV = UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
 # report the units actually under test (the FS-free builders),
 # NOT the harness driver siprec_test.c itself.
 COV_CFLAGS = -O0 -g -std=c11 --coverage
-COV_UNITS  = siprec_sdp.c siprec_metadata.c siprec_g711.c
+COV_UNITS  = siprec_sdp.c siprec_metadata.c siprec_g711.c siprec_sb.c
 
 .PHONY: test lint asan analyzer tidy coverage all-checks clean
 
@@ -54,7 +54,7 @@ lint:
 	    --suppress=normalCheckLevelMaxBranches \
 	    --error-exitcode=1 --std=c11 --force -I . \
 	    siprec_sdp.c siprec_metadata.c siprec_test.c \
-	    siprec_g711.c siprec_invite.c siprec_media.c \
+	    siprec_g711.c siprec_sb.c siprec_invite.c siprec_media.c \
 	    mod_siprec.c recording_session.c
 
 # AddressSanitizer + UBSan + LeakSanitizer (LSan runs at exit
@@ -72,6 +72,7 @@ analyzer:
 	$(CC) -fanalyzer -Wall -Wextra -std=c11 -c siprec_sdp.c -o /dev/null
 	$(CC) -fanalyzer -Wall -Wextra -std=c11 -c siprec_metadata.c -o /dev/null
 	$(CC) -fanalyzer -Wall -Wextra -std=c11 -c siprec_g711.c -o /dev/null
+	$(CC) -fanalyzer -Wall -Wextra -std=c11 -c siprec_sb.c -o /dev/null
 	$(CC) -fanalyzer -Wall -Wextra -std=c11 -c siprec_test.c -o /dev/null
 
 # clang-tidy with default checks minus the C11 Annex K buffer
@@ -84,7 +85,7 @@ analyzer:
 # Install with `apt install clang-tidy`. scan-build is a
 # separate package (clang-tools) and not currently wired in.
 tidy:
-	clang-tidy siprec_sdp.c siprec_metadata.c siprec_g711.c siprec_test.c \
+	clang-tidy siprec_sdp.c siprec_metadata.c siprec_g711.c siprec_sb.c siprec_test.c \
 	    -- -Wall -Wextra -std=c11 -I.
 
 # gcov line coverage of the FS-free units under test. Builds with

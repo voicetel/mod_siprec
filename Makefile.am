@@ -6,7 +6,7 @@ mod_LTLIBRARIES = mod_siprec.la
 mod_siprec_la_SOURCES  = mod_siprec.c recording_session.c \
                          siprec_sdp.c siprec_metadata.c \
                          siprec_invite.c siprec_media.c \
-                         siprec_g711.c
+                         siprec_g711.c siprec_sb.c
 mod_siprec_la_CFLAGS   = $(AM_CFLAGS)
 mod_siprec_la_LIBADD   = $(switch_builddir)/libfreeswitch.la
 mod_siprec_la_LDFLAGS  = -avoid-version -module -no-undefined -shared
