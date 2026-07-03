@@ -174,15 +174,16 @@ siprec_media.h
 - [x] `autoload_conf/siprec.conf.xml` schema:
       ```xml
       <configuration name="siprec.conf">
+        <settings>
+          <param name="src-enabled" value="true"/>
+        </settings>
         <recording-servers>
           <recording-server name="default">
-            <param name="host" value="127.0.0.1"/>
-            <param name="port" value="5070"/>
-            <param name="profile" value="external"/>
-            <param name="src-realm" value="src.example.com"/>
-            <!-- optional auth -->
-            <param name="username" value=""/>
-            <param name="password" value=""/>
+            <settings>
+              <param name="host" value="127.0.0.1"/>
+              <param name="port" value="5070"/>
+              <param name="transport" value="udp"/>
+            </settings>
           </recording-server>
         </recording-servers>
       </configuration>

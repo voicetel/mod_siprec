@@ -509,7 +509,6 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
     recording->key = switch_core_strdup(recording->pool, recording_key);
     switch_safe_free(recording_key);
     recording->uuid = switch_core_strdup(recording->pool, uuid);
-    recording->start_epoch = switch_epoch_time_now(NULL);
     recording->session = session;
 
     /* Ad-hoc per-call SRS: build the ephemeral recording_server_t now

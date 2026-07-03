@@ -46,7 +46,6 @@ SWITCH_MODULE_DEFINITION(mod_siprec, mod_siprec_load, mod_siprec_shutdown, NULL)
 
 static switch_xml_config_item_t general_instructions[] = {
 	SWITCH_CONFIG_ITEM("src-enabled", SWITCH_CONFIG_BOOL, CONFIG_RELOADABLE, &globals.src_enabled, SWITCH_TRUE, NULL, "true|false", "Enable/Disable Server Recording Client"),
-	SWITCH_CONFIG_ITEM("srs-enabled", SWITCH_CONFIG_BOOL, CONFIG_RELOADABLE, &globals.srs_enabled, SWITCH_FALSE, NULL, "true|false", "Enable/Disable Server Recording Server"),
 	SWITCH_CONFIG_ITEM_END()
 };
 
@@ -80,12 +79,6 @@ static switch_status_t load_recording_server(switch_xml_t xml)
 				recording_server->host = switch_core_strdup(recording_server_pool, val);
 			} else if (!strcmp(var, "port")) {
 				recording_server->port = (int) switch_atoui(val);
-			} else if (!strcmp(var, "register")) {
-				recording_server->should_register = switch_true(val);
-			} else if (!strcmp(var, "username")) {
-				recording_server->username = switch_core_strdup(recording_server_pool, val);
-			} else if (!strcmp(var, "password")) {
-				recording_server->password = switch_core_strdup(recording_server_pool, val);
 			} else if (!strcmp(var, "transport")) {
 				/* "udp" (default), "tcp", "tls". TLS implies
 				 * the dial URI uses sips:; the sofia profile

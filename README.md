@@ -148,16 +148,13 @@ verification path in [`tests/README.md`](tests/README.md).
                description="SIPREC (RFC 7866) module config">
   <settings>
     <param name="src-enabled" value="true"/>
-    <param name="srs-enabled" value="false"/>
   </settings>
   <recording-servers>
     <recording-server name="default">
       <settings>
         <param name="host" value="127.0.0.1"/>
         <param name="port" value="5070"/>
-        <param name="register" value="false"/>
-        <param name="username" value=""/>
-        <param name="password" value=""/>
+        <param name="transport" value="udp"/>
       </settings>
     </recording-server>
   </recording-servers>

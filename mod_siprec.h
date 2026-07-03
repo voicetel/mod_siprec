@@ -40,9 +40,6 @@ struct recording_server {
     char *name;
     char *host;
     int port;
-    int should_register;
-    char *username;
-    char *password;
 
     /* RFC 7866 §11.3: the SRC-to-SRS hop SHOULD use SIPS for
      * confidentiality on hostile-network deployments. When
@@ -81,7 +78,6 @@ struct siprec_media_ctx;
 struct recording {
     char *key;
     char *uuid;
-    int start_epoch;
     switch_core_session_t *session;
     recording_server_t *server;
     switch_memory_pool_t *pool;
@@ -116,7 +112,6 @@ typedef struct recording recording_t;
 
 typedef struct {
     int src_enabled;
-    int srs_enabled;
     switch_hash_t *recording_servers_hash;
     switch_mutex_t *recording_servers_mutex;
     switch_hash_t *recordings_hash;

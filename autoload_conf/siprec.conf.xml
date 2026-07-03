@@ -11,11 +11,9 @@
                     in-flight recording can be retired after a
                     reload flips this off. THIS MODULE only
                     implements SRC; SRS-mode is reserved for a
-                    future rewrite (mod_siprec_srs). Default true.
-       srs-enabled: Reserved. v1 ignores it. -->
+                    future rewrite (mod_siprec_srs). Default true. -->
   <settings>
     <param name="src-enabled" value="true"/>
-    <param name="srs-enabled" value="false"/>
   </settings>
 
   <!-- One <recording-server> per Session Recording Server
@@ -62,18 +60,6 @@
              metadata travel in cleartext — only safe on
              trusted-network links (loopback / VPN). -->
         <param name="transport" value="udp"/>
-
-        <!-- v1 does not register with the SRS (SRS is a
-             stateless receiver in our deployment). Setting
-             this true is reserved for future SRS deployments
-             that require pre-registration with credentials. -->
-        <param name="register" value="false"/>
-
-        <!-- Optional auth credentials. Used only when the SRS
-             requires SIP digest auth on the INVITE. Empty
-             values disable digest auth. -->
-        <param name="username" value=""/>
-        <param name="password" value=""/>
       </settings>
     </recording-server>
 
