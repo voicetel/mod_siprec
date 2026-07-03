@@ -14,6 +14,7 @@
 #include "siprec_sdp.h"
 #include "siprec_metadata.h"
 #include "siprec_g711.h"
+#include "siprec_sb.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -944,6 +945,134 @@ static void test_g711_tables_match_reference(void) {
         "g711 init is idempotent (ulaw[0] stable after re-init)");
 }
 
+/* ──────────────────────────────────────────────────────────── *
+ * String-builder (siprec_sb) defensive-path tests             *
+ *                                                              *
+ * The error-latching paths in siprec_sb are unreachable by any *
+ * ordinary input: they fire only on allocation failure or at   *
+ * the 64 MB growth ceiling. We exercise them directly — the    *
+ * allocator failures via the siprec_sb_realloc test seam, the  *
+ * ceiling via a body that crosses SB_MAX_CAP.                  *
+ * ──────────────────────────────────────────────────────────── */
+
+/* Failing allocator: pass the first `sb_realloc_ok` calls through to
+ * real realloc, then return NULL for the rest. */
+static int sb_realloc_ok = 0;
+static void *failing_realloc(void *ptr, size_t size) {
+    if (sb_realloc_ok > 0) {
+        sb_realloc_ok--;
+        return realloc(ptr, size);
+    }
+    return NULL;
+}
+
+static void expect_null(const void *p, const char *what) {
+    test_count++;
+    if (p == NULL) {
+        printf("PASS %s\n", what);
+    } else {
+        fprintf(stderr, "FAIL %s: expected NULL\n", what);
+        fail_count++;
+    }
+}
+
+static void expect_true(int cond, const char *what) {
+    test_count++;
+    if (cond) {
+        printf("PASS %s\n", what);
+    } else {
+        fprintf(stderr, "FAIL %s\n", what);
+        fail_count++;
+    }
+}
+
+static void test_sb_defensive_paths(void) {
+    /* sb_take on a never-appended buffer: err clear but data NULL,
+     * so it frees nothing and returns NULL. */
+    {
+        sb_t sb;
+        sb_init(&sb);
+        expect_null(sb_take(&sb), "sb:empty take returns NULL");
+    }
+
+    /* sb_append n == 0 is a safe no-op (adjacent line terminators). */
+    {
+        sb_t sb;
+        sb_init(&sb);
+        sb_append(&sb, "ignored", 0);
+        sb_append(&sb, "hi", 2);
+        char *r = sb_take(&sb);
+        expect_true(r && strcmp(r, "hi") == 0, "sb:n==0 append is a no-op");
+        free(r);
+    }
+
+    /* First allocation fails: sb_append's reserve fails and latches
+     * err; a following sb_appendf sees err and no-ops; sb_take frees
+     * the (NULL) buffer and returns NULL. */
+    {
+        sb_t sb;
+        sb_init(&sb);
+        siprec_sb_realloc = failing_realloc;
+        sb_realloc_ok = 0;                 /* fail immediately */
+        sb_append(&sb, "hello", 5);        /* reserve realloc -> NULL -> err */
+        sb_appendf(&sb, "%d", 42);         /* err already set -> early return */
+        expect_null(sb_take(&sb), "sb:realloc-fail latches err, take returns NULL");
+        siprec_sb_realloc = realloc;
+    }
+
+    /* sb_appendf as the first op, allocation fails: covers the
+     * appendf reserve-failure branch (distinct from the append one). */
+    {
+        sb_t sb;
+        sb_init(&sb);
+        siprec_sb_realloc = failing_realloc;
+        sb_realloc_ok = 0;
+        sb_appendf(&sb, "%s", "x");        /* reserve realloc -> NULL -> err */
+        expect_null(sb_take(&sb), "sb:appendf realloc-fail latches err");
+        siprec_sb_realloc = realloc;
+    }
+
+    /* sb_take's shrink-to-fit realloc fails: the original (oversized)
+     * buffer is kept and returned (no leak, no NULL). */
+    {
+        sb_t sb;
+        sb_init(&sb);
+        siprec_sb_realloc = failing_realloc;
+        sb_realloc_ok = 1;                 /* the append grows once, then take's shrink fails */
+        sb_append(&sb, "keep-me", 7);
+        char *r = sb_take(&sb);            /* shrink realloc -> NULL -> returns original */
+        siprec_sb_realloc = realloc;
+        expect_true(r && strcmp(r, "keep-me") == 0,
+            "sb:take shrink-fail keeps original buffer");
+        free(r);
+    }
+
+    /* Growth ceiling: a body larger than SB_MAX_CAP (64 MB) is
+     * refused — sb_can_grow_by rejects it and err latches, before any
+     * buffer allocation. Exercised for both append and appendf. */
+    {
+        size_t huge = (size_t)65 * 1024 * 1024;
+        char *big = malloc(huge + 1);
+        if (big) {
+            memset(big, 'a', huge);
+            big[huge] = '\0';
+            {
+                sb_t sb;
+                sb_init(&sb);
+                sb_append(&sb, big, huge);           /* > cap -> reject */
+                expect_null(sb_take(&sb), "sb:append over SB_MAX_CAP is refused");
+            }
+            {
+                sb_t sb;
+                sb_init(&sb);
+                sb_appendf(&sb, "%s", big);          /* > cap -> reject */
+                expect_null(sb_take(&sb), "sb:appendf over SB_MAX_CAP is refused");
+            }
+            free(big);
+        }
+    }
+}
+
 int main(void) {
     test_sdp_flip_direction();
     test_sdp_inject_labels();
@@ -960,6 +1089,8 @@ int main(void) {
     test_metadata_element_ordering();
 
     test_g711_tables_match_reference();
+
+    test_sb_defensive_paths();
 
     printf("\n%d/%d passed\n", test_count - fail_count, test_count);
     return fail_count == 0 ? 0 : 1;

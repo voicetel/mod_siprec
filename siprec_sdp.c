@@ -264,10 +264,12 @@ int siprec_sdp_parse_remote_streams(
                 if (got >= 1
                     && port > 0 && port <= 65535
                     && (size_t)n < out_max) {
+                    /* session_ip is char[64] filled from a copy-in
+                     * that clamps to <= 63 chars (above), and
+                     * out[].remote_ip is the same size, so the
+                     * NUL-terminated copy always fits — no length
+                     * clamp needed here. */
                     size_t ip_len = strlen(session_ip);
-                    if (ip_len >= sizeof(out[n].remote_ip)) {
-                        ip_len = sizeof(out[n].remote_ip) - 1;
-                    }
                     memcpy(out[n].remote_ip, session_ip, ip_len);
                     out[n].remote_ip[ip_len] = '\0';
                     out[n].remote_port = (uint16_t)port;

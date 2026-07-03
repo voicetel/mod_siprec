@@ -27,9 +27,10 @@ SRS's 200 OK answer.
 ## Status
 
 All paths build, lint clean, and the unit-test suite for the
-SDP / metadata / G.711 / string-builder units passes 125/125
-assertions (~95% line coverage of the FreeSWITCH-free units; the
-remainder is allocator-fault / OOM defensive code). The module also links
+SDP / metadata / G.711 / string-builder units passes 132/132
+assertions at 100% line coverage of the FreeSWITCH-free units (the
+allocator-failure and 64 MB-cap defensive paths are exercised via a
+realloc fault-injection seam and over-cap inputs). The module also links
 and loads in a real FreeSWITCH built from source — the
 [`tests/load/`](tests/load/) Docker gate boots FS and confirms
 `module_exists mod_siprec` with all four apps registered. The dispatch / media / signalling pipeline has been
@@ -117,10 +118,10 @@ The SDP, metadata, and G.711 builders are pure C and exercised
 by a standalone test target:
 
 ```sh
-make -f Makefile.test test      # 125 / 125 assertions
+make -f Makefile.test test      # 132 / 132 assertions
 make -f Makefile.test lint      # cppcheck --enable=all clean
 make -f Makefile.test asan      # ASan + UBSan + LSan clean
-make -f Makefile.test coverage  # gcov: HOST_COVERAGE ~95% of the FS-free units
+make -f Makefile.test coverage  # gcov: HOST_COVERAGE 100% of the FS-free units
 ```
 
 ### Docker load gate (links + dlopens in a real FreeSWITCH)

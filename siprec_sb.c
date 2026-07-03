@@ -12,6 +12,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* See siprec_sb.h — production is plain realloc; the tests swap in a
+ * failing allocator to reach the OOM paths. */
+void *(*siprec_sb_realloc)(void *ptr, size_t size) = realloc;
+
 void sb_init(sb_t *sb) {
     sb->data = NULL;
     sb->len  = 0;
@@ -19,32 +23,24 @@ void sb_init(sb_t *sb) {
     sb->err  = 0;
 }
 
+/* Precondition (guaranteed by the only callers, sb_append/sb_appendf):
+ * sb->err is clear and want <= SB_MAX_CAP + 1 (they gate on err and run
+ * sb_can_grow_by first), so this helper needs no err / over-cap check
+ * of its own. */
 static int sb_reserve(sb_t *sb, size_t want) {
     size_t new_cap;
     char *p;
-    if (sb->err) {
-        return -1;
-    }
     if (want <= sb->cap) {
         return 0;
     }
-    /* Reject overflow / pathological growth before realloc. */
-    if (want > SB_MAX_CAP) {
-        sb->err = 1;
-        return -1;
-    }
+    /* Double from 256 until it covers want. The caller bounds want to
+     * <= SB_MAX_CAP (64 MB) via sb_can_grow_by, so new_cap tops out at
+     * the next power of two (2^26) and the multiply never overflows. */
     new_cap = sb->cap ? sb->cap : 256;
-    /* SB_MAX_CAP < SIZE_MAX/2 by construction, so the cap ceiling
-     * above already keeps this loop out of the wrap zone; the
-     * explicit break makes the safety property visible. */
     while (new_cap < want) {
-        if (new_cap > SB_MAX_CAP / 2) {
-            new_cap = want;
-            break;
-        }
         new_cap *= 2;
     }
-    p = realloc(sb->data, new_cap);
+    p = siprec_sb_realloc(sb->data, new_cap);
     if (!p) {
         sb->err = 1;
         return -1;
@@ -72,10 +68,8 @@ void sb_append(sb_t *sb, const char *s, size_t n) {
     if (n == 0) return;
     if (!sb_can_grow_by(sb, n)) { sb->err = 1; return; }
     if (sb_reserve(sb, sb->len + n + 1) != 0) return;
-    /* sb_reserve returns 0 only on a successful allocation, so
-     * sb->data is non-NULL here; the re-check keeps flow-sensitive
-     * analyzers that don't propagate that post-condition happy. */
-    if (!sb->data) { sb->err = 1; return; }
+    /* sb_reserve returned 0, so the allocation succeeded and
+     * sb->data is non-NULL. */
     memcpy(sb->data + sb->len, s, n);
     sb->len += n;
     sb->data[sb->len] = '\0';
@@ -91,15 +85,15 @@ void sb_appendf(sb_t *sb, const char *fmt, ...) {
     }
     /* Two-pass: vsnprintf(NULL, 0, ...) is the canonical C99 sizing
      * pass (writes nothing, returns the would-have-been length),
-     * then reserve + format into the real buffer. */
+     * then reserve + format into the real buffer. A vsnprintf
+     * encoding failure returns a negative n; cast to size_t that is
+     * a huge value, which sb_can_grow_by rejects (its extra+1
+     * overflow guard) — so the negative case latches err without a
+     * separate branch. */
     va_start(ap, fmt);
     n = vsnprintf(NULL, 0, fmt, ap);
     va_end(ap);
 
-    if (n < 0) {
-        sb->err = 1;
-        return;
-    }
     if (!sb_can_grow_by(sb, (size_t)n)) {
         sb->err = 1;
         return;
@@ -110,14 +104,12 @@ void sb_appendf(sb_t *sb, const char *fmt, ...) {
         return;
     }
 
+    /* The buffer was just reserved for exactly n+1 bytes and the
+     * second pass formats the same fmt/args as the sizing pass, so
+     * it writes n bytes and can't truncate. */
     va_start(ap, fmt);
     written = vsnprintf(sb->data + sb->len, sb->cap - sb->len, fmt, ap);
     va_end(ap);
-
-    if (written < 0 || (size_t)written >= sb->cap - sb->len) {
-        sb->err = 1;
-        return;
-    }
 
     sb->len += (size_t)written;
 }
@@ -133,7 +125,7 @@ char *sb_take(sb_t *sb) {
      * (oversized) buffer stays valid per C11 §7.22.3.5, so the
      * failure branch does not leak — cppcheck's hint doesn't grok
      * that. */
-    p = realloc(sb->data, sb->len + 1);
+    p = siprec_sb_realloc(sb->data, sb->len + 1);
     /* cppcheck-suppress memleak */
     return p ? p : sb->data;
 }

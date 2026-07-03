@@ -47,4 +47,10 @@ void sb_appendf(sb_t *sb, const char *fmt, ...);
  * consumed; do not reuse it after sb_take without sb_init. */
 char *sb_take(sb_t *sb);
 
+/* Allocator seam. Production leaves this at realloc; it exists so the
+ * unit tests can point it at a failing allocator and exercise the
+ * OOM-latching paths, which no ordinary input can reach. Never
+ * reassigned outside tests. */
+extern void *(*siprec_sb_realloc)(void *ptr, size_t size);
+
 #endif /* SIPREC_SB_H */

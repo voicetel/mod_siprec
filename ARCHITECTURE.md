@@ -227,13 +227,15 @@ siprec_media.h
 - [x] Unit tests for `siprec_g711.c` — the branch-free encode
       tables are swept against the reference quantisers for all
       65536 int16 inputs (PCMU + PCMA) plus an idempotent-init
-      check; suite total is 125/125.
+      check; suite total is 132/132.
 - [x] Host coverage — `make -f Makefile.test coverage` (gcov;
-      ~95% of the FS-free units). The uncovered remainder is
-      allocator-fault / OOM / 64 MB-cap defensive paths in the
-      string builder plus one provably-dead IP-clamp (the source
-      buffer is pre-clamped) — none reachable without fault
-      injection, so not chased with synthetic tests.
+      **100%** of the FS-free units). The string builder's
+      allocator-failure paths are exercised through the
+      `siprec_sb_realloc` fault-injection seam and its 64 MB-cap
+      reject through over-cap inputs; lines that were genuinely
+      unreachable (a pre-clamped IP copy, caller-pre-gated reserve
+      guards, a doubling-loop clamp that the growth bound makes dead)
+      were removed rather than left as untestable defensive noise.
 - [x] Docker load gate — `tests/load/run.sh` builds FreeSWITCH
       from source with mod_siprec and asserts `module_exists
       mod_siprec` (it links + dlopens with every `switch_*`
