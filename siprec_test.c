@@ -84,67 +84,6 @@ static void check_str(const char *got, const char *want, const char *what) {
  * SDP tests                                                   *
  * ──────────────────────────────────────────────────────────── */
 
-static void test_sdp_two_track_pcmu(void) {
-    const siprec_sdp_track_t tracks[] = {
-        { .label = "1", .port = 12240, .pt = 0, .codec_name = "PCMU",
-          .clock_rate = 8000, .channels = 1, .ptime_ms = 20 },
-        { .label = "2", .port = 12242, .pt = 0, .codec_name = "PCMU",
-          .clock_rate = 8000, .channels = 1, .ptime_ms = 20 },
-    };
-    siprec_sdp_options_t opts = {
-        .src_ip = "src.example.com",
-        .session_id = 1234,
-        .session_version = 5678,
-        .tracks = tracks,
-        .track_count = 2,
-    };
-
-    char *sdp = siprec_sdp_build(&opts);
-
-    check_contains(sdp, "v=0\r\n",                       "sdp:version line");
-    check_contains(sdp, "o=- 1234 5678 IN IP4 src.example.com\r\n",
-                                                          "sdp:origin line");
-    check_contains(sdp, "s=-\r\n",                       "sdp:session-name line");
-    check_contains(sdp, "c=IN IP4 src.example.com\r\n",  "sdp:connection line");
-    check_contains(sdp, "t=0 0\r\n",                     "sdp:time line");
-    /* RFC 5888 DUP semantics signal duplicated content — wrong
-     * for SIPREC's distinct per-direction streams. The SDP must
-     * not carry a=group:DUP. */
-    check_not_contains(sdp, "a=group:DUP",               "sdp:no a=group:DUP");
-    check_contains(sdp, "m=audio 12240 RTP/AVP 0\r\n",   "sdp:m=audio track 1");
-    check_contains(sdp, "m=audio 12242 RTP/AVP 0\r\n",   "sdp:m=audio track 2");
-    check_contains(sdp, "a=rtpmap:0 PCMU/8000\r\n",      "sdp:rtpmap PCMU/8000");
-    check_contains(sdp, "a=ptime:20\r\n",                "sdp:ptime");
-    check_contains(sdp, "a=label:1\r\n",                 "sdp:label 1");
-    check_contains(sdp, "a=label:2\r\n",                 "sdp:label 2");
-    check_contains(sdp, "a=sendonly\r\n",                "sdp:sendonly");
-
-    /* Channels should NOT be in the rtpmap for mono. */
-    check_not_contains(sdp, "PCMU/8000/1",                "sdp:no /1 channel suffix");
-
-    siprec_sdp_free(sdp);
-}
-
-static void test_sdp_stereo_opus(void) {
-    /* Validate that the channels suffix appears for non-mono. */
-    const siprec_sdp_track_t tracks[] = {
-        { .label = "stereo-a", .port = 30000, .pt = 96, .codec_name = "opus",
-          .clock_rate = 48000, .channels = 2, .ptime_ms = 20 },
-    };
-
-    siprec_sdp_options_t opts = {
-        .src_ip = "192.0.2.10",
-        .session_id = 1, .session_version = 1,
-        .tracks = tracks, .track_count = 1,
-    };
-
-    char *sdp = siprec_sdp_build(&opts);
-    check_contains(sdp, "a=rtpmap:96 opus/48000/2\r\n",  "sdp:opus stereo rtpmap");
-    check_contains(sdp, "m=audio 30000 RTP/AVP 96\r\n",  "sdp:m=audio dynamic PT");
-    check_contains(sdp, "a=label:stereo-a\r\n",          "sdp:string label");
-    siprec_sdp_free(sdp);
-}
-
 static void test_sdp_flip_direction(void) {
     /* RFC 7866 §6.4: pause/resume re-INVITE flips direction
      * while preserving the negotiated session — same ports,
@@ -259,7 +198,7 @@ static void test_sdp_inject_labels(void) {
     check_contains(labelled, "o=- 555 2 IN IP4 192.0.2.10\r\n",
         "inject:o= version bumped");
     /* Label should appear BEFORE a=sendonly (the conventional
-     * direction-attribute position — matches siprec_sdp_build). */
+     * direction-attribute position, RFC 7866 §8.5). */
     test_count++;
     {
         const char *lpos = labelled ? strstr(labelled, "a=label:1") : NULL;
@@ -449,34 +388,6 @@ static void test_sdp_inject_labels(void) {
     test_count++;
     if (siprec_sdp_inject_labels("") == NULL) printf("PASS inject:reject empty sdp\n");
     else { fprintf(stderr, "FAIL inject:empty sdp should reject\n"); fail_count++; }
-}
-
-static void test_sdp_invalid_returns_null(void) {
-    /* Empty src_ip → NULL */
-    {
-        const siprec_sdp_track_t t = { .label = "1", .port = 1, .pt = 0,
-            .codec_name = "PCMU", .clock_rate = 8000 };
-        siprec_sdp_options_t opts = { .src_ip = "", .tracks = &t, .track_count = 1 };
-        test_count++;
-        if (siprec_sdp_build(&opts) == NULL) printf("PASS sdp:reject empty src_ip\n");
-        else { fprintf(stderr, "FAIL sdp:empty src_ip should reject\n"); fail_count++; }
-    }
-    /* Zero tracks → NULL */
-    {
-        siprec_sdp_options_t opts = { .src_ip = "1.2.3.4", .track_count = 0 };
-        test_count++;
-        if (siprec_sdp_build(&opts) == NULL) printf("PASS sdp:reject zero tracks\n");
-        else { fprintf(stderr, "FAIL sdp:zero tracks should reject\n"); fail_count++; }
-    }
-    /* Track with port=0 → NULL */
-    {
-        const siprec_sdp_track_t t = { .label = "x", .port = 0, .pt = 0,
-            .codec_name = "PCMU", .clock_rate = 8000 };
-        siprec_sdp_options_t opts = { .src_ip = "1.2.3.4", .tracks = &t, .track_count = 1 };
-        test_count++;
-        if (siprec_sdp_build(&opts) == NULL) printf("PASS sdp:reject port=0\n");
-        else { fprintf(stderr, "FAIL sdp:port=0 should reject\n"); fail_count++; }
-    }
 }
 
 /* ──────────────────────────────────────────────────────────── *
@@ -1034,11 +945,8 @@ static void test_g711_tables_match_reference(void) {
 }
 
 int main(void) {
-    test_sdp_two_track_pcmu();
-    test_sdp_stereo_opus();
     test_sdp_flip_direction();
     test_sdp_inject_labels();
-    test_sdp_invalid_returns_null();
     test_parse_remote_streams();
 
     test_metadata_two_participants();

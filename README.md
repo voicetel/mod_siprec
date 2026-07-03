@@ -27,9 +27,9 @@ SRS's 200 OK answer.
 ## Status
 
 All paths build, lint clean, and the unit-test suite for the
-SDP / metadata / G.711 builders passes 145/145 assertions
-(~94% line coverage of the FreeSWITCH-free units; the remainder
-is allocator-fault / OOM defensive code). The module also links
+SDP / metadata / G.711 / string-builder units passes 125/125
+assertions (~95% line coverage of the FreeSWITCH-free units; the
+remainder is allocator-fault / OOM defensive code). The module also links
 and loads in a real FreeSWITCH built from source — the
 [`tests/load/`](tests/load/) Docker gate boots FS and confirms
 `module_exists mod_siprec` with all four apps registered. The dispatch / media / signalling pipeline has been
@@ -59,7 +59,7 @@ verification path; production interop is verified against
 | Fail-closed when no SRS resolves | — | ✅ `src-enabled="false"` makes `siprec` a logged no-op (no INVITE, no RTP fork); an unresolved handle with no ad-hoc URI warns and records nothing — the call proceeds, no audio is transmitted |
 | SRTP for the recording RTP fork | [RFC 7866 §11.2][rfc7866-11.2] / [RFC 3711][rfc3711] / [RFC 4568][rfc4568] | ❌ not supported. SDES keymat must travel in the initial offer (RFC 4568 §5.1) and our offer is sofia auto-gen which doesn't carry `a=crypto`. The clean path needs the same offer-time SDP-override hook the multi-track work needs. SRSes that require SRTP will reject our `RTP/AVP` offer with `488 Not Acceptable Here`; failover or pin a strict-SRTP-not-required SRS. |
 | SIPS transport for SRC→SRS | [RFC 7866 §11.3][rfc7866-11.3] | ✅ `transport=tls` config |
-| SDP body shape (`v=`, `o=`, `s=`, `c=`, `t=`, `m=`, `a=rtpmap`, `a=ptime`, `a=label`, `a=sendonly`) | [RFC 4566][rfc4566] / [RFC 7866 §7][rfc7866-7] | ✅ `siprec_sdp_build` (offered to operators that build their own; sofia auto-gen used otherwise) |
+| SDP offer + `a=label:N` cross-reference | [RFC 4566][rfc4566] / [RFC 7866 §7][rfc7866-7] / [RFC 7866 §8.5][rfc7866-8.5] | ✅ mod_sofia auto-generates the outbound-leg offer (single `m=audio`, `a=sendonly`); mod_siprec injects `a=label:N` by rewriting the negotiated local SDP and re-INVITEing (`siprec_sdp_inject_labels`) |
 | Pause/resume SDP direction-flip with `o=` version bump | [RFC 4566 §5.2][rfc4566] | ✅ `siprec_sdp_flip_direction` |
 | RTP packet framing (V=2, M-bit at talkspurt start, big-endian seq/ts/SSRC) | [RFC 3550 §5.1][rfc3550] / [RFC 3551 §4.1][rfc3551] | ✅ `siprec_media.c` |
 | Random SSRC | [RFC 3550 §8.1][rfc3550] | ✅ /dev/urandom seed |
@@ -117,10 +117,10 @@ The SDP, metadata, and G.711 builders are pure C and exercised
 by a standalone test target:
 
 ```sh
-make -f Makefile.test test      # 145 / 145 assertions
+make -f Makefile.test test      # 125 / 125 assertions
 make -f Makefile.test lint      # cppcheck --enable=all clean
 make -f Makefile.test asan      # ASan + UBSan + LSan clean
-make -f Makefile.test coverage  # gcov: HOST_COVERAGE ~94% of the FS-free units
+make -f Makefile.test coverage  # gcov: HOST_COVERAGE ~95% of the FS-free units
 ```
 
 ### Docker load gate (links + dlopens in a real FreeSWITCH)

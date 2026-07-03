@@ -40,10 +40,11 @@
  * leg already includes `a=sendonly` (RFC 7866 §7.4) because
  * the leg has no inbound media path. It does NOT yet emit
  * `a=label:N` per stream — that is the RFC 7866 §8.5
- * labelled-stream cross-reference requirement. Closing that
- * gap needs a "set local SDP before originate" hook through
- * mod_sofia that doesn't exist today; siprec_sdp.c carries the
- * label-aware builder for the day that hook lands.
+ * labelled-stream cross-reference requirement. We inject the
+ * labels post-originate by rewriting the negotiated local SDP
+ * (siprec_sdp_inject_labels) and re-INVITEing; a fuller
+ * multi-track offer would need a "set local SDP before
+ * originate" hook through mod_sofia that doesn't exist today.
  */
 #include "siprec_invite.h"
 #include "siprec_sdp.h"
@@ -100,7 +101,6 @@ switch_status_t siprec_invite_send(
     recording_t *recording,
     const char *sofia_profile,
     const char *srs_uri,
-    const char *sdp_body,         /* reserved; see header docs */
     const char *metadata_body)
 {
     siprec_invite_ctx_t *ctx;
@@ -120,13 +120,6 @@ switch_status_t siprec_invite_send(
     if (!recording || !sofia_profile || !srs_uri || !metadata_body) {
         return SWITCH_STATUS_FALSE;
     }
-    /* sdp_body is reserved for the future "set local SDP
-     * before originate" path that would inject a=label per
-     * stream into the initial offer (RFC 7866 §8.5). The
-     * post-originate re-INVITE that previously consumed it
-     * was removed because its body had port=1 placeholders
-     * that the SRS could never accept. */
-    (void)sdp_body;
 
     ctx = switch_core_alloc(recording->pool, sizeof(*ctx));
     memset(ctx, 0, sizeof(*ctx));
@@ -390,10 +383,9 @@ switch_status_t siprec_invite_send(
      * auto-numbers each m= block (1st → label:1, 2nd → label:2,
      * etc). Today mod_sofia's auto-gen produces a single
      * m=audio so the wire effect is label:1 only. The moment
-     * sofia produces multi-track offers (or the "set local
-     * SDP before originate" hook lands, exposing
-     * siprec_sdp_build's multi-track output) the call site
-     * picks up the additional labels without code changes. */
+     * sofia produces multi-track offers (or a "set local SDP
+     * before originate" hook lands) the call site picks up the
+     * additional labels without code changes. */
 
     if (labelled_sdp) {
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
@@ -464,7 +456,6 @@ switch_status_t siprec_invite_send_failover(
     recording_t *recording,
     const char *sofia_profile,
     const struct recording_server *first,
-    const char *sdp_body,
     const char *metadata_body)
 {
     /* Bound the walk: 16 candidates is comfortably more than
@@ -494,7 +485,7 @@ switch_status_t siprec_invite_send_failover(
             "siprec: failover attempt %d → %s\n", attempts, uri);
 
         st = siprec_invite_send(
-            recording, sofia_profile, uri, sdp_body, metadata_body);
+            recording, sofia_profile, uri, metadata_body);
 
         if (st == SWITCH_STATUS_SUCCESS) {
             switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),

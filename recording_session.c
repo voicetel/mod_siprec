@@ -665,13 +665,13 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
         return SWITCH_STATUS_FALSE;
     }
 
-    /* Send the INVITE without an SDP override and let mod_sofia
-     * auto-generate the offer body. The sdp_body argument to
-     * siprec_invite_send_failover is therefore NULL — reserved
-     * for the future multi-track offer bring-up that needs an
-     * offer-time SDP-override hook through mod_sofia. */
+    /* Send the INVITE and let mod_sofia auto-generate the offer
+     * body. A multi-track offer would need an offer-time SDP
+     * override hook through mod_sofia that doesn't exist yet;
+     * labels are injected post-originate via a re-INVITE instead
+     * (siprec_invite_send). */
     inv = siprec_invite_send_failover(
-        recording, profile, server, /*sdp_body*/ NULL, metadata_body);
+        recording, profile, server, metadata_body);
 
     siprec_metadata_free(metadata_body);
 

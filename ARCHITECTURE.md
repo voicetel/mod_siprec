@@ -211,10 +211,11 @@ siprec_media.h
 
 ### Phase 6 — testing
 
-- [x] Unit tests for `siprec_sdp.c` — assertions covering
-      RFC 7866 §7 line shape, RFC 4566 SDP shape,
-      `a=group:DUP` correctly absent, mono vs stereo rtpmap,
-      direction-flip helper round-trip, validation reject paths.
+- [x] Unit tests for `siprec_sdp.c` — assertions covering the
+      direction-flip round-trip and `o=` version bump, `a=label:N`
+      injection (block ordering, idempotency, LF/malformed-`o=`
+      tolerance), and the SDP-answer parser (per-media `c=`
+      attribution, port-0 skip, IPv6 ignore, `out_max` bound).
 - [x] Unit tests for `siprec_metadata.c` — assertions
       covering RFC 7865 Appendix A schema element ordering,
       attribute presence, schema-strict participant /
@@ -226,9 +227,9 @@ siprec_media.h
 - [x] Unit tests for `siprec_g711.c` — the branch-free encode
       tables are swept against the reference quantisers for all
       65536 int16 inputs (PCMU + PCMA) plus an idempotent-init
-      check; suite total is 145/145.
+      check; suite total is 125/125.
 - [x] Host coverage — `make -f Makefile.test coverage` (gcov;
-      ~94% of the FS-free units). The uncovered remainder is
+      ~95% of the FS-free units). The uncovered remainder is
       allocator-fault / OOM / 64 MB-cap defensive paths in the
       string builder plus one provably-dead IP-clamp (the source
       buffer is pre-clamped) — none reachable without fault

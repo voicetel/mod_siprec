@@ -18,116 +18,6 @@
 #include "siprec_sb.h"   /* shared growable string buffer (sb_t) */
 
 /* ──────────────────────────────────────────────────────────── *
- * SDP rendering.                                              *
- * ──────────────────────────────────────────────────────────── */
-
-/* CRLF terminators per RFC 4566 §6 — "lines are terminated by
- * CRLF, but parsers SHOULD be tolerant and also accept lines
- * terminated with a single newline character". We emit CRLF to
- * be conservative; downstream parsers all handle it. */
-#define EOL "\r\n"
-
-static int validate_track(const siprec_sdp_track_t *t) {
-    if (!t->label || !*t->label) return 0;
-    if (!t->codec_name || !*t->codec_name) return 0;
-    if (t->port == 0) return 0;
-    if (t->clock_rate == 0) return 0;
-    return 1;
-}
-
-static int validate_options(const siprec_sdp_options_t *opts) {
-    if (!opts) return 0;
-    if (!opts->src_ip || !*opts->src_ip) return 0;
-    if (opts->track_count == 0 || !opts->tracks) return 0;
-    for (size_t i = 0; i < opts->track_count; i++) {
-        if (!validate_track(&opts->tracks[i])) return 0;
-    }
-    return 1;
-}
-
-char *siprec_sdp_build(const siprec_sdp_options_t *opts) {
-    sb_t sb;
-    if (!validate_options(opts)) {
-        return NULL;
-    }
-
-    sb_init(&sb);
-
-    /* v=0 — RFC 4566 §5.1 */
-    sb_appendf(&sb, "v=0" EOL);
-
-    /* o=<user> <session-id> <session-version> <nettype>
-     *   <addrtype> <unicast-address>
-     * RFC 4566 §5.2. We use "-" for the user (Twilio convention,
-     * SRC identity is in the SIP From: header anyway). */
-    sb_appendf(&sb, "o=- %llu %llu IN IP4 %s" EOL,
-        (unsigned long long)opts->session_id,
-        (unsigned long long)opts->session_version,
-        opts->src_ip);
-
-    /* s=- — session name; RFC 4566 §5.3 requires a non-empty s=
-     * line. "-" is the conventional placeholder. */
-    sb_appendf(&sb, "s=-" EOL);
-
-    /* c=IN IP4 <src_ip> — session-level connection. RFC 7866
-     * §7.2 examples put it at session level so each m=audio
-     * inherits unless overridden. */
-    sb_appendf(&sb, "c=IN IP4 %s" EOL, opts->src_ip);
-
-    /* t=0 0 — unbounded session lifetime. SIPREC sessions live
-     * as long as the original call; no NTP timing info applies. */
-    sb_appendf(&sb, "t=0 0" EOL);
-
-    /* No a=group:DUP. RFC 5888 §5 defines DUP as duplication
-     * semantics — packets of the same content carried over
-     * multiple transports for redundancy. SIPREC's per-direction
-     * streams carry DISTINCT audio (caller-side vs callee-side),
-     * not duplicates, so DUP would mislead the SRS. RFC 7866
-     * does not mandate any specific group attribute; the
-     * <participantstreamassoc> entries in the metadata XML
-     * already correlate streams to participants. */
-
-    /* One m=audio block per track. */
-    for (size_t i = 0; i < opts->track_count; i++) {
-        const siprec_sdp_track_t *t = &opts->tracks[i];
-
-        /* m=audio <port> RTP/AVP <pt>
-         * RFC 4566 §5.14. SRC always offers a single PT per
-         * stream (per RFC 7866 examples) — no codec list. */
-        sb_appendf(&sb, "m=audio %u RTP/AVP %u" EOL,
-            (unsigned)t->port, (unsigned)t->pt);
-
-        /* a=rtpmap:<pt> <name>/<clock>[/<channels>]
-         * RFC 4566 §6. Channels suffix omitted when channels==1
-         * (the default for telephony codecs). */
-        if (t->channels > 1) {
-            sb_appendf(&sb, "a=rtpmap:%u %s/%u/%u" EOL,
-                (unsigned)t->pt, t->codec_name,
-                (unsigned)t->clock_rate, (unsigned)t->channels);
-        } else {
-            sb_appendf(&sb, "a=rtpmap:%u %s/%u" EOL,
-                (unsigned)t->pt, t->codec_name,
-                (unsigned)t->clock_rate);
-        }
-
-        /* a=ptime:<ms> — RFC 4566 §6. */
-        if (t->ptime_ms > 0) {
-            sb_appendf(&sb, "a=ptime:%u" EOL, (unsigned)t->ptime_ms);
-        }
-
-        /* a=label:<token> — RFC 7866 §8.5 — REQUIRED on every
-         * SRC stream. Cross-referenced from the metadata XML. */
-        sb_appendf(&sb, "a=label:%s" EOL, t->label);
-
-        /* a=sendonly — RFC 7866 §7.4. The SRC only sends; the
-         * SRS records but does not send media back. */
-        sb_appendf(&sb, "a=sendonly" EOL);
-    }
-
-    return sb_take(&sb);
-}
-
-/* ──────────────────────────────────────────────────────────── *
  * SDP direction-flip                                          *
  * ──────────────────────────────────────────────────────────── */
 
@@ -137,8 +27,8 @@ char *siprec_sdp_build(const siprec_sdp_options_t *opts) {
  *   - within each m= block, inject "a=label:<n>\r\n" if the
  *     block doesn't already carry one, where <n> is the
  *     1-based ordinal of the m= block. Placed immediately
- *     before the direction attribute (a=sendonly etc) for
- *     ordering parity with siprec_sdp_build's output.
+ *     before the direction attribute (a=sendonly etc) so the
+ *     label sits with its stream (RFC 7866 §8.5 ordering).
  *
  * The block counter advances on EVERY m= block — including
  * blocks that already carry their own a=label — so a partially

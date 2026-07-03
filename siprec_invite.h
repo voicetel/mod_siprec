@@ -70,13 +70,6 @@ typedef struct siprec_invite_ctx {
  *                       variable; never hardcoded.
  *   srs_uri            — SIP URI of the SRS, e.g.
  *                       "sip:srs@127.0.0.1:5070"
- *   sdp_body           — RESERVED. Currently ignored. Will
- *                       carry a pre-built SDP override once
- *                       a "set local SDP before originate"
- *                       path through mod_sofia is wired —
- *                       that's the prerequisite for a
- *                       multi-track offer (per-direction
- *                       RTP fork via siprec_sdp_build).
  *   metadata_body      — pre-built XML from
  *                       siprec_metadata_build (REQUIRED).
  *
@@ -99,7 +92,6 @@ switch_status_t siprec_invite_send(
     recording_t *recording,
     const char *sofia_profile,
     const char *srs_uri,
-    const char *sdp_body,         /* reserved; pass NULL */
     const char *metadata_body);
 
 /* siprec_invite_send_failover: walk a chain of recording_server
@@ -121,7 +113,6 @@ switch_status_t siprec_invite_send_failover(
     recording_t *recording,
     const char *sofia_profile,
     const struct recording_server *first,
-    const char *sdp_body,         /* reserved; pass NULL */
     const char *metadata_body);
 
 /* siprec_invite_send_bye: tear down the recording leg.
