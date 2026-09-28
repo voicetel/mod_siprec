@@ -292,9 +292,8 @@ static void test_parse_remote_streams(void) {
         check_int(n, SIPREC_MAX_STREAMS, "parse:out_max cap");
     }
 
-    /* IPv6 c= is ignored (v1 fork is IPv4-only): the stream is
-     * still committed but its remote_ip stays empty so the
-     * downstream inet_pton fails loudly rather than silently. */
+    /* IPv6 c= is parsed like IPv4; the fork picks the socket family
+     * from siprec_sdp_addr_kind. */
     {
         const char *sdp =
             "c=IN IP6 2001:db8::1\r\n"
@@ -302,7 +301,20 @@ static void test_parse_remote_streams(void) {
         memset(out, 0, sizeof(out));
         int n = siprec_sdp_parse_remote_streams(sdp, out, SIPREC_MAX_STREAMS);
         check_int(n, 1, "parse:ipv6 count");
-        check_int(out[0].remote_ip[0], '\0', "parse:ipv6 ip left empty");
+        check_str(out[0].remote_ip, "2001:db8::1", "parse:ipv6 ip parsed");
+        check_int(siprec_sdp_addr_kind(out[0].remote_ip), SIPREC_ADDR_IPV6,
+            "parse:ipv6 classifies as IPv6");
+    }
+    /* Per-media IPv6 c= overrides the session IPv4 c= (RFC 4566 §5.7). */
+    {
+        const char *sdp =
+            "c=IN IP4 10.0.0.1\r\n"
+            "m=audio 8000 RTP/AVP 0\r\n"
+            "c=IN IP6 ::1\r\n";
+        memset(out, 0, sizeof(out));
+        int n = siprec_sdp_parse_remote_streams(sdp, out, SIPREC_MAX_STREAMS);
+        check_int(n, 1, "parse:per-media-ipv6 count");
+        check_str(out[0].remote_ip, "::1", "parse:per-media-ipv6 override");
     }
 
     /* Bare LF line endings (no CR) parse identically to CRLF. */
@@ -713,6 +725,18 @@ static void test_sdp_separate_append(void) {
     check_int(siprec_sdp_separate_append(buf, 8, "sendonly") >= 8, 1, "sep-append:reports truncation");
 }
 
+static void test_sdp_addr_kind(void) {
+    check_int(siprec_sdp_addr_kind("192.0.2.1"),   SIPREC_ADDR_IPV4, "addr:ipv4");
+    check_int(siprec_sdp_addr_kind("0.0.0.0"),     SIPREC_ADDR_IPV4, "addr:ipv4 zero");
+    check_int(siprec_sdp_addr_kind("2001:db8::1"), SIPREC_ADDR_IPV6, "addr:ipv6");
+    check_int(siprec_sdp_addr_kind("::1"),         SIPREC_ADDR_IPV6, "addr:ipv6 loopback");
+    check_int(siprec_sdp_addr_kind("::ffff:1.2.3.4"), SIPREC_ADDR_IPV6, "addr:ipv4-mapped");
+    check_int(siprec_sdp_addr_kind("not-an-ip"),   SIPREC_ADDR_NONE, "addr:reject text");
+    check_int(siprec_sdp_addr_kind("300.1.1.1"),   SIPREC_ADDR_NONE, "addr:reject bad ipv4");
+    check_int(siprec_sdp_addr_kind(""),            SIPREC_ADDR_NONE, "addr:reject empty");
+    check_int(siprec_sdp_addr_kind(NULL),          SIPREC_ADDR_NONE, "addr:reject NULL");
+}
+
 /* ──────────────────────────────────────────────────────────── *
  * Main                                                        *
  * ──────────────────────────────────────────────────────────── */
@@ -908,6 +932,7 @@ static void test_uri_check(void) {
 int main(void) {
     test_parse_remote_streams();
     test_sdp_separate_append();
+    test_sdp_addr_kind();
 
     test_metadata_two_participants();
     test_metadata_xml_escaping();

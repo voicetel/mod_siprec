@@ -13,8 +13,9 @@
 #define SIPREC_MEDIA_H
 
 #include <switch.h>
-#include <netinet/in.h>      /* struct sockaddr_in for the cached
+#include <netinet/in.h>      /* sockaddr_storage for the cached
                               * per-stream destination. */
+#include <sys/socket.h>      /* struct sockaddr_storage */
 #include "mod_siprec.h"
 
 /* SIPREC_MAX_STREAMS (siprec_sdp.h) sizes streams[] below;
@@ -47,9 +48,9 @@ typedef struct siprec_media_ctx {
          * media-bug hot path is allocation-free and parse-free
          * (every saved cycle on the FS media thread matters
          * once the box is doing thousands of concurrent
-         * recordings). */
-        struct sockaddr_in dst;
-        socklen_t          dst_len;
+         * recordings). sockaddr_storage holds either family. */
+        struct sockaddr_storage dst;
+        socklen_t               dst_len;
 
         uint32_t   ssrc;
         uint32_t   timestamp;

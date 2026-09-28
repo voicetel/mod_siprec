@@ -28,7 +28,7 @@ SRS's 200 OK answer.
 
 All paths build and lint clean. The unit suite for the
 FreeSWITCH-free units (SDP-answer parser, metadata builder, G.711
-tables, string builder, URI check) passes 135/135 assertions at 100%
+tables, string builder, URI check) passes 161/161 assertions at 100%
 line coverage of those units; the allocator-failure and 64 MB-cap
 paths are exercised via a realloc fault-injection seam and over-cap
 inputs. Those units are about a fifth of the non-test code. The four
@@ -41,8 +41,11 @@ and loads in a real FreeSWITCH built from source — the
 audited and the broken pieces from the original fork have been
 replaced. Live integration against `cb-srs` is documented in
 [`tests/README.md`](tests/README.md) as the operator
-verification path; production interop is verified against
-[TransNexus ClearIP][clearip] as well.
+verification path. Note that v1.6.0–v1.6.1 changed what goes on the
+wire (a `a=sendonly` offer, `a=label:1` in the first INVITE, re-INVITEs
+that reach the SRS, and RFC 7865 §6.9 metadata IDs), so re-validate
+against a live SRS (e.g. [TransNexus ClearIP][clearip]) before
+upgrading.
 
 [clearip]: https://transnexus.com/clearip/
 
@@ -68,6 +71,7 @@ verification path; production interop is verified against
 | SDP offer + `a=label:N` cross-reference | [RFC 4566][rfc4566] / [RFC 7866 §7][rfc7866-7] / [RFC 7866 §8.5][rfc7866-8.5] | ✅ mod_sofia auto-generates the single-`m=audio` offer; `a=label:1` matches the metadata's `<stream><label>1</label>` |
 | Pause/resume `o=` version bump | [RFC 4566 §5.2][rfc4566] | ✅ mod_sofia bumps session-version on every regenerated offer |
 | RTP packet framing (V=2, M-bit at talkspurt start, big-endian seq/ts/SSRC) | [RFC 3550 §5.1][rfc3550] / [RFC 3551 §4.1][rfc3551] | ✅ `siprec_media.c` |
+| IPv4 and IPv6 RTP fork | [RFC 4566 §5.7][rfc4566] | ✅ `c=IN IP4` / `c=IN IP6` answer endpoints are both parsed (`siprec_sdp_addr_kind`) and the fork opens the matching socket family |
 | Random SSRC | [RFC 3550 §8.1][rfc3550] | ✅ /dev/urandom seed |
 | G.711 µ-law / A-law encoders | [G.711][g711] | ✅ branch-free lookup tables (`siprec_g711.c`), INT16_MIN-safe, bit-verified vs reference for all 65536 inputs. Wideband / multichannel legs are downmixed and resampled to 8 kHz first |
 | `<recording>` schema (top-level element + sequence) | [RFC 7865 §5 / Appendix A][rfc7865] | ✅ |
@@ -212,9 +216,11 @@ recording can be retired.
 Each `<recording-server>` is validated at load: it needs a `name`
 and a `host`; `port` (default 5060) must be 1-65535; `transport` must
 be `udp`, `tcp` or `tls`. The host is held to the same character
-allowlist as an ad-hoc URI (so IPv6 literals are rejected; the RTP fork
-is IPv4-only anyway). An invalid entry is logged and skipped, and an
-unknown param draws a warning.
+allowlist as an ad-hoc URI, so a literal IPv6 SRS address (which needs
+`[` `]`) is rejected — reach an IPv6 SRS through an AAAA-resolving
+hostname. The RTP fork itself handles whichever family the SRS's answer
+names. An invalid entry is logged and skipped, and an unknown param
+draws a warning.
 
 Multiple `<recording-server>` entries can coexist; the dialplan
 chooses one by name. A recording can also target an SRS that is

@@ -245,7 +245,8 @@ standalone.
 ### Phase 6 — testing
 
 - [x] Unit tests for `siprec_sdp.c` — the SDP-answer parser (per-media `c=`
-      attribution, port-0 skip, IPv6 ignore, `out_max` bound).
+      attribution, port-0 skip, IPv4 and IPv6 connection lines,
+      `out_max` bound) and `siprec_sdp_addr_kind`.
 - [x] Unit tests for `siprec_metadata.c` — assertions
       covering RFC 7865 Appendix A schema element ordering,
       attribute presence, schema-strict participant /
@@ -263,7 +264,7 @@ standalone.
 - [x] Unit tests for `siprec_g711.c` — the branch-free encode
       tables are swept against the reference quantisers for all
       65536 int16 inputs (PCMU + PCMA) plus an idempotent-init
-      check; suite total is 135/135.
+      check; suite total is 161/161.
 - [x] Host coverage — `make -f Makefile.test coverage` (gcov;
       **100%** of the FS-free units). The string builder's
       allocator-failure paths are exercised through the
@@ -312,9 +313,10 @@ standalone.
 - **Server-side (SRS)**: this module is SRC-only. The cb-srs
   receiver is implemented separately in Go.
 - **Video tracks**: RFC 7866 supports them; v1 is audio-only.
-- **IPv6 RTP fork**: the UDP fork in `siprec_media.c` is
-  AF_INET only. An IPv6 negotiated endpoint is detected at
-  attach and the recording is refused with a clear error.
+- **IPv6 RTP fork**: supported. The answer's `c=IN IP4` / `c=IN IP6`
+  endpoint is classified by `siprec_sdp_addr_kind` and the fork opens
+  an `AF_INET` or `AF_INET6` socket accordingly. (The SG3 unit tests
+  cover parsing and family detection; the fork has no live IPv6 test.)
 - **Persistence/resume across module reloads**: a recording
   session is a per-call construct; module reload terminates
   active recordings (the shutdown handler detaches the bug
