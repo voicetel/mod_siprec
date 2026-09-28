@@ -13,3 +13,6 @@ siprec_test
 *.gcda
 *.gcno
 *.gcov
+
+# make -f Makefile.test fscheck stub include dir
+.fscheck-inc/
