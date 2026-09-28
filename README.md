@@ -55,8 +55,9 @@ verification path; production interop is verified against
 | pause / resume re-INVITE | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_pause` / `siprec_resume` apps; re-INVITE offers `a=inactive` / `a=sendonly` via `origination_audio_mode` + `MEDIA_RENEG` (mod_sofia regenerates the SDP, so ports and codecs stay as negotiated). **PCI-safe**: pause sets the recording bug's native `SMBF_PAUSE` (FreeSWITCH stops capturing audio at the io pump — no frames forked, nothing buffered to burst on resume) *before* sending `a=inactive`, so cardholder audio never leaves the box |
 | explicit stop | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_stop` app — detaches the media fork + BYEs the SRS leg mid-call; no-arg form stops every recording on the leg (PCI-safe default). Not resumable; start a fresh `siprec` to record again |
 | sendonly direction on SRC streams | [RFC 7866 §7.4][rfc7866-7.4] | ✅ `origination_audio_mode=sendonly` on the recording leg (mod_sofia's default offer is `sendrecv`) |
-| `a=label:N` per stream | [RFC 7866 §8.5][rfc7866-8.5] | ✅ `a=label:1` in the initial offer via the `rtp_append_audio_sdp` ovar (mod_sofia appends it inside the audio `m=` block of every offer it generates, so pause/resume re-INVITEs keep it). Multiple labelled tracks await a multi-track offer path |
-| Single mixed-audio stream (both directions) | [RFC 7866 §7][rfc7866-7] | ✅ one `m=audio` block in the offer, one `<stream>` in metadata. The audio bug observes both directions (`SMBF_READ_STREAM \| SMBF_WRITE_STREAM`); `switch_core_media_bug_read` returns them already mixed (read+write summed, normalized to 16-bit), so the single forked stream carries **both** parties. Drained on a fixed `SMBF_READ_PING` tick, the same way mod_sofia's `session_record` clocks its mixed capture. RFC 7866 §7 permits "MAY" send multiple streams; we send one mixed stream. Separated per-direction (labelled) tracks are a planned follow-up, gated on the multi-track offer path noted in the §8.5 row above — which needs the recording leg placed in proxy mode so mod_sofia emits a custom SDP instead of regenerating it |
+| `a=label:N` per stream | [RFC 7866 §8.5][rfc7866-8.5] | ✅ `a=label:1` (and `a=label:2` in separate-streams mode) in the initial offer via the `rtp_append_audio_sdp` ovar (mod_sofia appends it inside the audio `m=` block of every offer it generates, so pause/resume re-INVITEs keep it) |
+| Single mixed-audio stream (both directions) | [RFC 7866 §7][rfc7866-7] | ✅ default: one `m=audio` block in the offer, one `<stream>` in metadata. The audio bug observes both directions (`SMBF_READ_STREAM \| SMBF_WRITE_STREAM`); `switch_core_media_bug_read` returns them already mixed, so the single forked stream carries **both** parties. Drained on a fixed `SMBF_READ_PING` tick, the same way `session_record` clocks its mixed capture |
+| Separate RX / TX streams | [RFC 7866 §7][rfc7866-7] / [§8.5][rfc7866-8.5] | ✅ opt-in `separate-streams`: the offer carries two labelled `m=audio` sections (label 1 = audio the recorded leg receives, label 2 = audio it sends), the metadata two `<stream>`s attributed to the right participants, and the fork two RTP streams (own SSRC and sequence, one clock) from a stereo media bug. mod_sofia can't emit a second `m=` line itself, so the module appends it through `rtp_append_audio_sdp`; if the SRS declines either stream, or the leg is multichannel, the call falls back to one mixed stream with a logged warning |
 | DTMF tone forking | [RFC 7866 §8.4][rfc7866-8.4] | ✅ passes through the audio bug |
 | communication-failure soft-fail | [RFC 7866 §11.1.1][rfc7866-11.1.1] | ✅ original call unaffected on dispatch failure |
 | SRS failover (multiple endpoints, ordered) | [RFC 7866 §11.1.1][rfc7866-11.1.1] | ✅ multiple `<recording-server>` entries, walked in config order |
@@ -162,7 +163,8 @@ bumped), the RTP (no packets while paused, markers, contiguous sequence,
 an 8 kHz clock that keeps running across the pause, from an Opus leg),
 `siprec_stop` with an ad-hoc URI, failover past a dead SRS, and a
 PCMA call recorded to an SRS that answers PCMU (the payload bytes are
-decoded to prove they are μ-law). Interop
+decoded to prove they are μ-law), and separate-streams mode (each
+labelled stream must carry only its own direction's tone). Interop
 with a production SRS remains the operator verification path in
 [`tests/README.md`](tests/README.md).
 
@@ -176,6 +178,7 @@ with a production SRS remains the operator verification path in
   <settings>
     <param name="src-enabled" value="true"/>
     <param name="originate-timeout" value="20"/>
+    <param name="separate-streams" value="false"/>
   </settings>
   <recording-servers>
     <recording-server name="default">
@@ -188,6 +191,12 @@ with a production SRS remains the operator verification path in
   </recording-servers>
 </configuration>
 ```
+
+`separate-streams` (default `false`) records the two directions as two
+labelled streams instead of one mixed stream (see the status table). It
+can also be set per `<recording-server>`, which overrides the global
+value; ad-hoc URIs use the global value. Enable it only for SRSes that
+accept a two-stream SIPREC offer.
 
 `originate-timeout` (seconds, 1-300, default 20) bounds how long each
 SRS candidate gets to answer. The SIPREC INVITE is sent from the call's

@@ -31,7 +31,10 @@ mod_siprec into that path once the field-test gaps are closed.
 `tests/live/run.sh` (after `tests/load/run.sh` has built the image)
 runs three real calls inside the container against `tests/live/srs.py`,
 a minimal SRS that records every SIP request and RTP header it
-receives, and asserts on them with `tests/live/check.py`. It covers
+receives, and asserts on them with `tests/live/check.py`. The
+`separate` scenario records a leg playing 1000 Hz whose far end plays
+440 Hz with `separate-streams` on, and checks each labelled stream
+carries only its own tone. It covers
 most of the checklist below automatically; interop with a production
 SRS (cb-srs, ClearIP, …) still needs the manual steps.
 

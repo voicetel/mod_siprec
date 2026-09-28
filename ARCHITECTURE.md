@@ -122,6 +122,12 @@ standalone.
       §8.1). The timestamp keeps advancing through silent ticks and
       across a pause; M-bit set on the first packet of each talkspurt
       per RFC 3551 §4.1.
+- [x] Separate RX/TX streams (opt-in `separate-streams`): stereo
+      media bug (`SMBF_STEREO`, left = read, right = write),
+      deinterleaved into two RTP streams with their own SSRC and
+      sequence and one clock; offer and re-offers carry two labelled
+      `m=audio` sections via `siprec_sdp_separate_append`; falls back
+      to mixed if the SRS accepts fewer than both streams.
 - [ ] DTMF tone forking (RFC 7866 §8.4) — passes through
       transparently via the bug's read path; explicit RFC 2833
       passthrough is a future enhancement.
@@ -289,22 +295,17 @@ standalone.
 
 ## Known gaps
 
-- **Initial-offer SDP override**: a multi-track offer (two
-  `m=audio` blocks, one per recorded direction, each with its
-  own `a=label:N` per RFC 7866 §8.5) needs the SRC to control
-  the SDP body carried on the initial INVITE. mod_sofia
-  auto-generates that body single-track; channel variables can
-  set its direction (`origination_audio_mode`) and append lines to
-  its one audio block (`rtp_append_audio_sdp`), but can't add a
-  second `m=` line. Until this lands, the SRC sends a
-  single-track offer carrying **both** call directions mixed
-  into one stream (`switch_core_media_bug_read` sums read+write
-  and normalizes to 16-bit) — RFC 7866 §7 explicitly permits a
-  single mixed stream ("MAY send multiple streams"). What's
-  still gated on the override is **separated**, per-direction
-  `a=label:N` tracks. SRTP via SDES (RFC 4568) is also gated on
-  the same override — keymat must travel in the initial offer,
-  which we don't control today.
+- **Initial-offer SDP override**: mod_sofia auto-generates the
+  offer single-track and has no hook to supply a custom SDP.
+  Channel variables set its direction (`origination_audio_mode`)
+  and append lines to its one audio section
+  (`rtp_append_audio_sdp`); separate-streams mode uses the latter to
+  close stream 1 and open a second labelled `m=audio`. That relies
+  on the append landing just before the section's `a=ptime` and
+  direction lines (`generate_m` in switch_core_media.c), so a
+  mod_sofia change there would break it; the live test covers it.
+  SRTP via SDES (RFC 4568) remains gated: keymat would have to
+  travel in the initial offer for both streams.
 
 ## Non-goals (deferred)
 
