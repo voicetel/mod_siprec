@@ -11,9 +11,15 @@
                     in-flight recording can be retired after a
                     reload flips this off. THIS MODULE only
                     implements SRC; SRS-mode is reserved for a
-                    future rewrite (mod_siprec_srs). Default true. -->
+                    future rewrite (mod_siprec_srs). Default true.
+       originate-timeout: seconds to wait for each SRS candidate to
+                    answer the SIPREC INVITE (1-300, default 20).
+                    The INVITE is sent from the call's own thread,
+                    so the dialplan stalls for up to this long per
+                    failover candidate when an SRS is unreachable. -->
   <settings>
     <param name="src-enabled" value="true"/>
+    <param name="originate-timeout" value="20"/>
   </settings>
 
   <!-- One <recording-server> per Session Recording Server

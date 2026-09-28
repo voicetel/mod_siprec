@@ -112,6 +112,11 @@ typedef struct recording recording_t;
 
 typedef struct {
     int src_enabled;
+    /* Seconds to wait for each SRS candidate to answer. The INVITE is
+     * sent from the call's own thread, so this (times the number of
+     * failover candidates) bounds how long `siprec` can stall the
+     * dialplan when SRSes are unreachable. */
+    int originate_timeout;
     switch_hash_t *recording_servers_hash;
     switch_mutex_t *recording_servers_mutex;
     switch_hash_t *recordings_hash;

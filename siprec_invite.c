@@ -232,7 +232,7 @@ switch_status_t siprec_invite_send(
         /*new_session*/  &new_session,
         /*cause*/        &cause,
         /*bridgeto*/     dial_string,
-        /*timelimit*/    20,
+        /*timelimit*/    globals.originate_timeout > 0 ? (uint32_t)globals.originate_timeout : 20,
         /*table*/        NULL,
         /*cid_name*/     "siprec",
         /*cid_num*/      "siprec",

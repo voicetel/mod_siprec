@@ -101,7 +101,7 @@ the SIP response. Same teardown path as above.
 
 ### Edge case: caller hangs up during INVITE handshake
 
-The originate timeout (currently 20s, set as the `timelimit`
+The originate timeout (`originate-timeout`, default 20 s, the `timelimit`
 argument to `switch_ivr_originate`) fires; cause is
 `ALLOTTED_TIMEOUT`. The half-built `recording_t` is cleaned
 up immediately on the failure return path

@@ -44,8 +44,11 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_siprec_load);
 SWITCH_MODULE_DEFINITION(mod_siprec, mod_siprec_load, mod_siprec_shutdown, NULL);
 
 
+static switch_xml_config_int_options_t originate_timeout_opts = { SWITCH_TRUE, 1, SWITCH_TRUE, 300 };
+
 static switch_xml_config_item_t general_instructions[] = {
 	SWITCH_CONFIG_ITEM("src-enabled", SWITCH_CONFIG_BOOL, CONFIG_RELOADABLE, &globals.src_enabled, SWITCH_TRUE, NULL, "true|false", "Enable/Disable Server Recording Client"),
+	SWITCH_CONFIG_ITEM("originate-timeout", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.originate_timeout, (void *) 20, &originate_timeout_opts, "1-300", "Seconds to wait for each SRS candidate to answer the SIPREC INVITE"),
 	SWITCH_CONFIG_ITEM_END()
 };
 

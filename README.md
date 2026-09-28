@@ -149,6 +149,7 @@ verification path in [`tests/README.md`](tests/README.md).
                description="SIPREC (RFC 7866) module config">
   <settings>
     <param name="src-enabled" value="true"/>
+    <param name="originate-timeout" value="20"/>
   </settings>
   <recording-servers>
     <recording-server name="default">
@@ -161,6 +162,11 @@ verification path in [`tests/README.md`](tests/README.md).
   </recording-servers>
 </configuration>
 ```
+
+`originate-timeout` (seconds, 1-300, default 20) bounds how long each
+SRS candidate gets to answer. The SIPREC INVITE is sent from the call's
+own thread, so with unreachable SRSes `siprec` can stall the dialplan
+for up to this long per failover candidate.
 
 `src-enabled` is the master switch: set it `false` to make the
 `siprec` app a logged no-op (nothing forked, no audio transmitted)
