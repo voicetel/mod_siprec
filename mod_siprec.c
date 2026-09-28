@@ -457,9 +457,16 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_siprec_shutdown)
 	switch_mutex_lock(globals.recording_servers_mutex);
 	for (hi = switch_core_hash_first(globals.recording_servers_hash); hi; hi = switch_core_hash_next(&hi)) {
 		switch_core_hash_this(hi, &vvar, NULL, &val);
-		recording_server = (recording_server_t *) val;
 
-		switch_core_destroy_memory_pool(&recording_server->pool);
+		/* Each entry in a failover chain owns its own pool (and lives
+		 * in it), so walk the chain and read ->next before freeing. */
+		for (recording_server = (recording_server_t *) val; recording_server; ) {
+			recording_server_t *next = recording_server->next;
+			switch_memory_pool_t *server_pool = recording_server->pool;
+
+			switch_core_destroy_memory_pool(&server_pool);
+			recording_server = next;
+		}
 	}
 
 	switch_core_hash_destroy(&globals.recording_servers_hash);
