@@ -152,7 +152,7 @@ static switch_status_t load_recording_server(switch_xml_t xml)
 	return SWITCH_STATUS_SUCCESS;
 }
 
-static switch_status_t switch_xml_config_parse_module_recording_servers(const char *file, switch_bool_t reload)
+static switch_status_t load_recording_servers(const char *file)
 {
 	switch_xml_t cfg, xml, servers;
 	switch_status_t status = SWITCH_STATUS_SUCCESS;
@@ -187,7 +187,7 @@ static switch_status_t do_config(switch_bool_t reload)
 		return SWITCH_STATUS_FALSE;
 	}
 
-	if (switch_xml_config_parse_module_recording_servers("siprec.conf", reload) != SWITCH_STATUS_SUCCESS) {
+	if (load_recording_servers("siprec.conf") != SWITCH_STATUS_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT,
 			"siprec: could not parse <recording-servers> in siprec.conf\n");
 		return SWITCH_STATUS_FALSE;
@@ -429,6 +429,35 @@ SWITCH_STANDARD_APP(siprec_stop_app_function)
 	}
 }
 
+/* free_recording_servers: destroy every configured recording-server
+ * (each failover entry owns its own pool) and the hash that indexes
+ * them. Used by shutdown and by a load that fails after init. */
+static void free_recording_servers(void)
+{
+	switch_hash_index_t *hi;
+	void *val;
+	const void *vvar;
+	recording_server_t *recording_server;
+
+	switch_mutex_lock(globals.recording_servers_mutex);
+	for (hi = switch_core_hash_first(globals.recording_servers_hash); hi; hi = switch_core_hash_next(&hi)) {
+		switch_core_hash_this(hi, &vvar, NULL, &val);
+
+		/* Each entry in a failover chain owns its own pool (and lives
+		 * in it), so walk the chain and read ->next before freeing. */
+		for (recording_server = (recording_server_t *) val; recording_server; ) {
+			recording_server_t *next = recording_server->next;
+			switch_memory_pool_t *server_pool = recording_server->pool;
+
+			switch_core_destroy_memory_pool(&server_pool);
+			recording_server = next;
+		}
+	}
+
+	switch_core_hash_destroy(&globals.recording_servers_hash);
+	switch_mutex_unlock(globals.recording_servers_mutex);
+}
+
 SWITCH_MODULE_LOAD_FUNCTION(mod_siprec_load)
 {
 	switch_status_t status = SWITCH_STATUS_SUCCESS;
@@ -446,7 +475,13 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_siprec_load)
 	*module_interface = switch_loadable_module_create_module_interface(pool, modname);
 
 	status = do_config(SWITCH_FALSE);
-	if (status == SWITCH_STATUS_FALSE) {
+	if (status != SWITCH_STATUS_SUCCESS) {
+		/* The loader destroys the module pool (and the mutexes in it)
+		 * on failure, but the hashes and any server pools already
+		 * loaded are ours to free. */
+		free_recording_servers();
+		switch_core_hash_destroy(&globals.recordings_hash);
+		switch_xml_config_cleanup(general_instructions);
 		goto done;
 	}
 
@@ -472,22 +507,12 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_siprec_load)
 
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_siprec_shutdown)
 {
-	switch_hash_index_t *hi;
-	void *val;
-	const void *vvar;
-	recording_server_t *recording_server = NULL;
-
 	switch_xml_config_cleanup(general_instructions);
 
-	/* Tear down every active recording via the shared atomic
-	 * claim-then-teardown drain. The previous inline walk held
-	 * recordings_mutex across the blocking teardown (media
-	 * bug_remove + BYE) and freed each recording->pool without the
-	 * claim discipline, so a call thread blocked in
-	 * claim_recording / a pause pinning a recording could wake onto
-	 * a freed pool or a destroyed mutex. siprec_teardown_all_recordings
-	 * snapshots keys under the lock and tears down outside it, leaving
-	 * the hash empty so the destroy below is safe.
+	/* Tear down every active recording through the same claim-then-
+	 * teardown drain as the stop paths: no blocking teardown runs under
+	 * recordings_mutex, and the hash is empty afterwards so the destroy
+	 * below is safe.
 	 *
 	 * siprec_media_detach calls switch_core_media_bug_remove, which is
 	 * synchronous — it blocks until any in-flight callback on the FS
@@ -499,23 +524,7 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_siprec_shutdown)
 	switch_core_hash_destroy(&globals.recordings_hash);
 	switch_mutex_unlock(globals.recordings_mutex);
 
-	switch_mutex_lock(globals.recording_servers_mutex);
-	for (hi = switch_core_hash_first(globals.recording_servers_hash); hi; hi = switch_core_hash_next(&hi)) {
-		switch_core_hash_this(hi, &vvar, NULL, &val);
-
-		/* Each entry in a failover chain owns its own pool (and lives
-		 * in it), so walk the chain and read ->next before freeing. */
-		for (recording_server = (recording_server_t *) val; recording_server; ) {
-			recording_server_t *next = recording_server->next;
-			switch_memory_pool_t *server_pool = recording_server->pool;
-
-			switch_core_destroy_memory_pool(&server_pool);
-			recording_server = next;
-		}
-	}
-
-	switch_core_hash_destroy(&globals.recording_servers_hash);
-	switch_mutex_unlock(globals.recording_servers_mutex);
+	free_recording_servers();
 
 	switch_mutex_destroy(globals.recordings_mutex);
 	switch_mutex_destroy(globals.recording_servers_mutex);
