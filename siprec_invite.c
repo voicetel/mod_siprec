@@ -36,9 +36,8 @@
  *
  * SDP shape
  *
- * The SDP that mod_sofia auto-generates for an outbound-only
- * leg already includes `a=sendonly` (RFC 7866 §7.4) because
- * the leg has no inbound media path. It does NOT yet emit
+ * mod_sofia auto-generates the SDP; `origination_audio_mode=sendonly`
+ * makes it offer `a=sendonly` (RFC 7866 §7.4). It does NOT emit
  * `a=label:N` per stream — that is the RFC 7866 §8.5
  * labelled-stream cross-reference requirement. We inject the
  * labels post-originate by rewriting the negotiated local SDP
@@ -187,6 +186,13 @@ switch_status_t siprec_invite_send(
      * spec form. Use `~`. */
     switch_event_add_header_string(ovars, SWITCH_STACK_BOTTOM,
         "sip_invite_contact_params", "~+sip.src");
+
+    /* RFC 7866 §7.4: SRC streams are sendonly. mod_sofia's offer
+     * defaults to a=sendrecv; origination_audio_mode is the one-shot
+     * override switch_core_media_gen_local_sdp applies to the
+     * direction attribute of the offer it generates. */
+    switch_event_add_header_string(ovars, SWITCH_STACK_BOTTOM,
+        "origination_audio_mode", "sendonly");
 
     /* IMPORTANT: do NOT append " &park()" to the dial-string.
      *
