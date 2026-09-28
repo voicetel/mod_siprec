@@ -101,9 +101,10 @@ the SIP response. Same teardown path as above.
 
 ### Edge case: caller hangs up during INVITE handshake
 
-The originate timeout (`originate-timeout`, default 20 s, the `timelimit`
-argument to `switch_ivr_originate`) fires; cause is
-`ALLOTTED_TIMEOUT`. The half-built `recording_t` is cleaned
-up immediately on the failure return path
-(`recording_session.c` removes the hash entry and destroys
-the pool — there's no state-handler bound yet).
+The INVITE is sent from the call's thread and blocks for up to
+`originate-timeout` seconds per SRS candidate. The hangup handler is
+bound before the INVITE, and `start_recording_session` holds a pin on
+the recording for the whole start. A hangup in that window removes the
+recording from the hash and marks it doomed; when the start finishes
+(successfully or not) its release performs the teardown: detach the
+media fork if attached, BYE the SRS leg if answered, free the pool.

@@ -355,29 +355,24 @@ switch_status_t stop_recording_session_for_server(switch_core_session_t *session
  * channels — sofia owns one, siprec_media owns the other.
  */
 
-/* discard_pending_recording: tear down a half-built recording_t
- * that's already in globals.recordings_hash but hasn't yet had
- * its hangup state handler bound to the original session.
- * Called from every failure path between hash-insert and
- * state-handler-bind in start_recording_session — without it,
- * any failure between those two points leaks the recording_t
- * (and its pool) until module unload, since nothing else will
- * ever reap it. */
+/* discard_pending_recording: abandon a recording whose start failed.
+ *
+ * start_recording_session holds a pin (use_count) for the whole start,
+ * so this removes the entry from the hash only if it is still THIS
+ * recording (a concurrent stop may already have removed it, and a new
+ * recording may since have reused the key), marks it doomed, and drops
+ * the start pin. The last releaser tears it down; detach and BYE are
+ * no-ops for state that was never attached. */
 static void discard_pending_recording(recording_t *recording)
 {
-    if (!recording) return;
-
-    /* Claim it out of the hash first (it was inserted before this
-     * failure path ran) so teardown runs as sole owner — same
-     * single-owner discipline as the stop paths. If something else
-     * already claimed it, claim_recording returns NULL and we leave
-     * the free to that owner. Best-effort tear-down of any
-     * partially-attached state: teardown_recording's detach and BYE
-     * are NULL-safe and idempotent — they no-op when invite_ctx /
-     * media_ctx aren't populated yet. */
-    if (claim_recording(recording->key) == recording) {
-        teardown_recording(recording);
+    switch_mutex_lock(globals.recordings_mutex);
+    if (switch_core_hash_find(globals.recordings_hash, recording->key) == recording) {
+        switch_core_hash_delete(globals.recordings_hash, recording->key);
     }
+    recording->doomed = 1;
+    switch_mutex_unlock(globals.recordings_mutex);
+
+    release_recording(recording);
 }
 
 /* copy_server_chain: deep-copy a recording-server failover chain into
@@ -550,8 +545,22 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
         switch_core_destroy_memory_pool(&recording_pool);
         return SWITCH_STATUS_FALSE;
     }
+    /* Insert already pinned by this start. Until the matching release
+     * at the end, a concurrent stop (hangup, siprec_stop, unload) only
+     * removes and dooms the recording; the teardown then happens at our
+     * release, so the pool is never freed while the INVITE / attach
+     * below still use it. */
+    recording->use_count = 1;
     switch_core_hash_insert(globals.recordings_hash, recording->key, recording);
     switch_mutex_unlock(globals.recordings_mutex);
+
+    /* Bind the hangup handler BEFORE the INVITE. The originate can
+     * block for originate-timeout seconds per candidate; binding only
+     * on success missed a hangup in that window, leaving the SRS leg
+     * and media fork running with nothing to stop them. The handler is
+     * idempotent and keyed by uuid, so binding early is safe. */
+    switch_channel_add_state_handler(
+        switch_core_session_get_channel(session), &state_handlers);
 
     /* ──────────────────────────────────────────────────────── *
      * RFC 7866 INVITE dispatch                                *
@@ -676,11 +685,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
     siprec_metadata_free(metadata_body);
 
     if (inv != SWITCH_STATUS_SUCCESS) {
-        /* INVITE failed: there is no recording leg, no media
-         * bug, and the original session's hangup
-         * state-handler hasn't been bound yet (we only do
-         * that on the success path below), so nobody else
-         * will reap this recording_t. */
+        /* INVITE failed: no recording leg and no media bug. */
         discard_pending_recording(recording);
         return inv;
     }
@@ -693,7 +698,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
      * up but no audio will reach the SRS. We BYE the dialog
      * to prevent a "ghost" recording session at the SRS that
      * receives no media. discard_pending_recording handles
-     * the BYE + hash cleanup. */
+     * the BYE + hash cleanup via the start pin. */
     if (siprec_media_attach(recording) != SWITCH_STATUS_SUCCESS) {
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
             SWITCH_LOG_ERROR,
@@ -704,10 +709,9 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
         return SWITCH_STATUS_FALSE;
     }
 
-    /* Bind the hangup state handler so hangup of the original call
-     * tears the recording down. */
-    switch_channel_add_state_handler(
-        switch_core_session_get_channel(session), &state_handlers);
+    /* Drop the start pin. If a stop arrived during start it doomed the
+     * recording, and this release performs the deferred teardown. */
+    release_recording(recording);
 
     return SWITCH_STATUS_SUCCESS;
 }
