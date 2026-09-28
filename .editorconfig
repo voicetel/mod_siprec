@@ -1,0 +1,26 @@
+# Indentation follows each file's origin:
+#  - files derived from FreeSWITCH / upstream mod_siprec use tabs
+#    (width 4), matching their Emacs/Vim modelines;
+#  - the siprec_* units written for this fork use 4 spaces.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[{mod_siprec.c,mod_siprec.h,recording_session.c,recording_session.h}]
+indent_style = tab
+indent_size = 4
+tab_width = 4
+
+[siprec_*.{c,h}]
+indent_style = space
+indent_size = 4
+
+[{Makefile,Makefile.test,Makefile.am}]
+indent_style = tab
+
+[*.{md,xml,sh}]
+indent_style = space

@@ -35,35 +35,35 @@
 #include <switch.h>
 
 struct recording_server {
-    char *name;
-    char *host;
-    int port;
+	char *name;
+	char *host;
+	int port;
 
-    /* RFC 7866 §11.3: the SRC-to-SRS hop SHOULD use SIPS for
-     * confidentiality on hostile-network deployments. When
-     * `transport` is "tls" the dial-string uses sips:..;transport=tls
-     * and the sofia profile MUST have a TLS port configured.
-     * Default ("udp" / NULL) keeps the v1 plain-UDP path. */
-    char *transport;
+	/* RFC 7866 §11.3: the SRC-to-SRS hop SHOULD use SIPS for
+	 * confidentiality on hostile-network deployments. When
+	 * `transport` is "tls" the dial-string uses sips:..;transport=tls
+	 * and the sofia profile MUST have a TLS port configured.
+	 * Default ("udp" / NULL) keeps the v1 plain-UDP path. */
+	char *transport;
 
-    /* Per-call ad-hoc SRS endpoint. When set, this is a complete
-     * SIP URI ("sip:host:port;transport=tls" / "sips:...") supplied
-     * at dispatch time via the `siprec <handle> <uri>` second app
-     * argument, NOT from siprec.conf. siprec_uri_for returns it
-     * verbatim, bypassing the host/port/transport assembly. NULL for
-     * every config-loaded recording-server. An ad-hoc server is
-     * allocated from the recording's own pool (not a long-lived
-     * server pool) and is a single entry with next == NULL. */
-    char *uri;
+	/* Per-call ad-hoc SRS endpoint. When set, this is a complete
+	 * SIP URI ("sip:host:port;transport=tls" / "sips:...") supplied
+	 * at dispatch time via the `siprec <handle> <uri>` second app
+	 * argument, NOT from siprec.conf. siprec_uri_for returns it
+	 * verbatim, bypassing the host/port/transport assembly. NULL for
+	 * every config-loaded recording-server. An ad-hoc server is
+	 * allocated from the recording's own pool (not a long-lived
+	 * server pool) and is a single entry with next == NULL. */
+	char *uri;
 
-    switch_memory_pool_t *pool;
+	switch_memory_pool_t *pool;
 
-    /* Forward-pointer for the next entry in the failover
-     * chain. Multiple recording-server entries with the same
-     * name form an ordered list; siprec_invite_send walks
-     * them in order on connect / 4xx-5xx failure until one
-     * accepts. NULL on the last entry. */
-    struct recording_server *next;
+	/* Forward-pointer for the next entry in the failover
+	 * chain. Multiple recording-server entries with the same
+	 * name form an ordered list; siprec_invite_send walks
+	 * them in order on connect / 4xx-5xx failure until one
+	 * accepts. NULL on the last entry. */
+	struct recording_server *next;
 };
 typedef struct recording_server recording_server_t;
 
@@ -74,51 +74,51 @@ struct siprec_invite_ctx;
 struct siprec_media_ctx;
 
 struct recording {
-    char *key;
-    char *uuid;
-    switch_core_session_t *session;
-    recording_server_t *server;
-    switch_memory_pool_t *pool;
+	char *key;
+	char *uuid;
+	switch_core_session_t *session;
+	recording_server_t *server;
+	switch_memory_pool_t *pool;
 
-    /* Lifetime pinning for readers that must use the recording
-     * OUTSIDE recordings_mutex (pause/resume). Both fields are
-     * guarded by globals.recordings_mutex.
-     *
-     * use_count — number of live acquire_recording() pins.
-     * doomed    — a teardown was requested (the entry was already
-     *             removed from recordings_hash) while use_count > 0,
-     *             so the last releaser performs the teardown instead
-     *             of freeing recording->pool out from under a pin.
-     *
-     * The stop paths (claim_recording) and the readers
-     * (acquire/release_recording) coordinate through these so
-     * exactly one thread ever tears a recording down, even when a
-     * stop races an in-flight pause/resume. */
-    int use_count;
-    int doomed;
+	/* Lifetime pinning for readers that must use the recording
+	 * OUTSIDE recordings_mutex (pause/resume). Both fields are
+	 * guarded by globals.recordings_mutex.
+	 *
+	 * use_count — number of live acquire_recording() pins.
+	 * doomed    — a teardown was requested (the entry was already
+	 *             removed from recordings_hash) while use_count > 0,
+	 *             so the last releaser performs the teardown instead
+	 *             of freeing recording->pool out from under a pin.
+	 *
+	 * The stop paths (claim_recording) and the readers
+	 * (acquire/release_recording) coordinate through these so
+	 * exactly one thread ever tears a recording down, even when a
+	 * stop races an in-flight pause/resume. */
+	int use_count;
+	int doomed;
 
-    /* SIP signalling context — populated by siprec_invite_send.
-     * Owns the recording-leg session pointer + dialog
-     * negotiation state. NULL until siprec_invite_send fires. */
-    struct siprec_invite_ctx *invite_ctx;
+	/* SIP signalling context — populated by siprec_invite_send.
+	 * Owns the recording-leg session pointer + dialog
+	 * negotiation state. NULL until siprec_invite_send fires. */
+	struct siprec_invite_ctx *invite_ctx;
 
-    /* Media-bug + RTP-fork context — populated by
-     * siprec_media_attach. NULL until media is wired. */
-    struct siprec_media_ctx *media_ctx;
+	/* Media-bug + RTP-fork context — populated by
+	 * siprec_media_attach. NULL until media is wired. */
+	struct siprec_media_ctx *media_ctx;
 };
 typedef struct recording recording_t;
 
 typedef struct {
-    int src_enabled;
-    /* Seconds to wait for each SRS candidate to answer. The INVITE is
-     * sent from the call's own thread, so this (times the number of
-     * failover candidates) bounds how long `siprec` can stall the
-     * dialplan when SRSes are unreachable. */
-    int originate_timeout;
-    switch_hash_t *recording_servers_hash;
-    switch_mutex_t *recording_servers_mutex;
-    switch_hash_t *recordings_hash;
-    switch_mutex_t *recordings_mutex;
+	int src_enabled;
+	/* Seconds to wait for each SRS candidate to answer. The INVITE is
+	 * sent from the call's own thread, so this (times the number of
+	 * failover candidates) bounds how long `siprec` can stall the
+	 * dialplan when SRSes are unreachable. */
+	int originate_timeout;
+	switch_hash_t *recording_servers_hash;
+	switch_mutex_t *recording_servers_mutex;
+	switch_hash_t *recordings_hash;
+	switch_mutex_t *recordings_mutex;
 } globals_t;
 
 extern globals_t globals;
