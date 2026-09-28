@@ -160,7 +160,9 @@ multipart body, `a=sendonly`, `a=label:1`, RFC 7865 IDs and AORs), the
 pause/resume re-INVITEs (`a=inactive` / `a=sendonly`, SDP only, `o=`
 bumped), the RTP (no packets while paused, markers, contiguous sequence,
 an 8 kHz clock that keeps running across the pause, from an Opus leg),
-`siprec_stop` with an ad-hoc URI, and failover past a dead SRS. Interop
+`siprec_stop` with an ad-hoc URI, failover past a dead SRS, and a
+PCMA call recorded to an SRS that answers PCMU (the payload bytes are
+decoded to prove they are μ-law). Interop
 with a production SRS remains the operator verification path in
 [`tests/README.md`](tests/README.md).
 
