@@ -17,7 +17,6 @@
 #include "siprec_sb.h"
 #include "siprec_uri.h"
 
-#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

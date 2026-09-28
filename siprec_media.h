@@ -17,11 +17,8 @@
                               * per-stream destination. */
 #include "mod_siprec.h"
 
-/* SIPREC_MAX_STREAMS is defined in siprec_invite.h; we pull
- * it through the same include path that consumers of this
- * file already need (mod_siprec.h ↔ siprec_invite.h). The
- * _Static_assert in siprec_media.c verifies the bug-callback
- * stream_idx mapping (READ→0, WRITE→1) is in range. */
+/* SIPREC_MAX_STREAMS (siprec_sdp.h) sizes streams[] below;
+ * siprec_invite.h brings it in along with siprec_invite_ctx_t. */
 #include "siprec_invite.h"
 
 /* Struct is named so mod_siprec.h's forward declaration

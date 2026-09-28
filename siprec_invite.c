@@ -47,8 +47,6 @@
 #include "siprec_invite.h"
 #include "siprec_sdp.h"
 
-#include <switch.h>
-
 /* Compile-time invariant: the parser's out_max derived from
  * sizeof(ctx->negotiated) must equal SIPREC_MAX_STREAMS. If
  * someone bumps the array size without updating the constant

@@ -33,8 +33,6 @@
 #define RECORDING_SESSION_H
 
 #include <switch.h>
-#include <switch_curl.h>
-#include <switch_types.h>
 
 #include "mod_siprec.h"   /* recording_t (acquire/release return type) */
 

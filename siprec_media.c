@@ -21,23 +21,24 @@
  *   - One RTP packet per 20ms of audio (160 samples @ 8 kHz)
  *
  * The media bug callback runs on the FS media thread; we keep
- * the work bounded (encode + sendmsg, no allocations on the
- * hot path).
+ * the work bounded (resample if needed, encode, sendto). The only
+ * allocation is the resampler's, on the first frame and on a rate
+ * change.
  */
 #include "siprec_media.h"
 #include "siprec_g711.h"
+#include "siprec_invite.h"
 
+#include <switch.h>
+
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <netinet/in.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <unistd.h>
-
-/* siprec_invite.h declares siprec_invite_ctx_t (the type the
- * media path reads negotiated[i].remote_ip from during attach).
- * siprec_media.h only forward-declares the struct so the public
- * header stays light; the .c needs the full definition. */
-#include "siprec_invite.h"
 
 /* Compile-time invariants:
  *
@@ -64,14 +65,6 @@ _Static_assert(
         / sizeof(((siprec_media_ctx_t *)0)->streams[0])
     == SIPREC_MAX_STREAMS,
     "streams[] must be sized to SIPREC_MAX_STREAMS");
-
-#include <switch.h>
-
-#include <arpa/inet.h>
-#include <errno.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 /* RTP version + base flags. RFC 3550 §5.1. */
 #define RTP_VERSION  2

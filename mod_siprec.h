@@ -33,8 +33,6 @@
 #define MOD_SIPREC_H
 
 #include <switch.h>
-#include <switch_curl.h>
-#include <switch_types.h>
 
 struct recording_server {
     char *name;
