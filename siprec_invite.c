@@ -75,24 +75,8 @@ static char *multipart_value(
     const char *content_disposition,
     const char *body)
 {
-    size_t cap;
-    char *buf;
-    if (!content_type || !body) return NULL;
-
-    cap = strlen(content_type) + strlen(body)
-               + (content_disposition ? strlen(content_disposition) : 0)
-               + 128;
-    buf = switch_core_alloc(pool, cap);
-    if (!buf) return NULL;
-
-    if (content_disposition) {
-        switch_snprintf(buf, cap,
-            "%s:~Content-Disposition: %s\r\n\r\n%s",
-            content_type, content_disposition, body);
-    } else {
-        switch_snprintf(buf, cap, "%s:%s", content_type, body);
-    }
-    return buf;
+    return switch_core_sprintf(pool, "%s:~Content-Disposition: %s\r\n\r\n%s",
+        content_type, content_disposition, body);
 }
 
 switch_status_t siprec_invite_send(
@@ -326,6 +310,13 @@ switch_status_t siprec_invite_send(
             }
         }
     }
+
+    /* sofia_glue_do_invite attaches every sip_multipart variable to
+     * EVERY INVITE on the leg, so pause/resume re-INVITEs would resend
+     * the initial <datamode>complete</datamode> snapshot, stale
+     * associate-time included. The initial INVITE has gone out and been
+     * answered; clear it so re-INVITEs carry only SDP. */
+    switch_channel_set_variable(rch, "sip_multipart", NULL);
 
     switch_core_session_rwunlock(new_session);
 
