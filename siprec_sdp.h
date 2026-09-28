@@ -1,58 +1,16 @@
 /*
- * siprec_sdp.h — SDP body builder for SIPREC INVITE.
+ * siprec_sdp.h — parser for the SRS's SDP answer (RFC 7866 §7).
  *
- * The SDP half of the multipart MIME body sent on the SIP INVITE
- * from the SRC (Session Recording Client) to the SRS (Session
- * Recording Server). Spec: RFC 7866 §7.
+ * mod_sofia generates the SRC offer; this unit extracts the
+ * negotiated RTP endpoint(s) and payload type from the answer.
  *
  * Pure C, no FreeSWITCH dependency. Unit-testable.
- *
- * Output ownership: the build function returns a heap-allocated
- * char buffer. Caller frees with siprec_sdp_free().
  */
 #ifndef SIPREC_SDP_H
 #define SIPREC_SDP_H
 
 #include <stddef.h>
 #include <stdint.h>
-
-/* siprec_sdp_inject_labels: produce a copy of `src_sdp` with
- * `a=label:<n>` injected into every m= block that doesn't
- * already carry a label, where <n> is the 1-based index of
- * that m= block within the SDP (first m= → label:1, second →
- * label:2, etc). The o= session-version is incremented per
- * RFC 4566 §5.2.
- *
- * RFC 7866 §8.5 requires every SRC stream to carry an
- * a=label:N attribute for cross-reference from the metadata
- * XML's <stream> entries. mod_sofia's auto-generated offer
- * SDP doesn't emit a=label, so we do a surgical injection on
- * the local SDP after originate succeeds and re-INVITE the
- * SRS with the labelled body. Ports, codec, c= and crypto stay
- * untouched; we only add one attribute line per m= block.
- *
- * The label is placed immediately before the direction
- * attribute (a=sendonly / a=inactive) within each m= block,
- * or at the end of the block if no direction attribute is
- * present. m= blocks that already carry a=label:<anything>
- * are left untouched (idempotent — calling this on an
- * already-labelled SDP is safe; the per-block counter still
- * advances on already-labelled blocks so subsequent unlabelled
- * blocks pick up where the existing labels left off).
- *
- * Today mod_sofia's auto-gen produces a single m=audio so
- * the function effectively emits label:1. Once a multi-track
- * offer path lands (a "set local SDP before originate" sofia
- * hook) the same call site picks up label:1 + label:2 + …
- * without code changes.
- *
- * Returns a heap buffer (caller frees with siprec_sdp_free)
- * or NULL on allocation failure / malformed input.
- */
-char *siprec_sdp_inject_labels(const char *src_sdp);
-
-/* Free a buffer returned by siprec_sdp_inject_labels. NULL-safe. */
-void siprec_sdp_free(char *buf);
 
 /* ──────────────────────────────────────────────────────────── *
  * SDP answer parsing (SRS → SRC)                              *

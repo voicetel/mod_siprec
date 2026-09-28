@@ -51,7 +51,7 @@ verification path; production interop is verified against
 | pause / resume re-INVITE | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_pause` / `siprec_resume` apps; re-INVITE offers `a=inactive` / `a=sendonly` via `origination_audio_mode` + `MEDIA_RENEG` (mod_sofia regenerates the SDP, so ports and codecs stay as negotiated). **PCI-safe**: pause sets the recording bug's native `SMBF_PAUSE` (FreeSWITCH stops capturing audio at the io pump — no frames forked, nothing buffered to burst on resume) *before* sending `a=inactive`, so cardholder audio never leaves the box |
 | explicit stop | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_stop` app — detaches the media fork + BYEs the SRS leg mid-call; no-arg form stops every recording on the leg (PCI-safe default). Not resumable; start a fresh `siprec` to record again |
 | sendonly direction on SRC streams | [RFC 7866 §7.4][rfc7866-7.4] | ✅ `origination_audio_mode=sendonly` on the recording leg (mod_sofia's default offer is `sendrecv`) |
-| `a=label:N` per stream | [RFC 7866 §8.5][rfc7866-8.5] | ⚠️ partial — labels are built and a post-originate re-INVITE is attempted, but mod_sofia regenerates the recording leg's SDP via `gen_local_sdp` (the parked, `session=NULL` originate is never in `CF_PROXY_MODE`) and clobbers the injected `a=label`, so **labels do not reach the wire today**. The injection code is in place and correct; it is gated on the same initial-offer SDP-override path as multi-track and SRTP (the leg must be in proxy mode for sofia to forward `local_sdp_str` verbatim). Once that lands, sequential per-block labels (`label:1`, `label:2`, …) emit with no code changes |
+| `a=label:N` per stream | [RFC 7866 §8.5][rfc7866-8.5] | ✅ `a=label:1` in the initial offer via the `rtp_append_audio_sdp` ovar (mod_sofia appends it inside the audio `m=` block of every offer it generates, so pause/resume re-INVITEs keep it). Multiple labelled tracks await a multi-track offer path |
 | Single mixed-audio stream (both directions) | [RFC 7866 §7][rfc7866-7] | ✅ one `m=audio` block in the offer, one `<stream>` in metadata. The audio bug observes both directions (`SMBF_READ_STREAM \| SMBF_WRITE_STREAM`); `switch_core_media_bug_read` returns them already mixed (read+write summed, normalized to 16-bit), so the single forked stream carries **both** parties. Drained on a fixed `SMBF_READ_PING` tick, the same way mod_sofia's `session_record` clocks its mixed capture. RFC 7866 §7 permits "MAY" send multiple streams; we send one mixed stream. Separated per-direction (labelled) tracks are a planned follow-up, gated on the multi-track offer path noted in the §8.5 row above — which needs the recording leg placed in proxy mode so mod_sofia emits a custom SDP instead of regenerating it |
 | DTMF tone forking | [RFC 7866 §8.4][rfc7866-8.4] | ✅ passes through the audio bug |
 | communication-failure soft-fail | [RFC 7866 §11.1.1][rfc7866-11.1.1] | ✅ original call unaffected on dispatch failure |
@@ -60,7 +60,7 @@ verification path; production interop is verified against
 | Fail-closed when no SRS resolves | — | ✅ `src-enabled="false"` makes `siprec` a logged no-op (no INVITE, no RTP fork); an unresolved handle with no ad-hoc URI warns and records nothing — the call proceeds, no audio is transmitted |
 | SRTP for the recording RTP fork | [RFC 7866 §11.2][rfc7866-11.2] / [RFC 3711][rfc3711] / [RFC 4568][rfc4568] | ❌ not supported. SDES keymat must travel in the initial offer (RFC 4568 §5.1) and our offer is sofia auto-gen which doesn't carry `a=crypto`. The clean path needs the same offer-time SDP-override hook the multi-track work needs. SRSes that require SRTP will reject our `RTP/AVP` offer with `488 Not Acceptable Here`; failover or pin a strict-SRTP-not-required SRS. |
 | SIPS transport for SRC→SRS | [RFC 7866 §11.3][rfc7866-11.3] | ✅ `transport=tls` config |
-| SDP offer + `a=label:N` cross-reference | [RFC 4566][rfc4566] / [RFC 7866 §7][rfc7866-7] / [RFC 7866 §8.5][rfc7866-8.5] | ✅ mod_sofia auto-generates the outbound-leg offer (single `m=audio`, `a=sendonly`); mod_siprec injects `a=label:N` by rewriting the negotiated local SDP and re-INVITEing (`siprec_sdp_inject_labels`) |
+| SDP offer + `a=label:N` cross-reference | [RFC 4566][rfc4566] / [RFC 7866 §7][rfc7866-7] / [RFC 7866 §8.5][rfc7866-8.5] | ✅ mod_sofia auto-generates the single-`m=audio` offer; `a=label:1` matches the metadata's `<stream><label>1</label>` |
 | Pause/resume `o=` version bump | [RFC 4566 §5.2][rfc4566] | ✅ mod_sofia bumps session-version on every regenerated offer |
 | RTP packet framing (V=2, M-bit at talkspurt start, big-endian seq/ts/SSRC) | [RFC 3550 §5.1][rfc3550] / [RFC 3551 §4.1][rfc3551] | ✅ `siprec_media.c` |
 | Random SSRC | [RFC 3550 §8.1][rfc3550] | ✅ /dev/urandom seed |
@@ -285,8 +285,8 @@ Files:
 - **`siprec_g711.{c,h}`** — G.711 µ-law / A-law reference encoders
   + the branch-free lookup tables the media hot path uses (built
   once at module load, bit-identical to the reference encoders).
-- **`siprec_sdp.{c,h}`** — [RFC 7866 §7][rfc7866-7] SDP helpers:
-  `a=label` injection and the SRS answer parser.
+- **`siprec_sdp.{c,h}`** — [RFC 7866 §7][rfc7866-7] parser for the
+  SRS's SDP answer (endpoints + payload type).
 - **`siprec_metadata.{c,h}`** — [RFC 7865 Appendix A][rfc7865]
   schema-conformant metadata XML builder with full XML-entity
   escaping.
@@ -332,7 +332,7 @@ This fork:
 
 The full feature set (RFC 7865 metadata, RFC 7866 §6.4 pause /
 resume, RFC 7866 §5.2.1 `+sip.src` Contact tag, RFC 7866 §8.5
-`a=label:N`, etc.) is documented in the **Status** table near
+`a=label:1`, etc.) is documented in the **Status** table near
 the top of this file.
 
 [upstream]: https://github.com/StefanYohansson/mod_siprec

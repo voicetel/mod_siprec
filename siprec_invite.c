@@ -36,14 +36,13 @@
  *
  * SDP shape
  *
- * mod_sofia auto-generates the SDP; `origination_audio_mode=sendonly`
- * makes it offer `a=sendonly` (RFC 7866 §7.4). It does NOT emit
- * `a=label:N` per stream — that is the RFC 7866 §8.5
- * labelled-stream cross-reference requirement. We inject the
- * labels post-originate by rewriting the negotiated local SDP
- * (siprec_sdp_inject_labels) and re-INVITEing; a fuller
- * multi-track offer would need a "set local SDP before
- * originate" hook through mod_sofia that doesn't exist today.
+ * mod_sofia auto-generates the single-m=audio offer. Two ovars
+ * shape it: `origination_audio_mode=sendonly` sets the direction
+ * (RFC 7866 §7.4) and `rtp_append_audio_sdp=a=label:1` appends the
+ * RFC 7866 §8.5 stream label inside the audio m= block. Both apply
+ * to every offer mod_sofia generates on this leg, so pause/resume
+ * re-INVITEs keep the label. A multi-track offer would still need a
+ * "set local SDP before originate" hook that mod_sofia lacks.
  */
 #include "siprec_invite.h"
 #include "siprec_sdp.h"
@@ -112,8 +111,6 @@ switch_status_t siprec_invite_send(
     switch_status_t st;
     switch_channel_t *rch;
     const char *remote_sdp;
-    const char *local_sdp_now;
-    char *labelled_sdp = NULL;
     int parsed = 0;
 
     if (!recording || !sofia_profile || !srs_uri || !metadata_body) {
@@ -160,6 +157,11 @@ switch_status_t siprec_invite_send(
         != SWITCH_STATUS_SUCCESS) {
         return SWITCH_STATUS_FALSE;
     }
+    /* RFC 7866 §8.5: label the (single) SRC stream so the metadata's
+     * <stream><label>1</label> binds to it. gen_local_sdp appends this
+     * verbatim inside the audio m= block of every offer it builds. */
+    switch_event_add_header_string(ovars, SWITCH_STACK_BOTTOM,
+        "rtp_append_audio_sdp", "a=label:1");
     /* RFC 7866 §6.1: SRS MUST 421 if siprec extension unsupported. */
     switch_event_add_header_string(ovars, SWITCH_STACK_BOTTOM,
         "sip_h_Require", "siprec");
@@ -339,20 +341,6 @@ switch_status_t siprec_invite_send(
         }
     }
 
-    /* Pull the local SDP off the channel for the post-originate
-     * label-injection re-INVITE (below). We do this BEFORE
-     * rwunlock so the pointer's lifetime is well-defined; the
-     * inject helper builds a fresh heap string we can use after
-     * unlock. zstr fallback covers the (rare) case where
-     * sofia hasn't materialised sip_local_sdp_str by the time
-     * originate returns. */
-    local_sdp_now =
-        switch_channel_get_variable(rch, "sip_local_sdp_str");
-    labelled_sdp = NULL;
-    if (!zstr(local_sdp_now)) {
-        labelled_sdp = siprec_sdp_inject_labels(local_sdp_now);
-    }
-
     switch_core_session_rwunlock(new_session);
 
     for (size_t s = 0; s < ctx->negotiated_count; s++) {
@@ -367,51 +355,6 @@ switch_status_t siprec_invite_send(
             SWITCH_LOG_ERROR,
             "siprec: INVITE to %s answered with no usable streams\n",
             srs_uri);
-    }
-
-    /* RFC 7866 §8.5 label injection. mod_sofia's auto-gen
-     * offer doesn't emit a=label:N, so we surgically modify
-     * the just-negotiated local SDP (preserving every byte
-     * except the o= version bump and the new a=label lines)
-     * and re-INVITE. The labelled SDP carries the SAME ports
-     * / codec / c= as what the SRS just accepted, so a
-     * conformant SRS treats it as a session modification and
-     * applies the labels.
-     *
-     * Fire-and-forget. If the SRS rejects the re-INVITE
-     * (488 / 5xx), RFC 3261 §14.1 keeps the dialog at the
-     * pre-modification SDP — the recording continues without
-     * labels, which is degraded but not broken. media_attach
-     * runs immediately after this returns, using the original
-     * negotiated[] endpoints either way.
-     *
-     * Per-block sequential labels: siprec_sdp_inject_labels
-     * auto-numbers each m= block (1st → label:1, 2nd → label:2,
-     * etc). Today mod_sofia's auto-gen produces a single
-     * m=audio so the wire effect is label:1 only. The moment
-     * sofia produces multi-track offers (or a "set local SDP
-     * before originate" hook lands) the call site picks up the
-     * additional labels without code changes. */
-
-    if (labelled_sdp) {
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
-            SWITCH_LOG_INFO,
-            "siprec: dispatching post-originate label re-INVITE "
-            "(RFC 7866 §8.5)\n");
-        if (siprec_invite_reinvite(recording, labelled_sdp, NULL)
-            != SWITCH_STATUS_SUCCESS) {
-            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
-                SWITCH_LOG_WARNING,
-                "siprec: label re-INVITE dispatch failed; recording "
-                "continues without a=label:N in the offer\n");
-        }
-        siprec_sdp_free(labelled_sdp);
-    } else if (zstr(local_sdp_now)) {
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
-            SWITCH_LOG_WARNING,
-            "siprec: sip_local_sdp_str not yet materialised; skipping "
-            "RFC 7866 §8.5 label injection — recording continues "
-            "without a=label:N in the offer\n");
     }
 
     return SWITCH_STATUS_SUCCESS;
@@ -581,89 +524,5 @@ switch_status_t siprec_invite_set_direction(recording_t *recording, int paused)
     st = switch_core_session_receive_message(s, &msg);
 
     switch_core_session_rwunlock(s);
-    return st;
-}
-
-/* ──────────────────────────────────────────────────────────── *
- * re-INVITE with a caller-supplied SDP.                       *
- *                                                              *
- * RFC 7866 §6.4: pause/resume is signalled by a re-INVITE that *
- * flips the SDP direction attribute (a=inactive ⇄ a=sendonly). *
- * In FS, we drive that by sending the channel a               *
- * SWITCH_MESSAGE_INDICATE_MEDIA_REDIRECT message with the new  *
- * SDP body — mod_sofia's handler at mod_sofia.c:1650 picks it  *
- * up via switch_core_media_set_local_sdp + sofia_glue_do_invite *
- * and emits the re-INVITE on the existing dialog.             *
- * ──────────────────────────────────────────────────────────── */
-
-switch_status_t siprec_invite_reinvite(
-    recording_t *recording,
-    const char *new_sdp,
-    const char *new_metadata)
-{
-    siprec_invite_ctx_t *ctx;
-    switch_core_session_t *s;
-    switch_core_session_message_t msg = { 0 };
-    switch_status_t st;
-
-    if (!recording || !recording->invite_ctx || !new_sdp) {
-        return SWITCH_STATUS_FALSE;
-    }
-    ctx = recording->invite_ctx;
-    if (!*ctx->recording_uuid) {
-        return SWITCH_STATUS_FALSE;
-    }
-
-    /* Locate by stashed UUID — same rationale as
-     * siprec_invite_send_bye: the recording leg may have
-     * been torn down between siprec_invite_send returning
-     * and pause/resume firing. */
-    s =
-        switch_core_session_locate(ctx->recording_uuid);
-    if (!s) {
-        /* Bind to the parent-call UUID via recording->session.
-         * The recording leg's UUID (ctx->recording_uuid) is already
-         * in the message body for context, but the userdata UUID
-         * the syslog handler reads should be the parent call —
-         * that's what an operator greps for to find this trace
-         * alongside the rest of the call's events. */
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
-            SWITCH_LOG_WARNING,
-            "siprec: re-INVITE skipped — recording leg %s is gone\n",
-            ctx->recording_uuid);
-        ctx->recording_uuid[0] = '\0';
-        return SWITCH_STATUS_FALSE;
-    }
-
-    /* The metadata XML on a re-INVITE carries
-     * <datamode>partial</datamode> per RFC 7865 §5.1 — the
-     * caller is responsible for that distinction; we just
-     * thread it through as a multipart channel variable so
-     * sofia reads it on the next INVITE. */
-    if (new_metadata) {
-        char *mp = multipart_value(recording->pool,
-            "application/rs-metadata+xml", "recording-session",
-            new_metadata);
-        if (mp) {
-            switch_channel_t *ch = switch_core_session_get_channel(s);
-            switch_channel_set_variable_var_check(ch,
-                "sip_multipart", mp, SWITCH_FALSE);
-        }
-    }
-
-    /* Send the message that triggers the re-INVITE. */
-    msg.message_id   = SWITCH_MESSAGE_INDICATE_MEDIA_REDIRECT;
-    msg.string_arg   = (char *)new_sdp;
-    msg.from         = __FILE__;
-
-    st = switch_core_session_receive_message(s, &msg);
-
-    switch_core_session_rwunlock(s);
-
-    if (st != SWITCH_STATUS_SUCCESS) {
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
-            SWITCH_LOG_ERROR,
-            "siprec: re-INVITE failed status=%d\n", (int)st);
-    }
     return st;
 }

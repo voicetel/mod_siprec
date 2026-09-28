@@ -580,35 +580,15 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
     parts[1].aor            = callee_aor;
     parts[1].display_name   = NULL;
 
-    /* RFC 7865 §5 + RFC 7866 §8.5: the metadata's <stream>
-     * entries cross-reference the SDP offer's a=label:N lines.
-     * Claiming N streams in the metadata when the SDP offers
-     * fewer — or vice versa — is a conformance error: the SRS
-     * has no a=label:K to bind metadata stream label="K" to.
+    /* RFC 7865 §5 + RFC 7866 §8.5: each metadata <stream> binds to
+     * the SDP stream carrying the same a=label. mod_sofia's offer is
+     * single-track and siprec_invite_send labels it a=label:1, so the
+     * metadata describes exactly one stream with label "1".
      *
-     * Today mod_sofia's auto-generated outbound-leg offer is
-     * single-track (one m=audio block). siprec_sdp_inject_labels
-     * emits a=label:1 on that block (RFC 7866 §8.5) via the
-     * post-originate re-INVITE in siprec_invite_send. That's
-     * the only stream the SRS will see RTP for, so the metadata
-     * must describe exactly one <stream> with the matching
-     * label.
-     *
-     * Single-stream attribution: the bug is attached to the
-     * recording->session leg with SMBF_READ_STREAM | SMBF_WRITE_STREAM,
-     * but stream[0] (READ direction) is the only one forwarded
-     * to the SRS today (siprec_media.c drops stream[1] when
-     * negotiated_count==1). READ on the bug-host leg captures
-     * what that leg HEARS — i.e., the FAR participant's voice.
-     * We attribute the stream to participant[0] by convention
-     * (caller, in <participantstreamassoc participant_id=
-     * "...-caller"><send>) because that's the conservative
-     * choice for the typical outbound campaign use case where
-     * SIPREC starts on the originating leg and the goal is to
-     * record the agent ↔ callee conversation as a single audio
-     * track. A more precise leg-direction attribution is the
-     * v1.4.0 follow-up alongside making both directions
-     * actually flow on the wire. */
+     * That stream is a mono mix of both directions (siprec_media.c),
+     * so it has no single speaker. It is attributed to participant[0]
+     * by convention; per-direction attribution needs separated tracks,
+     * which need the multi-track offer path mod_sofia doesn't offer. */
     streams_arr[0].stream_id       = "stream-1";
     streams_arr[0].mode            = SIPREC_STREAM_SEND;
     streams_arr[0].participant_idx = 0;

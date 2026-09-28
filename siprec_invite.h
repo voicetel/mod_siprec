@@ -44,7 +44,7 @@ typedef struct siprec_invite_ctx {
      * originate's rwunlock returns, we hold no refcount, so
      * sofia / FS-core can destroy the session out from under
      * us at any moment. Every consumer
-     * (siprec_invite_send_bye, siprec_invite_reinvite,
+     * (siprec_invite_send_bye, siprec_invite_set_direction,
      * pause/resume) goes through switch_core_session_locate
      * which returns NULL if the session is already gone.
      *
@@ -131,26 +131,5 @@ switch_status_t siprec_invite_send_bye(recording_t *recording);
  * or a=sendonly (paused == 0). mod_sofia regenerates the SDP, so ports
  * and codecs stay as negotiated and o= session-version is bumped. */
 switch_status_t siprec_invite_set_direction(recording_t *recording, int paused);
-
-/* siprec_invite_reinvite: send a re-INVITE on the existing
- * recording dialog with an updated SDP and (optional)
- * metadata body. Used for pause/resume (RFC 7866 §6.4) and
- * for participant updates (transfer, conference add/remove).
- *
- * The new SDP MUST keep the same a=label values for streams
- * that are continuing — RFC 7866 §6.4 §8.5.
- *
- * Implementation: pushes a fresh sip_multipart entry for the
- * metadata (when supplied), then drives a re-INVITE via
- * SWITCH_MESSAGE_INDICATE_MEDIA_REDIRECT — mod_sofia's
- * handler at mod_sofia.c:1650 calls
- * switch_core_media_set_local_sdp followed by
- * sofia_glue_do_invite, emitting the re-INVITE on the
- * existing dialog.
- */
-switch_status_t siprec_invite_reinvite(
-    recording_t *recording,
-    const char *new_sdp,
-    const char *new_metadata);
 
 #endif /* SIPREC_INVITE_H */

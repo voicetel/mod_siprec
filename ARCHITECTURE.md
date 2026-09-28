@@ -13,7 +13,7 @@ captured audio to the negotiated RTP endpoints.
 | Concept              | RFC reference        | This implementation |
 |----------------------|----------------------|---------------------|
 | SRC INVITE           | RFC 7866 §6.1        | `siprec_send_invite()` (sofia-sip NUA) |
-| Required SDP labels  | RFC 7866 §7.2 + §8.5 | `a=label:1`, `a=label:2` per stream |
+| Required SDP labels  | RFC 7866 §7.2 + §8.5 | `a=label:1` on the single mixed stream |
 | `a=sendonly` on SRC  | RFC 7866 §7.4        | media bug taps original RTP, never receives |
 | Multipart body       | RFC 7866 §6.1.2      | `multipart/mixed`; SDP first, metadata second |
 | Metadata XML         | RFC 7865             | `application/rs-metadata+xml` |
@@ -47,10 +47,10 @@ siprec_media.h
 
 ### Phase 1 — foundation (NO FS deps; pure C, unit-testable)
 
-- [x] `siprec_sdp.c` — build the SDP half of the body. Inputs: array of
-      tracks (label, codec, port, IP). Output: a `char *` with the
-      full SDP. Includes `o=`, `s=`, `c=`, one `m=audio` per track,
-      `a=label:N`, `a=sendonly` (RFC 7866 §7.4).
+- [x] `siprec_sdp.c` — parse the SRS's SDP answer into per-stream
+      (IP, port, payload type). mod_sofia generates the offer itself;
+      `a=sendonly` and `a=label:1` are requested through the
+      `origination_audio_mode` / `rtp_append_audio_sdp` ovars.
 - [x] `siprec_metadata.c` — build the RFC 7865 metadata XML
       `<recording xmlns="urn:ietf:params:xml:ns:recording:1">` with
       `<datamode>complete</datamode>`, `<group>`, `<session>`,
@@ -212,9 +212,7 @@ siprec_media.h
 
 ### Phase 6 — testing
 
-- [x] Unit tests for `siprec_sdp.c` — assertions covering `a=label:N`
-      injection (block ordering, idempotency, LF/malformed-`o=`
-      tolerance), and the SDP-answer parser (per-media `c=`
+- [x] Unit tests for `siprec_sdp.c` — the SDP-answer parser (per-media `c=`
       attribution, port-0 skip, IPv6 ignore, `out_max` bound).
 - [x] Unit tests for `siprec_metadata.c` — assertions
       covering RFC 7865 Appendix A schema element ordering,
