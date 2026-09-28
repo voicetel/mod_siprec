@@ -293,10 +293,8 @@ switch_status_t siprec_invite_send(
                 switch_copy_string(ctx->negotiated[0].remote_ip, rip,
                     sizeof(ctx->negotiated[0].remote_ip));
                 ctx->negotiated[0].remote_port = (uint16_t)pn;
-                /* No SDP on this path — remote_media_* exposes
-                 * only ip/port, not the negotiated codec. Leave
-                 * the PT unset so the media fork falls back to
-                 * the read-codec default. */
+                /* remote_media_* carry no codec; filled in from
+                 * the leg's negotiated codec below. */
                 ctx->negotiated[0].pt = SIPREC_PT_UNSET;
                 ctx->negotiated_count = 1;
             } else {
@@ -305,6 +303,27 @@ switch_status_t siprec_invite_send(
                     "siprec: remote_media_port='%s' is not a valid "
                     "1-65535 integer; fallback path failing\n",
                     rport);
+            }
+        }
+    }
+
+    /* A stream whose answer gave no usable payload type (the
+     * remote_media_* fallback has no SDP at all) takes the codec
+     * FreeSWITCH itself negotiated with the SRS on this leg. Falling
+     * back to the ORIGINAL call's codec instead sent e.g. PCMA to an
+     * SRS that had answered PCMU (GitHub issue #5). */
+    for (size_t s = 0; s < ctx->negotiated_count; s++) {
+        if (ctx->negotiated[s].pt != 0 && ctx->negotiated[s].pt != 8) {
+            switch_codec_t *leg_codec = switch_core_session_get_read_codec(new_session);
+            uint32_t leg_pt = (leg_codec && leg_codec->implementation)
+                ? leg_codec->implementation->ianacode : 255;
+            if (leg_pt == 0 || leg_pt == 8) {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+                    SWITCH_LOG_INFO,
+                    "siprec: stream[%zu] answer carried no usable payload "
+                    "type; using the recording leg's negotiated PT %u\n",
+                    s, (unsigned)leg_pt);
+                ctx->negotiated[s].pt = (uint8_t)leg_pt;
             }
         }
     }

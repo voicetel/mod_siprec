@@ -453,14 +453,13 @@ switch_status_t siprec_media_attach(recording_t *recording)
             mctx->streams[i].pt = neg_pt;
         } else {
             mctx->streams[i].pt = fallback_pt;
-            if (neg_pt != SIPREC_PT_UNSET) {
-                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
-                    SWITCH_LOG_WARNING,
-                    "siprec: stream[%zu] SRS answered payload type %u which "
-                    "the v1 fork can't encode (only PCMU/0, PCMA/8); "
-                    "falling back to PT %u\n",
-                    i, (unsigned)neg_pt, (unsigned)fallback_pt);
-            }
+            /* Never silent: the SRS may be expecting another codec. */
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+                SWITCH_LOG_WARNING,
+                "siprec: stream[%zu] has no usable negotiated payload type "
+                "(answer PT %u; the fork encodes only PCMU/0, PCMA/8); "
+                "falling back to the call's codec, PT %u\n",
+                i, (unsigned)neg_pt, (unsigned)fallback_pt);
         }
 
         /* RFC 3550 §8.1: the SSRC must be random so collision
