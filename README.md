@@ -198,11 +198,13 @@ pass a complete SIP URI as a second argument:
      tls uses sips:/;transport=tls. -->
 ```
 
-The URI must be a `sip:`/`sips:` scheme and must not contain
-dial-string metacharacters (`, | { } [ ] < >` or whitespace); such a
-value is refused rather than originated. If you build this argument
-from an untrusted source (e.g. an upstream API), that validation is
-what stops a crafted URI from injecting an extra originate leg.
+The URI must be a `sip:`/`sips:` URI of at most 255 bytes built only
+from letters, digits and `-._~%!*+;=:@$`, and must not contain the
+`:_:` enterprise-originate separator. Anything else (commas, `|`,
+braces, brackets, whitespace, quotes, URI headers after `?`) is refused
+rather than originated. If you build this argument from an untrusted
+source (e.g. an upstream API), that allowlist is what stops a crafted
+URI from injecting an extra originate leg.
 
 Pause and resume:
 
@@ -282,6 +284,8 @@ Files:
   FreeSWITCH's sofia profile.
 - **`siprec_media.{c,h}`** — media bug callback + RFC 3550 RTP
   fork; encodes via the `siprec_g711` lookup tables.
+- **`siprec_uri.{c,h}`** — allowlist validation of per-call SRS
+  URIs before they reach the originate dial string.
 - **`siprec_g711.{c,h}`** — G.711 µ-law / A-law reference encoders
   + the branch-free lookup tables the media hot path uses (built
   once at module load, bit-identical to the reference encoders).
@@ -360,4 +364,5 @@ Files derived from the original
 from FreeSWITCH) retain their MPL 1.1 license headers and are
 dual-licensed under MPL 1.1 / MIT. New files written for this
 fork (`siprec_sdp.*`, `siprec_metadata.*`, `siprec_invite.*`,
-`siprec_media.*`, `siprec_test.c`) are MIT only.
+`siprec_media.*`, `siprec_g711.*`, `siprec_sb.*`, `siprec_uri.*`,
+`siprec_test.c`) are MIT only.

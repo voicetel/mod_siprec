@@ -199,8 +199,8 @@ siprec_media.h
       handle stays the key for pause/resume/stop. Lets the recording
       target be chosen per call (e.g. supplied by an upstream API)
       instead of provisioned in `siprec.conf`. The URI is validated
-      for a `sip:`/`sips:` scheme **and** rejected if it carries
-      dial-string metacharacters (`, | { } [ ] < >` or whitespace),
+      by `siprec_uri_check` against an allowlist (`sip:`/`sips:`,
+      letters, digits, `-._~%!*+;=:@$`, no `:_:`, ≤ 255 bytes),
       so an untrusted per-call value can't inject an extra originate
       leg through the `sofia/<profile>/<uri>` bridge string.
 

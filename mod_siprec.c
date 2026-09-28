@@ -34,6 +34,7 @@
 #include "siprec_invite.h"
 #include "siprec_media.h"
 #include "siprec_g711.h"
+#include "siprec_uri.h"
 
 globals_t globals;
 
@@ -190,30 +191,15 @@ SWITCH_STANDARD_APP(siprec_app_function)
 		recording_server_name = argv[0];
 	}
 	if (argc >= 2 && !zstr(argv[1])) {
-		/* Validate the scheme up front so a malformed token can't
-		 * reach the dial-string as "sofia/<profile>/garbage". Only
-		 * sip:/sips: are valid SRS targets (RFC 7866 §6.1). */
-		if (strncasecmp(argv[1], "sip:", 4) && strncasecmp(argv[1], "sips:", 5)) {
+		/* The URI is concatenated into the originate dial string
+		 * ("...}sofia/<profile>/<uri>"); see siprec_uri.h for why an
+		 * allowlist is what keeps an untrusted value from injecting
+		 * an extra originate leg. */
+		const char *why = siprec_uri_check(argv[1]);
+		if (why) {
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-				"siprec: ad-hoc SRS endpoint '%s' is not a sip:/sips: URI — ignoring\n",
-				argv[1]);
-			return;
-		}
-		/* The URI is concatenated verbatim into the originate
-		 * dial-string ("...}sofia/<profile>/<uri>", siprec_invite.c).
-		 * switch_ivr_originate splits a bridge string on ',' (parallel
-		 * targets) and ':_:' (enterprise), and treats '{'/'['/'|' as
-		 * variable/gateway grammar. A URI carrying any of those — e.g.
-		 * "sip:srs,loopback/9999" from an untrusted channel variable —
-		 * would inject an attacker-chosen extra leg that receives the
-		 * INVITE with Require: siprec and the RFC 7865 metadata (call
-		 * participants' AORs / PII). A legitimate SIP URI never
-		 * contains these, so reject rather than try to escape them. */
-		if (strpbrk(argv[1], ",|{}[]<> \t\r\n")) {
-			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-				"siprec: ad-hoc SRS endpoint '%s' contains dial-string "
-				"metacharacters — refusing to originate\n",
-				argv[1]);
+				"siprec: refusing ad-hoc SRS endpoint '%s': %s\n",
+				argv[1], why);
 			return;
 		}
 		srs_uri = argv[1];

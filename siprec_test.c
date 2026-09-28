@@ -15,6 +15,7 @@
 #include "siprec_metadata.h"
 #include "siprec_g711.h"
 #include "siprec_sb.h"
+#include "siprec_uri.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -763,6 +764,58 @@ static void test_sb_defensive_paths(void) {
     }
 }
 
+/* ──────────────────────────────────────────────────────────── *
+ * Ad-hoc SRS URI validation (siprec_uri_check)                *
+ * ──────────────────────────────────────────────────────────── */
+
+static void test_uri_check(void) {
+    static const char *ok[] = {
+        "sip:198.51.100.5:5070",
+        "sip:srs@example.com:5070;transport=tcp",
+        "sips:srs.example.com;transport=tls",
+        "SIP:Rec%40er@host",
+        "sip:a-b_c.d~e!f*g+h=i$j@host",
+    };
+    static const struct { const char *uri; const char *what; } bad[] = {
+        { NULL,                               "uri:reject NULL" },
+        { "",                                 "uri:reject empty" },
+        { "sip:",                             "uri:reject scheme only" },
+        { "tel:+15551234",                    "uri:reject non-sip scheme" },
+        { "sip:srs,loopback/9999",            "uri:reject ',' parallel leg" },
+        { "sip:srs|sofia/x/y",                "uri:reject '|' serial leg" },
+        { "sip:srs:_:evil@host",              "uri:reject ':_:' enterprise leg" },
+        { "sip:{x=y}srs",                     "uri:reject '{' variables" },
+        { "sip:[x=y]srs",                     "uri:reject '[' variables" },
+        { "sip:srs <x>",                      "uri:reject whitespace/angle" },
+        { "sip:srs\ttab",                     "uri:reject tab" },
+        { "sip:srs?X-Evil=1",                 "uri:reject '?' URI headers" },
+        { "sip:o'brien@host",                 "uri:reject quote" },
+    };
+    char longuri[SIPREC_URI_MAX_LEN + 2];
+    size_t i;
+
+    for (i = 0; i < sizeof(ok) / sizeof(ok[0]); i++) {
+        const char *why = siprec_uri_check(ok[i]);
+        test_count++;
+        if (!why) {
+            printf("PASS uri:accept %s\n", ok[i]);
+        } else {
+            fprintf(stderr, "FAIL uri:accept %s: %s\n", ok[i], why);
+            fail_count++;
+        }
+    }
+    for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        expect_true(siprec_uri_check(bad[i].uri) != NULL, bad[i].what);
+    }
+
+    memset(longuri, 'a', sizeof(longuri) - 1);
+    memcpy(longuri, "sip:", 4);
+    longuri[sizeof(longuri) - 1] = '\0';
+    expect_true(siprec_uri_check(longuri) != NULL, "uri:reject over-length");
+    longuri[SIPREC_URI_MAX_LEN] = '\0';
+    expect_true(siprec_uri_check(longuri) == NULL, "uri:accept max-length");
+}
+
 int main(void) {
     test_parse_remote_streams();
 
@@ -779,6 +832,8 @@ int main(void) {
     test_g711_tables_match_reference();
 
     test_sb_defensive_paths();
+
+    test_uri_check();
 
     printf("\n%d/%d passed\n", test_count - fail_count, test_count);
     return fail_count == 0 ? 0 : 1;
