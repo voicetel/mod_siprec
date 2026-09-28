@@ -126,6 +126,12 @@ switch_status_t siprec_invite_send_failover(
  */
 switch_status_t siprec_invite_send_bye(recording_t *recording);
 
+/* siprec_invite_set_direction: RFC 7866 §6.4 pause/resume. Sends a
+ * re-INVITE on the recording dialog offering a=inactive (paused != 0)
+ * or a=sendonly (paused == 0). mod_sofia regenerates the SDP, so ports
+ * and codecs stay as negotiated and o= session-version is bumped. */
+switch_status_t siprec_invite_set_direction(recording_t *recording, int paused);
+
 /* siprec_invite_reinvite: send a re-INVITE on the existing
  * recording dialog with an updated SDP and (optional)
  * metadata body. Used for pause/resume (RFC 7866 §6.4) and

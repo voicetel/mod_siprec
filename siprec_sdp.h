@@ -16,23 +16,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* siprec_sdp_flip_direction: produce a copy of `src_sdp` with
- * its direction attribute swapped to a=inactive (paused != 0)
- * or a=sendonly (paused == 0), and the o= session-version
- * incremented per RFC 4566 §5.2.
- *
- * Used by the pause/resume re-INVITE path: the recording leg
- * already negotiated a complete local SDP (ports, codec, c=)
- * and a re-INVITE for direction change MUST keep all of that
- * stable while only flipping the direction. Rebuilding from
- * scratch would change the session-id and break dialog
- * continuity at the SRS.
- *
- * Returns a heap buffer (caller frees with siprec_sdp_free)
- * or NULL on allocation failure / malformed input.
- */
-char *siprec_sdp_flip_direction(const char *src_sdp, int paused);
-
 /* siprec_sdp_inject_labels: produce a copy of `src_sdp` with
  * `a=label:<n>` injected into every m= block that doesn't
  * already carry a label, where <n> is the 1-based index of
@@ -45,8 +28,7 @@ char *siprec_sdp_flip_direction(const char *src_sdp, int paused);
  * XML's <stream> entries. mod_sofia's auto-generated offer
  * SDP doesn't emit a=label, so we do a surgical injection on
  * the local SDP after originate succeeds and re-INVITE the
- * SRS with the labelled body. Same low-risk modification
- * pattern as flip_direction: ports, codec, c=, crypto stay
+ * SRS with the labelled body. Ports, codec, c= and crypto stay
  * untouched; we only add one attribute line per m= block.
  *
  * The label is placed immediately before the direction
@@ -69,8 +51,7 @@ char *siprec_sdp_flip_direction(const char *src_sdp, int paused);
  */
 char *siprec_sdp_inject_labels(const char *src_sdp);
 
-/* Free a buffer returned by siprec_sdp_flip_direction /
- * siprec_sdp_inject_labels. NULL-safe. */
+/* Free a buffer returned by siprec_sdp_inject_labels. NULL-safe. */
 void siprec_sdp_free(char *buf);
 
 /* ──────────────────────────────────────────────────────────── *

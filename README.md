@@ -48,7 +48,7 @@ verification path; production interop is verified against
 | `+sip.src` Contact feature tag | [RFC 7866 §5.2.1][rfc7866-5.2.1] | ✅ via `sip_invite_contact_params=~+sip.src` ovar; the leading `~` tells `sofia_overcome_sip_uri_weakness` (sofia_glue.c:854,891) to place the tag AFTER the closing `>`, yielding `Contact: <sip:src@host:port>;+sip.src` per the spec |
 | `multipart/mixed` (SDP + metadata) | [RFC 7866 §6.1.2][rfc7866-6.1.2] / [RFC 2046][rfc2046] | ✅ `sip_multipart` channel var |
 | BYE on hangup | [RFC 7866 §6.4][rfc7866-6.4] | ✅ on_destroy state-handler |
-| pause / resume re-INVITE | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_pause` / `siprec_resume` apps; SDP direction-flip preserves negotiated session. **PCI-safe**: pause sets the recording bug's native `SMBF_PAUSE` (FreeSWITCH stops capturing audio at the io pump — no frames forked, nothing buffered to burst on resume) *before* sending `a=inactive`, so cardholder audio never leaves the box |
+| pause / resume re-INVITE | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_pause` / `siprec_resume` apps; re-INVITE offers `a=inactive` / `a=sendonly` via `origination_audio_mode` + `MEDIA_RENEG` (mod_sofia regenerates the SDP, so ports and codecs stay as negotiated). **PCI-safe**: pause sets the recording bug's native `SMBF_PAUSE` (FreeSWITCH stops capturing audio at the io pump — no frames forked, nothing buffered to burst on resume) *before* sending `a=inactive`, so cardholder audio never leaves the box |
 | explicit stop | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_stop` app — detaches the media fork + BYEs the SRS leg mid-call; no-arg form stops every recording on the leg (PCI-safe default). Not resumable; start a fresh `siprec` to record again |
 | sendonly direction on SRC streams | [RFC 7866 §7.4][rfc7866-7.4] | ✅ sofia auto-gen offer |
 | `a=label:N` per stream | [RFC 7866 §8.5][rfc7866-8.5] | ⚠️ partial — labels are built and a post-originate re-INVITE is attempted, but mod_sofia regenerates the recording leg's SDP via `gen_local_sdp` (the parked, `session=NULL` originate is never in `CF_PROXY_MODE`) and clobbers the injected `a=label`, so **labels do not reach the wire today**. The injection code is in place and correct; it is gated on the same initial-offer SDP-override path as multi-track and SRTP (the leg must be in proxy mode for sofia to forward `local_sdp_str` verbatim). Once that lands, sequential per-block labels (`label:1`, `label:2`, …) emit with no code changes |
@@ -61,7 +61,7 @@ verification path; production interop is verified against
 | SRTP for the recording RTP fork | [RFC 7866 §11.2][rfc7866-11.2] / [RFC 3711][rfc3711] / [RFC 4568][rfc4568] | ❌ not supported. SDES keymat must travel in the initial offer (RFC 4568 §5.1) and our offer is sofia auto-gen which doesn't carry `a=crypto`. The clean path needs the same offer-time SDP-override hook the multi-track work needs. SRSes that require SRTP will reject our `RTP/AVP` offer with `488 Not Acceptable Here`; failover or pin a strict-SRTP-not-required SRS. |
 | SIPS transport for SRC→SRS | [RFC 7866 §11.3][rfc7866-11.3] | ✅ `transport=tls` config |
 | SDP offer + `a=label:N` cross-reference | [RFC 4566][rfc4566] / [RFC 7866 §7][rfc7866-7] / [RFC 7866 §8.5][rfc7866-8.5] | ✅ mod_sofia auto-generates the outbound-leg offer (single `m=audio`, `a=sendonly`); mod_siprec injects `a=label:N` by rewriting the negotiated local SDP and re-INVITEing (`siprec_sdp_inject_labels`) |
-| Pause/resume SDP direction-flip with `o=` version bump | [RFC 4566 §5.2][rfc4566] | ✅ `siprec_sdp_flip_direction` |
+| Pause/resume `o=` version bump | [RFC 4566 §5.2][rfc4566] | ✅ mod_sofia bumps session-version on every regenerated offer |
 | RTP packet framing (V=2, M-bit at talkspurt start, big-endian seq/ts/SSRC) | [RFC 3550 §5.1][rfc3550] / [RFC 3551 §4.1][rfc3551] | ✅ `siprec_media.c` |
 | Random SSRC | [RFC 3550 §8.1][rfc3550] | ✅ /dev/urandom seed |
 | G.711 µ-law / A-law encoders | [G.711][g711] | ✅ branch-free lookup tables (`siprec_g711.c`), INT16_MIN-safe, bit-verified vs reference for all 65536 inputs |
@@ -285,14 +285,12 @@ Files:
 - **`siprec_g711.{c,h}`** — G.711 µ-law / A-law reference encoders
   + the branch-free lookup tables the media hot path uses (built
   once at module load, bit-identical to the reference encoders).
-- **`siprec_sdp.{c,h}`** — [RFC 7866 §7][rfc7866-7] SDP body
-  builder + `siprec_sdp_flip_direction` helper used by the
-  pause/resume re-INVITE path.
+- **`siprec_sdp.{c,h}`** — [RFC 7866 §7][rfc7866-7] SDP helpers:
+  `a=label` injection and the SRS answer parser.
 - **`siprec_metadata.{c,h}`** — [RFC 7865 Appendix A][rfc7865]
   schema-conformant metadata XML builder with full XML-entity
   escaping.
-- **`siprec_test.c`** — unit-test assertions for the builders
-  and the SDP direction-flip helper.
+- **`siprec_test.c`** — unit-test assertions for the FS-free units.
 - **`autoload_conf/siprec.conf.xml`** — module config schema.
 - **[`ARCHITECTURE.md`](ARCHITECTURE.md)** — phase plan + RFC mapping.
 - **[`tests/README.md`](tests/README.md)** — operator field-test

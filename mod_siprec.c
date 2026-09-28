@@ -34,7 +34,6 @@
 #include "siprec_invite.h"
 #include "siprec_media.h"
 #include "siprec_g711.h"
-#include "siprec_sdp.h"
 
 globals_t globals;
 
@@ -261,10 +260,8 @@ static const char *siprec_arg_handle(switch_core_session_t *session, const char 
  *                            but the dialog stays up)
  *   resume  →  a=sendonly   (SRS resumes writing)
  *
- * The new SDP is built locally using the same parameters
- * the original INVITE used (src_ip, codec, port stable for
- * the dialog's lifetime); only the direction attribute
- * changes.
+ * mod_sofia regenerates the offer itself (same ports and
+ * codecs, o= version bumped); only the direction changes.
  *
  * Usage in dialplan:
  *   <action application="siprec_pause"  data="default"/>
@@ -282,11 +279,6 @@ static switch_status_t siprec_change_direction(
 	const char *uuid;
 	char *recording_key;
 	recording_t *recording;
-	switch_core_session_t *rs;
-	switch_channel_t *rch;
-	const char *local_sdp;
-	int   had_local_sdp;
-	char *new_sdp;
 	switch_status_t st;
 
 	/* Master switch (src-enabled). RESUME re-starts audio transmission
@@ -352,64 +344,9 @@ static switch_status_t siprec_change_direction(
 		siprec_media_set_paused(recording, 1);
 	}
 
-	/* RFC 7866 §6.4 pause/resume: re-INVITE on the existing
-	 * dialog with the SDP direction flipped. The new SDP MUST
-	 * keep the negotiated ports, codec, c= address, and crypto
-	 * stable — only the direction attribute and o=session-version
-	 * change. Building from scratch would change session-id and
-	 * the SRS would treat it as a brand-new session.
-	 *
-	 * Source the existing local SDP from the recording leg's
-	 * sip_local_sdp_str channel variable (mod_sofia populates
-	 * it after every successful negotiation), flip the
-	 * direction line, bump o=version. Locate-by-uuid so the
-	 * read can't UAF on a torn-down recording leg. */
-	rs = switch_core_session_locate(
-		recording->invite_ctx->recording_uuid);
-	if (!rs) {
-		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
-			SWITCH_LOG_ERROR,
-			"siprec: recording leg %s is gone — cannot pause/resume\n",
-			recording->invite_ctx->recording_uuid);
-		release_recording(recording);
-		return SWITCH_STATUS_FALSE;
-	}
-
-	rch = switch_core_session_get_channel(rs);
-	local_sdp =
-		switch_channel_get_variable(rch, "sip_local_sdp_str");
-
-	/* Capture state and produce the rewritten SDP BEFORE
-	 * rwunlock — local_sdp is a pointer into the channel's
-	 * pool, which can be freed once we drop the read-lock and
-	 * sofia / FS-core finish tearing down the session. The
-	 * rewritten new_sdp is a fresh malloc, independent of the
-	 * channel's lifetime. */
-	had_local_sdp = !zstr(local_sdp);
-	new_sdp       = had_local_sdp
-		? siprec_sdp_flip_direction(local_sdp, paused)
-		: NULL;
-
-	switch_core_session_rwunlock(rs);
-
-	if (!had_local_sdp) {
-		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
-			SWITCH_LOG_ERROR,
-			"siprec: recording leg has no sip_local_sdp_str — "
-			"cannot pause/resume\n");
-		release_recording(recording);
-		return SWITCH_STATUS_FALSE;
-	}
-	if (!new_sdp) {
-		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
-			SWITCH_LOG_ERROR,
-			"siprec: SDP direction-flip allocation failed\n");
-		release_recording(recording);
-		return SWITCH_STATUS_FALSE;
-	}
-
-	st = siprec_invite_reinvite(recording, new_sdp, NULL);
-	siprec_sdp_free(new_sdp);
+	/* RFC 7866 §6.4 pause/resume: re-INVITE on the existing dialog
+	 * offering a=inactive (pause) or a=sendonly (resume). */
+	st = siprec_invite_set_direction(recording, paused);
 
 	if (st != SWITCH_STATUS_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,

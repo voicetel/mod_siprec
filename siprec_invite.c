@@ -536,8 +536,50 @@ switch_status_t siprec_invite_send_bye(recording_t *recording)
     return SWITCH_STATUS_SUCCESS;
 }
 
+/* siprec_invite_set_direction: pause/resume re-INVITE.
+ *
+ * mod_sofia regenerates the local SDP on every re-INVITE
+ * (sofia_glue_do_invite -> switch_core_media_gen_local_sdp) for any
+ * leg not in proxy mode, so a hand-edited SDP body would be thrown
+ * away. The direction attribute instead comes from
+ * origination_audio_mode, a one-shot override gen_local_sdp consumes
+ * and clears; the o= version bump is automatic. MEDIA_RENEG then
+ * drives sofia_glue_do_invite on the existing dialog. Setting a
+ * channel variable is thread-safe, unlike poking the media engine's
+ * smode from this (the original call's) thread. */
+switch_status_t siprec_invite_set_direction(recording_t *recording, int paused)
+{
+    siprec_invite_ctx_t *ctx;
+    switch_core_session_t *s;
+    switch_core_session_message_t msg = { 0 };
+    switch_status_t st;
+
+    if (!recording || !(ctx = recording->invite_ctx) || !*ctx->recording_uuid) {
+        return SWITCH_STATUS_FALSE;
+    }
+
+    if (!(s = switch_core_session_locate(ctx->recording_uuid))) {
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+            SWITCH_LOG_WARNING,
+            "siprec: re-INVITE skipped — recording leg %s is gone\n",
+            ctx->recording_uuid);
+        ctx->recording_uuid[0] = '\0';
+        return SWITCH_STATUS_FALSE;
+    }
+
+    switch_channel_set_variable(switch_core_session_get_channel(s),
+        "origination_audio_mode", paused ? "inactive" : "sendonly");
+
+    msg.message_id = SWITCH_MESSAGE_INDICATE_MEDIA_RENEG;
+    msg.from       = __FILE__;
+    st = switch_core_session_receive_message(s, &msg);
+
+    switch_core_session_rwunlock(s);
+    return st;
+}
+
 /* ──────────────────────────────────────────────────────────── *
- * re-INVITE for pause / resume.                              *
+ * re-INVITE with a caller-supplied SDP.                       *
  *                                                              *
  * RFC 7866 §6.4: pause/resume is signalled by a re-INVITE that *
  * flips the SDP direction attribute (a=inactive ⇄ a=sendonly). *

@@ -85,96 +85,6 @@ static void check_str(const char *got, const char *want, const char *what) {
  * SDP tests                                                   *
  * ──────────────────────────────────────────────────────────── */
 
-static void test_sdp_flip_direction(void) {
-    /* RFC 7866 §6.4: pause/resume re-INVITE flips direction
-     * while preserving the negotiated session — same ports,
-     * same codec, same session-id; only o=session-version
-     * is bumped per RFC 4566 §5.2. */
-    const char *src =
-        "v=0\r\n"
-        "o=- 12345 7 IN IP4 192.0.2.10\r\n"
-        "s=-\r\n"
-        "c=IN IP4 192.0.2.10\r\n"
-        "t=0 0\r\n"
-        "m=audio 30000 RTP/AVP 0\r\n"
-        "a=rtpmap:0 PCMU/8000\r\n"
-        "a=ptime:20\r\n"
-        "a=label:1\r\n"
-        "a=sendonly\r\n";
-
-    char *paused = siprec_sdp_flip_direction(src, 1);
-    check_contains(paused, "o=- 12345 8 IN IP4 192.0.2.10\r\n",
-        "flip:o= version bumped on pause");
-    check_contains(paused, "a=inactive\r\n",   "flip:a=inactive on pause");
-    check_not_contains(paused, "a=sendonly",   "flip:no a=sendonly on pause");
-    check_contains(paused, "m=audio 30000 RTP/AVP 0\r\n",
-        "flip:m= preserved on pause");
-    check_contains(paused, "a=label:1\r\n",    "flip:a=label preserved");
-    siprec_sdp_free(paused);
-
-    char *resumed = siprec_sdp_flip_direction(src, 0);
-    check_contains(resumed, "o=- 12345 8 IN IP4 192.0.2.10\r\n",
-        "flip:o= version bumped on resume");
-    check_contains(resumed, "a=sendonly\r\n", "flip:a=sendonly on resume");
-    check_not_contains(resumed, "a=inactive", "flip:no a=inactive on resume");
-    siprec_sdp_free(resumed);
-
-    /* Round-trip a SDP that already has a=inactive; resume
-     * should rewrite it back to a=sendonly. */
-    const char *paused_src =
-        "v=0\r\n"
-        "o=- 99 1 IN IP4 1.2.3.4\r\n"
-        "s=-\r\n"
-        "t=0 0\r\n"
-        "m=audio 9 RTP/AVP 0\r\n"
-        "a=inactive\r\n";
-    char *back = siprec_sdp_flip_direction(paused_src, 0);
-    check_contains(back, "a=sendonly\r\n",   "flip:inactive→sendonly");
-    check_contains(back, "o=- 99 2 IN IP4 1.2.3.4\r\n",
-        "flip:inactive→sendonly bumps version");
-    siprec_sdp_free(back);
-
-    /* Malformed o= line (sscanf < 6 fields): flip passes it
-     * through verbatim (no version bump) while still flipping the
-     * direction attribute. */
-    const char *bad_o =
-        "v=0\r\n"
-        "o=malformed\r\n"
-        "s=-\r\n"
-        "m=audio 9 RTP/AVP 0\r\n"
-        "a=sendonly\r\n";
-    char *bad_o_out = siprec_sdp_flip_direction(bad_o, 1);
-    check_contains(bad_o_out, "o=malformed\r\n",
-        "flip:malformed o= passed through verbatim");
-    check_contains(bad_o_out, "a=inactive\r\n",
-        "flip:direction still flipped with malformed o=");
-    siprec_sdp_free(bad_o_out);
-
-    /* LF-only line endings (bare \n, no CR): flip handles a \n
-     * terminator — o= still bumps, direction still flips. */
-    const char *lf_only =
-        "v=0\n"
-        "o=- 5 1 IN IP4 1.2.3.4\n"
-        "s=-\n"
-        "m=audio 9 RTP/AVP 0\n"
-        "a=sendonly\n";
-    char *lf_out = siprec_sdp_flip_direction(lf_only, 1);
-    check_contains(lf_out, "o=- 5 2 IN IP4 1.2.3.4",
-        "flip:LF-only o= version bumped");
-    check_contains(lf_out, "a=inactive",
-        "flip:LF-only direction flipped");
-    siprec_sdp_free(lf_out);
-
-    /* Empty / NULL input must reject — no point producing an
-     * empty body for a re-INVITE that would be malformed. */
-    test_count++;
-    if (siprec_sdp_flip_direction(NULL, 0) == NULL) printf("PASS flip:reject NULL\n");
-    else { fprintf(stderr, "FAIL flip:NULL should reject\n"); fail_count++; }
-    test_count++;
-    if (siprec_sdp_flip_direction("", 0) == NULL) printf("PASS flip:reject empty\n");
-    else { fprintf(stderr, "FAIL flip:empty should reject\n"); fail_count++; }
-}
-
 static void test_sdp_inject_labels(void) {
     /* RFC 7866 §8.5: every SRC stream must carry a=label:N.
      * mod_sofia auto-gens an SDP without labels; we inject
@@ -1074,7 +984,6 @@ static void test_sb_defensive_paths(void) {
 }
 
 int main(void) {
-    test_sdp_flip_direction();
     test_sdp_inject_labels();
     test_parse_remote_streams();
 

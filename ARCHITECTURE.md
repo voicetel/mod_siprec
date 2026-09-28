@@ -147,12 +147,13 @@ siprec_media.h
       `start_recording_session`, so caller-side hangup of the
       original call automatically tears down the recording.
 - [x] `siprec_pause` / `siprec_resume` apps — wire dialplan
-      entry points through `siprec_change_direction`, which
-      reads the recording leg's `sip_local_sdp_str`, runs it
-      through `siprec_sdp_flip_direction` (bumps
-      `o=session-version` per RFC 4566 §5.2 and swaps
-      `a=sendonly` ⇄ `a=inactive`), and dispatches the
-      re-INVITE through `siprec_invite_reinvite`. PCI-safe:
+      entry points through `siprec_change_direction`, which calls
+      `siprec_invite_set_direction`: it sets the one-shot
+      `origination_audio_mode` (`inactive` / `sendonly`) on the
+      recording leg and sends `SWITCH_MESSAGE_INDICATE_MEDIA_RENEG`.
+      mod_sofia regenerates the offer on every re-INVITE (a
+      hand-edited SDP would be discarded), keeping ports/codecs and
+      bumping `o=` session-version. PCI-safe:
       pause also sets the media bug's native `SMBF_PAUSE`
       (`siprec_media_set_paused`) before the re-INVITE, so the
       FS core stops capturing audio at the io pump — cardholder
@@ -211,8 +212,7 @@ siprec_media.h
 
 ### Phase 6 — testing
 
-- [x] Unit tests for `siprec_sdp.c` — assertions covering the
-      direction-flip round-trip and `o=` version bump, `a=label:N`
+- [x] Unit tests for `siprec_sdp.c` — assertions covering `a=label:N`
       injection (block ordering, idempotency, LF/malformed-`o=`
       tolerance), and the SDP-answer parser (per-media `c=`
       attribution, port-0 skip, IPv6 ignore, `out_max` bound).
