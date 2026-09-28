@@ -63,9 +63,8 @@ typedef struct siprec_media_ctx {
         /* PCMU/PCMA payload type for THIS stream's encoded
          * frames. Sourced from the SRS's SDP answer
          * (siprec_negotiated_t.pt) so the codec we encode and
-         * stamp matches what offer/answer negotiated — encoding
-         * from the original call leg instead is the "payload
-         * mismatch" bug. The media bug receives raw L16 frames;
+         * stamp matches what offer/answer negotiated rather than
+         * the original call leg's codec. The media bug receives raw L16 frames;
          * we encode in-place before send. v1 supports payload
          * type 0 (PCMU) and 8 (PCMA) only. */
         uint8_t    pt;

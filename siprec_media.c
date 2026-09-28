@@ -74,14 +74,8 @@ _Static_assert(
  * the same rate. */
 #define SIPREC_G711_RATE 8000
 
-/* ──────────────────────────────────────────────────────────── *
- * G.711 encoding lives in siprec_g711.{c,h}: branch-free table  *
- * lookups (siprec_l16_to_ulaw / _alaw) built once at module      *
- * load. Measured ~7× faster per sample than the old inline       *
- * branch encoders (~24% off the whole per-tick cost); the tables *
- * are FreeSWITCH-free so the table-vs-reference equivalence is a *
- * standalone unit test. See siprec_g711.h for the numbers.       *
- * ──────────────────────────────────────────────────────────── */
+/* G.711 encoding: branch-free table lookups from siprec_g711.h,
+ * built once at module load. */
 
 /* ──────────────────────────────────────────────────────────── *
  * RTP send                                                    *
@@ -446,9 +440,8 @@ switch_status_t siprec_media_attach(recording_t *recording)
          * the offer lists only PCMU,PCMA (siprec_invite.c), a
          * conformant SRS answer always lands in range — the
          * fallback covers the no-SDP path and non-conformant
-         * answers. This is the fix for the advertised-vs-sent
-         * "payload mismatch": the bytes on the wire now follow
-         * the answer, not the original call leg. */
+         * answers. The bytes on the wire must follow the answer,
+         * not the original call leg's codec. */
         neg_pt = ictx->negotiated[i].pt;
         if (neg_pt == 0 || neg_pt == 8) {
             mctx->streams[i].pt = neg_pt;

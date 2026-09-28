@@ -120,11 +120,9 @@ static recording_t *claim_recording(const char *key, int *found)
  * Returns NULL if it isn't in the hash. Every non-NULL return MUST
  * be balanced by exactly one release_recording.
  *
- * This is the safe alternative to the old pause/resume pattern of
- * find-under-lock, unlock, then dereference: without a pin a
- * concurrent stop path could claim + teardown (freeing the pool the
- * recording_t itself lives in) between the unlock and the use. A
- * recording that is in the hash is by construction not yet doomed
+ * Without a pin a concurrent stop could claim + tear down (freeing
+ * the pool the recording_t lives in) between the unlock and the use.
+ * A recording that is in the hash is by construction not yet doomed
  * (claim_recording deletes before it dooms), so a successful find
  * can always take the pin. */
 recording_t *acquire_recording(const char *key)
@@ -174,11 +172,8 @@ void release_recording(recording_t *recording)
  * hangup path the core has already removed the bug, which the
  * callback's CLOSE records, so detach only closes the sockets.
  *
- * The pool-free retires the recording_t and its whole allocation
- * arena. The original code removed the hash entry but never
- * destroyed the pool — every stop leaked the recording_t struct
- * until module shutdown rolled them up via the shutdown hash walk;
- * with per-call dispatch on a multi-tenant box the leak compounds. */
+ * The pool-free retires the recording_t itself and everything
+ * allocated for it. */
 static void teardown_recording(recording_t *recording)
 {
     siprec_media_detach(recording);
@@ -426,10 +421,8 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
         return SWITCH_STATUS_FALSE;
     }
 
-    /* Reject NULL server name early. APR's switch_core_hash_find with
-     * APR_HASH_KEY_STRING calls strlen() on the key — passing NULL
-     * segfaults FreeSWITCH.
-     */
+    /* The handle keys the recordings hash; switch_core_hash_find
+     * strlen()s its key, so it must not be NULL. */
     if (zstr(recording_server_name)) {
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
             "siprec: no recording server specified (usage: siprec <server-name>)\n");
@@ -523,11 +516,9 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 
     recording->server = server;
 
-    /* Duplicate check and insert under ONE lock hold. Checking and
-     * inserting separately let two concurrent `siprec` calls for the
-     * same handle on the same leg both pass the check; the second
-     * insert then replaced the first in the hash and orphaned it, with
-     * its SRS dialog and media fork still running. */
+    /* Duplicate check and insert under ONE lock hold, so two
+     * concurrent `siprec` calls for the same handle on the same leg
+     * can't both pass the check and orphan one recording. */
     switch_mutex_lock(globals.recordings_mutex);
     if (switch_core_hash_find(globals.recordings_hash, recording->key)) {
         switch_mutex_unlock(globals.recordings_mutex);
@@ -557,22 +548,9 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
      * RFC 7866 INVITE dispatch                                *
      * ──────────────────────────────────────────────────────── */
 
-    /* Model the bridged call as two participants — caller
-     * (sip_from_uri) and callee (sip_to_uri / dialed
-     * destination_number) — with one stream per direction.
-     * The metadata XML carries the per-participant cross-
-     * reference structure RFC 7865 §5 recommends; the actual
-     * SDP shape (one m=audio mono-mixed vs two labelled m=
-     * blocks) depends on whether the SRS-side answer
-     * negotiated one or two streams (parsed in siprec_invite.c).
-     *
-     * Stream mapping:
-     *   stream-1  →  audio FROM caller TO callee  (read dir)
-     *   stream-2  →  audio FROM callee TO caller  (write dir)
-     * The bug's READ callback receives the carrier inbound
-     * (caller-spoken); WRITE receives what FS sends back to
-     * the carrier (callee-spoken via FS-internal apps).
-     */
+    /* Model the call as two participants, caller (sip_from_uri) and
+     * callee (sip_to_uri / destination_number), sharing the single
+     * mixed stream described below. */
     orig_ch = switch_core_session_get_channel(session);
 
     /* <nameID aor> must be a URI. sip_from_uri / sip_to_uri carry
@@ -645,20 +623,10 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
         return SWITCH_STATUS_FALSE;
     }
 
-    /* Profile: same one carrying the original call. The
-     * channel's `sofia_profile_name` is the canonical source
-     * — set automatically by mod_sofia for any channel that
-     * arrived through (or was originated against) a profile.
-     * Hardcoding deployment-specific names like "voicetel" or
-     * even the vanilla-config "internal" / "external" couples
-     * the module to one operator's layout; the channel
-     * variable lets us run unmodified on any profile name.
-     *
-     * If sofia_profile_name is absent, the channel almost
-     * certainly didn't come from sofia (loopback, mod_dingaling
-     * legacy, mod_skinny, …) — SIPREC isn't applicable in
-     * those cases. Fail loud rather than guess at a default.
-     */
+    /* Send the recording INVITE through the sofia profile carrying
+     * the original call (mod_sofia sets sofia_profile_name on every
+     * channel it owns). Without one the channel isn't sofia-backed
+     * and SIPREC doesn't apply, so fail rather than guess. */
     profile = switch_channel_get_variable(
         switch_core_session_get_channel(session),
         "sofia_profile_name");
@@ -671,11 +639,8 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
         return SWITCH_STATUS_FALSE;
     }
 
-    /* Send the INVITE and let mod_sofia auto-generate the offer
-     * body. A multi-track offer would need an offer-time SDP
-     * override hook through mod_sofia that doesn't exist yet;
-     * labels are injected post-originate via a re-INVITE instead
-     * (siprec_invite_send). */
+    /* Send the INVITE; mod_sofia generates the (single-track,
+     * sendonly, a=label:1) offer, see siprec_invite.c. */
     inv = siprec_invite_send_failover(
         recording, profile, server, metadata_body);
 

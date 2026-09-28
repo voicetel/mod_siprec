@@ -1,12 +1,10 @@
 /*
  * siprec_g711.c — G.711 reference encoders + lookup-table build.
  *
- * The reference encoders here were the original inline hot-path
- * encoders in siprec_media.c. They are now the source of truth used
- * to populate the lookup tables the media-bug callback actually
- * uses (see siprec_g711.h for the why / measurements). Keeping them
- * here, FreeSWITCH-free, lets the unit test verify table == ref for
- * all 65536 inputs.
+ * The reference encoders are the source of truth used to populate
+ * the lookup tables the media-bug callback uses (see siprec_g711.h
+ * for the why / measurements). Keeping them FreeSWITCH-free lets the
+ * unit test verify table == ref for all 65536 inputs.
  */
 #include "siprec_g711.h"
 

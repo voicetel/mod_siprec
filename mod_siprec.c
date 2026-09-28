@@ -169,11 +169,8 @@ static switch_status_t load_recording_servers(const char *file)
 		}
 	}
 
-	/* Only free the root xml — xserver and servers are children
-	 * (returned by switch_xml_child) and live inside the root's
-	 * allocation. Freeing them after switch_xml_free(xml) is a
-	 * use-after-free / double-free that crashes on module reload.
-	 */
+	/* Free only the root: children returned by switch_xml_child
+	 * live inside the root's allocation. */
 	switch_xml_free(xml);
 
 	return status;
@@ -224,11 +221,6 @@ SWITCH_STANDARD_APP(siprec_app_function)
 	 *            this URI directly — the per-call endpoint convention
 	 *            (no siprec.conf entry needed). A SIP URI carries no
 	 *            spaces, so the space-split keeps it in one token.
-	 *
-	 * Original code required argc == 2 to populate the server name —
-	 * which meant a single-arg invocation like `siprec default` left
-	 * recording_server_name as NULL and crashed inside
-	 * start_recording_session. Accept any non-empty first token.
 	 */
 	argc = switch_separate_string(mydata, ' ', argv, (sizeof(argv) / sizeof(argv[0])));
 	if (argc >= 1 && !zstr(argv[0])) {
@@ -256,11 +248,10 @@ SWITCH_STANDARD_APP(siprec_app_function)
  * whitespace-delimited token — from an app's data string, or NULL if
  * there is none. siprec and siprec_stop already tokenize their args;
  * pause/resume/stop share this so the handle they look up matches the
- * one start_recording_session inserted. Passing the raw data string
- * (as pause/resume previously did) meant a trailing token or trailing
- * whitespace — "default " from XML templating — became part of
- * server_name, so the "<handle>-<uuid>" key never matched and the verb
- * silently no-op'd while audio kept flowing. */
+ * one start_recording_session inserted: a trailing token or trailing
+ * whitespace ("default " from XML templating) must not become part of
+ * the "<handle>-<uuid>" key, or the verb silently no-ops while audio
+ * keeps flowing. */
 static const char *siprec_arg_handle(switch_core_session_t *session, const char *data)
 {
 	char *argv[4] = { 0 };
@@ -339,8 +330,7 @@ static switch_status_t siprec_change_direction(
 	 * recording_t itself lives in — while we dereference it below
 	 * after dropping the lock. release_recording at every exit drops
 	 * the pin; if a stop arrived while pinned, that release performs
-	 * the deferred teardown. The old find-under-lock/unlock/use
-	 * pattern had no pin and was a use-after-free window. */
+	 * the deferred teardown. */
 	recording = acquire_recording(recording_key);
 	switch_safe_free(recording_key);
 

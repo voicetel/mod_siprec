@@ -51,10 +51,8 @@ typedef struct siprec_negotiated_s {
      * first PT token on this stream's m=audio line (RFC 3264
      * §6: the answerer's primary codec). The RTP fork MUST
      * encode and stamp THIS payload type; deriving the codec
-     * from the original call leg instead lets the advertised
-     * codec and the bytes on the wire diverge (offer/answer
-     * settle on PCMU/0 while the fork emits PCMA/8 — the
-     * "payload mismatch" failure). v1's encoder supports the
+     * from the original call leg would let the advertised codec
+     * and the bytes on the wire diverge. v1's encoder supports the
      * static G.711 types 0 (PCMU) and 8 (PCMA); any other
      * answered value, or no SDP at all, is stored as
      * SIPREC_PT_UNSET and the fork falls back to the

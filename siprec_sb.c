@@ -1,7 +1,7 @@
 /*
  * siprec_sb.c — growable heap string buffer (see siprec_sb.h).
  *
- * Shared by siprec_sdp.c and siprec_metadata.c. Pure C, no
+ * Used by siprec_metadata.c. Pure C, no
  * FreeSWITCH dependency.
  */
 #include "siprec_sb.h"

@@ -24,9 +24,9 @@ int siprec_sdp_parse_remote_streams(
      * the current block committed nothing (a non-audio m= section,
      * a declined port-0 audio block, or one beyond out_max). A
      * media-level c= applies ONLY to the stream its own m= block
-     * created — attributing it to out[n-1] regardless (the previous
-     * behaviour) let a skipped/non-audio block's c= overwrite an
-     * earlier stream's remote IP and silently redirect its RTP. */
+     * created; attributing it to out[n-1] would let a skipped or
+     * non-audio block's c= overwrite an earlier stream's remote IP
+     * and silently redirect its RTP. */
     int  cur_idx  = -1;
     const char *p;
 

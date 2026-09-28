@@ -1,16 +1,11 @@
 /*
- * siprec_sb.h — growable heap string buffer shared by the SDP and
- * metadata builders.
+ * siprec_sb.h — growable heap string buffer used by the metadata
+ * builder.
  *
- * Pure C, no FreeSWITCH dependency, so both builders stay
- * unit-testable. realloc-on-overflow with amortized-O(n) capacity
+ * Pure C, no FreeSWITCH dependency, so it stays unit-testable. realloc-on-overflow with amortized-O(n) capacity
  * doubling; a sticky error latches on any allocation failure,
  * size_t overflow, or SB_MAX_CAP breach, so callers check once at
  * sb_take() rather than after every append.
- *
- * Previously this buffer was copy-pasted into siprec_sdp.c and
- * siprec_metadata.c; every hardening fix had to be applied twice and
- * the copies had already drifted. It now lives here once.
  */
 #ifndef SIPREC_SB_H
 #define SIPREC_SB_H
