@@ -380,6 +380,26 @@ static void discard_pending_recording(recording_t *recording)
     }
 }
 
+/* copy_server_chain: deep-copy a recording-server failover chain into
+ * `pool`. Returns the new head, or NULL if `src` is NULL. */
+static recording_server_t *copy_server_chain(switch_memory_pool_t *pool, const recording_server_t *src)
+{
+    recording_server_t *head = NULL, **tail = &head;
+
+    for (; src; src = src->next) {
+        recording_server_t *c = switch_core_alloc(pool, sizeof(*c));
+        c->name      = switch_core_strdup(pool, src->name);
+        c->host      = src->host ? switch_core_strdup(pool, src->host) : NULL;
+        c->port      = src->port;
+        c->transport = src->transport ? switch_core_strdup(pool, src->transport) : NULL;
+        c->uri       = src->uri ? switch_core_strdup(pool, src->uri) : NULL;
+        c->pool      = pool;
+        *tail = c;
+        tail = &c->next;
+    }
+    return head;
+}
+
 switch_status_t start_recording_session(switch_core_session_t *session, const char *recording_server_name, const char *srs_uri)
 {
     recording_server_t *server = NULL;
@@ -494,6 +514,25 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
             "siprec: ad-hoc SRS endpoint %s (handle '%s')\n",
             srs_uri, recording_server_name);
+    }
+
+    if (!adhoc) {
+        /* Snapshot the failover chain into the recording's pool under
+         * the servers lock. The config entries live in pools that
+         * module unload destroys, and the INVITE walk below can outlast
+         * a concurrent unload by the full originate timeout per
+         * candidate; a private copy makes the recording self-contained. */
+        switch_mutex_lock(globals.recording_servers_mutex);
+        server = copy_server_chain(recording->pool,
+            switch_core_hash_find(globals.recording_servers_hash, recording_server_name));
+        switch_mutex_unlock(globals.recording_servers_mutex);
+        if (!server) {
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
+                "siprec: recording-server '%s' disappeared during start "
+                "(config reload?); recording NOT started\n", recording_server_name);
+            switch_core_destroy_memory_pool(&recording_pool);
+            return SWITCH_STATUS_FALSE;
+        }
     }
 
     recording->server = server;
