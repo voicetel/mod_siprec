@@ -179,32 +179,22 @@ static void teardown_recording(recording_t *recording)
     switch_core_destroy_memory_pool(&recording->pool);
 }
 
-switch_status_t stop_recording_session(switch_core_session_t *session)
+/* drain_recordings: claim and tear down every recording on the leg
+ * whose uuid is `uuid`, or every recording when `uuid` is NULL.
+ *
+ * Teardown can't run while iterating the hash: it frees the pool the
+ * recording_t lives in, BYE / media detach may block, and deleting
+ * mid-iteration is unsafe. So under the lock copy a batch of matching
+ * keys, drop the lock, then claim + tear down each. claim_recording
+ * re-finds atomically, so a recording a concurrent stop already took
+ * just yields NULL. A full batch may have left matches behind, so scan
+ * again until a pass comes back short. */
+static void drain_recordings(const char *uuid)
 {
-    const char *uuid = switch_core_session_get_uuid(session);
+    enum { SIPREC_DRAIN_BATCH = 16 };
 
-    /* Stop EVERY recording on this leg by matching the call uuid in
-     * the recordings hash. The previous implementation derived keys
-     * from the CONFIGURED recording-servers hash, so it could only
-     * find config-backed recordings — an ad-hoc per-call SRS
-     * (siprec <handle> <uri>) whose handle was never in siprec.conf
-     * would be invisible here and leak (its BYE + pool-free never
-     * run) until module shutdown. Matching by uuid covers both kinds.
-     *
-     * We can't tear a recording down while iterating: teardown frees
-     * the pool the recording_t itself lives in, BYE/media-detach may
-     * block or take other locks, and deleting from the hash
-     * mid-iteration is unsafe. So under the lock we snapshot the keys
-     * of this leg's recordings into a small stack buffer — the key
-     * strings are pool-owned and the recordings are still in the hash,
-     * so the copies are safe — then drop the lock and claim+teardown
-     * each. claim_recording re-finds atomically, so a concurrent stop
-     * path that already took one just yields NULL here. A leg
-     * recording to more SRSes than the buffer holds is handled by
-     * re-scanning until a pass finds none. */
     for (;;) {
-        enum { SIPREC_STOP_BATCH = 16 };
-        char *keys[SIPREC_STOP_BATCH];
+        char *keys[SIPREC_DRAIN_BATCH];
         int n = 0, i;
         switch_hash_index_t *hi;
         void *val;
@@ -215,26 +205,16 @@ switch_status_t stop_recording_session(switch_core_session_t *session)
         for (hi = switch_core_hash_first(globals.recordings_hash); hi; hi = switch_core_hash_next(&hi)) {
             switch_core_hash_this(hi, &vvar, NULL, &val);
             recording = (recording_t *) val;
-            /* Keep iterating to the end even once the batch is full so
-             * the hash index is freed (early break leaks it); just
-             * stop collecting. */
-            if (n < SIPREC_STOP_BATCH && recording->uuid && !strcmp(recording->uuid, uuid)) {
-                /* Copy the (pool-owned) key out under the lock so it
-                 * survives the unlock; freed with switch_safe_free
-                 * after the claim. */
+            /* Keep iterating once the batch is full: breaking out
+             * early leaks the hash index. */
+            if (n < SIPREC_DRAIN_BATCH
+                && (!uuid || (recording->uuid && !strcmp(recording->uuid, uuid)))) {
                 keys[n++] = switch_mprintf("%s", recording->key);
             }
         }
         switch_mutex_unlock(globals.recordings_mutex);
 
-        if (n == 0) {
-            break;
-        }
-
         for (i = 0; i < n; i++) {
-            /* Atomic claim: removing it from the hash here is what
-             * makes us its sole owner, so the teardown/pool-free
-             * can't double-free against a concurrent stop path. */
             recording = claim_recording(keys[i]);
             switch_safe_free(keys[i]);
             if (recording) {
@@ -242,70 +222,28 @@ switch_status_t stop_recording_session(switch_core_session_t *session)
             }
         }
 
-        /* A non-full batch means we saw every match this pass; a full
-         * batch might have left more behind, so scan again. */
-        if (n < SIPREC_STOP_BATCH) {
+        if (n < SIPREC_DRAIN_BATCH) {
             break;
         }
     }
+}
 
+/* stop_recording_session: stop every recording on this leg, config
+ * and ad-hoc alike (matched by the call uuid, not by configured
+ * server names). */
+switch_status_t stop_recording_session(switch_core_session_t *session)
+{
+    drain_recordings(switch_core_session_get_uuid(session));
     return SWITCH_STATUS_SUCCESS;
 }
 
-/* siprec_teardown_all_recordings: retire every recording in the hash,
- * used by module shutdown. Same snapshot-then-claim discipline as
- * stop_recording_session (minus the uuid filter): under the lock we
- * copy a batch of pool-owned keys, drop the lock, then claim+teardown
- * each so no blocking teardown (media detach, BYE) runs while holding
- * recordings_mutex and no recording is freed non-atomically. Re-scan
- * until a pass finds none.
- *
- * claim_recording removes each entry from the hash before (or instead
- * of, when pinned) tearing it down, so when this returns the hash is
- * empty and the caller can safely destroy it. A recording still pinned
- * by an in-flight pause/resume at unload is removed from the hash and
- * marked doomed here; its teardown is deferred to release_recording —
- * best-effort, as with any module-unload-with-live-traffic race. */
+/* siprec_teardown_all_recordings: retire every recording (module
+ * shutdown). A recording pinned by an in-flight start/pause/resume is
+ * removed from the hash and doomed; its teardown runs at the last
+ * release. When this returns the hash is empty. */
 void siprec_teardown_all_recordings(void)
 {
-    for (;;) {
-        enum { SIPREC_STOP_BATCH = 16 };
-        char *keys[SIPREC_STOP_BATCH];
-        int n = 0, i;
-        switch_hash_index_t *hi;
-        void *val;
-        const void *vvar;
-        recording_t *recording;
-
-        switch_mutex_lock(globals.recordings_mutex);
-        for (hi = switch_core_hash_first(globals.recordings_hash); hi; hi = switch_core_hash_next(&hi)) {
-            switch_core_hash_this(hi, &vvar, NULL, &val);
-            recording = (recording_t *) val;
-            /* Keep iterating to the end even once the batch is full so
-             * the hash index is freed (early break leaks it); just
-             * stop collecting. */
-            if (n < SIPREC_STOP_BATCH && recording->key) {
-                keys[n++] = switch_mprintf("%s", recording->key);
-            }
-        }
-        switch_mutex_unlock(globals.recordings_mutex);
-
-        if (n == 0) {
-            break;
-        }
-
-        for (i = 0; i < n; i++) {
-            recording = claim_recording(keys[i]);
-            switch_safe_free(keys[i]);
-            if (recording) {
-                teardown_recording(recording);
-            }
-        }
-
-        if (n < SIPREC_STOP_BATCH) {
-            break;
-        }
-    }
+    drain_recordings(NULL);
 }
 
 /* stop_recording_session_for_server: stop just the recording on
