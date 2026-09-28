@@ -19,6 +19,23 @@ INSTALLER=/build/cbfs/install-freeswitch-debian-trixie.sh
 # its own lib/common.sh via ${SCRIPT_DIR}/lib/common.sh.
 FUNCS="$(dirname "$INSTALLER")/cbfs-funcs.sh"
 sed '/^case "${1:-install}"/,$d' "$INSTALLER" > "$FUNCS"
+
+# install_mod_siprec compiles a hard-coded list of mod_siprec sources,
+# which lags the tree under test whenever a unit is added (the installer
+# pins an older mod_siprec). Build exactly the sources the module's own
+# Makefile.am lists, so the gate tests this tree rather than failing on
+# an undefined symbol from a missing object.
+srcs=$(awk '/_la_SOURCES/{f=1} f{print; if ($0 !~ /\\$/) exit}' "${SIPREC_REPO}/Makefile.am" \
+       | grep -oE '[A-Za-z0-9_]+\.c' | tr '\n' ' ')
+[ -n "$srcs" ] || { echo "fsbuild: no sources found in ${SIPREC_REPO}/Makefile.am" >&2; exit 1; }
+grep -q 'local siprec_srcs=(' "$FUNCS" \
+    || { echo "fsbuild: installer no longer defines siprec_srcs; update fsbuild.sh" >&2; exit 1; }
+awk -v srcs="$srcs" '
+    /local siprec_srcs=\(/ { print "    local siprec_srcs=(" srcs ")"; skip = 1; next }
+    skip && /^[[:space:]]*\)[[:space:]]*$/ { skip = 0; next }
+    !skip { print }
+' "$FUNCS" > "$FUNCS.tmp" && mv "$FUNCS.tmp" "$FUNCS"
+echo "fsbuild: mod_siprec sources from Makefile.am: $srcs"
 # shellcheck source=/dev/null
 source "$FUNCS"
 
