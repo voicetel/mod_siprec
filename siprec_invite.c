@@ -253,23 +253,14 @@ switch_status_t siprec_invite_send(
         sizeof(ctx->recording_uuid));
     recording->invite_ctx = ctx;
 
-    /* Pull the negotiated remote endpoints. Preferred path:
-     * parse the full SDP from sip_remote_sdp_str so each
-     * m=audio block in the answer becomes its own
-     * negotiated[i] entry. RFC 7866 §7 expects N streams in
-     * one offer/answer cycle (one per recorded direction);
-     * recording the WRITE direction depends on stream[1]
-     * being populated.
+    /* Pull the negotiated remote endpoint(s) from the SRS's answer
+     * SDP, which mod_sofia stores in SWITCH_R_SDP_VARIABLE
+     * ("switch_r_sdp"); there is no "sip_remote_sdp_str".
      *
-     * Fallback: if sip_remote_sdp_str isn't populated (sofia
-     * hasn't materialised it for whatever reason), drop back
-     * to remote_media_ip / remote_media_port — that's
-     * effectively single-stream, but better than failing the
-     * whole INVITE.
-     */
+     * Fallback: remote_media_ip / remote_media_port, single stream,
+     * no codec. Logged, since it should not happen in practice. */
     rch = switch_core_session_get_channel(new_session);
-    remote_sdp =
-        switch_channel_get_variable(rch, "sip_remote_sdp_str");
+    remote_sdp = switch_channel_get_variable(rch, SWITCH_R_SDP_VARIABLE);
 
     if (!zstr(remote_sdp)) {
         parsed = siprec_sdp_parse_remote_streams(
@@ -286,6 +277,12 @@ switch_status_t siprec_invite_send(
          * sendto a port-0 destination. Prefer to fail loud. */
         const char *rip   = switch_channel_get_variable(rch, "remote_media_ip");
         const char *rport = switch_channel_get_variable(rch, "remote_media_port");
+
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+            SWITCH_LOG_WARNING,
+            "siprec: no usable answer SDP on the recording leg (%s); "
+            "falling back to remote_media_ip/port\n",
+            zstr(remote_sdp) ? "switch_r_sdp unset" : "no active m=audio");
         if (!zstr(rip) && !zstr(rport)) {
             char *endp = NULL;
             long  pn   = strtol(rport, &endp, 10);

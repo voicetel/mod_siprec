@@ -108,7 +108,7 @@ standalone.
       mixed into one mono stream, and forks it to one IPv4 UDP socket
       (kernel-assigned source port). The endpoint comes from
       `siprec_sdp_parse_remote_streams` on the answer's
-      `sip_remote_sdp_str`. Send failures are counted and
+      `switch_r_sdp` (`SWITCH_R_SDP_VARIABLE`). Send failures are counted and
       rate-limit-logged; a per-stream summary is logged on close.
 - [x] Codec: the SRS answer's payload type selects PCMU/PCMA. The
       bug delivers L16 at the leg's native rate and channel count;
