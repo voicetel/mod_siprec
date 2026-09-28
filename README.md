@@ -26,11 +26,15 @@ SRS's 200 OK answer.
 
 ## Status
 
-All paths build, lint clean, and the unit-test suite for the
-SDP / metadata / G.711 / string-builder units passes 132/132
-assertions at 100% line coverage of the FreeSWITCH-free units (the
-allocator-failure and 64 MB-cap defensive paths are exercised via a
-realloc fault-injection seam and over-cap inputs). The module also links
+All paths build and lint clean. The unit suite for the
+FreeSWITCH-free units (SDP-answer parser, metadata builder, G.711
+tables, string builder, URI check) passes 135/135 assertions at 100%
+line coverage of those units; the allocator-failure and 64 MB-cap
+paths are exercised via a realloc fault-injection seam and over-cap
+inputs. Those units are about a fifth of the non-test code. The four
+FreeSWITCH-dependent files are compile-checked with `-Werror` against
+FreeSWITCH's headers (`make -f Makefile.test fscheck`) but have no
+automated behavioural test. The module also links
 and loads in a real FreeSWITCH built from source — the
 [`tests/load/`](tests/load/) Docker gate boots FS and confirms
 `module_exists mod_siprec` with all four apps registered. The dispatch / media / signalling pipeline has been
@@ -116,12 +120,14 @@ fs_cli -x 'reload mod_siprec'
 
 ### Standalone unit tests + lint (no FS required)
 
-The SDP, metadata, and G.711 builders are pure C and exercised
-by a standalone test target:
+The FreeSWITCH-free units are pure C and exercised by a standalone
+test target:
 
 ```sh
-make -f Makefile.test test      # 132 / 132 assertions
-make -f Makefile.test lint      # cppcheck --enable=all clean
+make -f Makefile.test test      # 135 / 135 assertions
+make -f Makefile.test fscheck FS_SRC=/usr/src/freeswitch
+                                # compile the FS-dependent files, -Werror
+make -f Makefile.test lint      # cppcheck --enable=all clean (FS headers not visible)
 make -f Makefile.test asan      # ASan + UBSan + LSan clean
 make -f Makefile.test coverage  # gcov: HOST_COVERAGE 100% of the FS-free units
 ```
@@ -325,13 +331,14 @@ Files:
 
 Issues and PRs welcome. Two things to keep in mind:
 
-1. **The SDP and metadata builders are pure C.** Any change to
-   `siprec_sdp.c` / `siprec_metadata.c` must keep `make -f
-   Makefile.test test` and `make -f Makefile.test lint` green.
-2. **The FS-dependent files** can't be unit-tested without a
-   FreeSWITCH source tree. Use the `tests/README.md` field-test
-   checklist on a live build before merging behavior changes
-   in `siprec_invite.c` / `siprec_media.c` / `recording_session.c`.
+1. **The `siprec_*` helper units other than invite/media are pure C.**
+   Any change to them must keep `make -f Makefile.test test`,
+   `lint`, `asan` and `coverage` green.
+2. **The FS-dependent files** (`mod_siprec.c`, `recording_session.c`,
+   `siprec_invite.c`, `siprec_media.c`) must pass `make -f
+   Makefile.test fscheck`. They have no behavioural tests, so use the
+   `tests/README.md` field-test checklist on a live build before
+   merging behaviour changes. Indentation follows `.editorconfig`.
 
 ## Why this fork
 

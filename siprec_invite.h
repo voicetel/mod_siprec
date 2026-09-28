@@ -17,21 +17,12 @@
 #include <switch.h>
 #include "mod_siprec.h"
 
-/* SIPREC_MAX_STREAMS, SIPREC_PT_UNSET, and siprec_negotiated_t
- * live in siprec_sdp.h alongside the SDP-answer parser
- * (siprec_sdp_parse_remote_streams) that produces them — keeping
- * the type with its producer is what lets the parser be
- * unit-tested without the FreeSWITCH dependency this header
- * pulls in. The arrays sized by SIPREC_MAX_STREAMS
- * (siprec_invite_ctx_t.negotiated[] below, siprec_media_ctx_t.
- * streams[]) and the _Static_assert that guards the lockstep
- * stay here / in the .c files. */
+/* SIPREC_MAX_STREAMS, SIPREC_PT_UNSET and siprec_negotiated_t live
+ * in siprec_sdp.h with the FS-free parser that produces them. */
 #include "siprec_sdp.h"
 
-/* Per-recording SIP context. Lives inside the recording_t
- * pool. NULL on entry to siprec_invite_send; populated when
- * 200 OK arrives from the SRS so subsequent BYE / re-INVITE
- * has the dialog tags it needs. The struct is named so
+/* Per-recording SIP context, allocated in the recording's pool by
+ * siprec_invite_send once the SRS has answered. The struct is named so
  * mod_siprec.h's forward declaration `struct siprec_invite_ctx`
  * resolves to the same type as `siprec_invite_ctx_t`. */
 typedef struct siprec_invite_ctx {
@@ -52,9 +43,8 @@ typedef struct siprec_invite_ctx {
      * format (8-4-4-4-12 + NUL). */
     char recording_uuid[80];
 
-    /* Negotiated remote RTP endpoint(s) from the 200 OK SDP.
-     * Populated by parse_remote_sdp. Filled in once per
-     * stream (one per a=label in the SRC offer). */
+    /* Negotiated remote RTP endpoint(s) from the 200 OK SDP, one
+     * per active m=audio block (siprec_sdp_parse_remote_streams). */
     siprec_negotiated_t negotiated[SIPREC_MAX_STREAMS];
     size_t negotiated_count;
 } siprec_invite_ctx_t;
@@ -73,11 +63,11 @@ typedef struct siprec_invite_ctx {
  *   metadata_body      — pre-built XML from
  *                       siprec_metadata_build (REQUIRED).
  *
- * Returns SWITCH_STATUS_SUCCESS on dispatch (the actual
- * 200 OK arrives async — caller polls recording->state or
- * registers a callback). Failure means dispatch couldn't
- * begin — TLS handshake error, originate budget exhausted,
- * profile not loaded.
+ * Blocks the calling thread until the SRS answers or
+ * originate-timeout expires. Returns SWITCH_STATUS_SUCCESS once the
+ * INVITE is answered and recording->invite_ctx is populated; FALSE
+ * on rejection, timeout or a local error (profile not loaded,
+ * dial-string overflow).
  *
  * The recording-leg call is dispatched as a sofia originate
  * with the metadata XML attached via the documented FS
@@ -105,9 +95,8 @@ switch_status_t siprec_invite_send(
  * (sip-port for udp/tcp, sip-tls-port for tls).
  *
  * Returns SWITCH_STATUS_SUCCESS on the first successful
- * INVITE; SWITCH_STATUS_FALSE if every candidate fails. The
- * recording stays in the hash on failure so the operator's
- * Stop verb still finds it for cleanup.
+ * INVITE; SWITCH_STATUS_FALSE if every candidate fails (the
+ * caller discards the recording). At most 16 candidates are tried.
  */
 switch_status_t siprec_invite_send_failover(
     recording_t *recording,
@@ -120,9 +109,8 @@ switch_status_t siprec_invite_send_failover(
  * Safe to call from state handlers (will not
  * deadlock on the same session lock).
  *
- * v1: synchronously calls switch_core_session_kill_channel
- * with NORMAL_CLEARING; the underlying sofia stack emits BYE
- * + tears down the dialog.
+ * Locates the recording leg by UUID and hangs it up with
+ * NORMAL_CLEARING; mod_sofia sends the BYE.
  */
 switch_status_t siprec_invite_send_bye(recording_t *recording);
 

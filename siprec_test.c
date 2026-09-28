@@ -1,13 +1,12 @@
 /*
- * siprec_test.c — unit tests for the SDP and metadata builders.
+ * siprec_test.c — unit tests for the FreeSWITCH-free units: SDP
+ * answer parser, RFC 7865 metadata builder (IDs, AORs, schema shape),
+ * G.711 tables, string builder, ad-hoc URI check.
  *
- * Compile + run standalone (no FreeSWITCH needed):
+ * Build + run standalone (no FreeSWITCH needed):
  *
- *   gcc -Wall -Wextra -O2 \
- *       siprec_test.c siprec_sdp.c siprec_metadata.c \
- *       -o siprec_test && ./siprec_test
+ *   make -f Makefile.test test
  *
- * Asserts the output matches RFC 7866 §7 / RFC 7865 §5 shape.
  * Failures exit non-zero with a diagnostic pointing at the
  * offending substring.
  */

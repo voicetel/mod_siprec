@@ -12,14 +12,14 @@ captured audio to the negotiated RTP endpoints.
 
 | Concept              | RFC reference        | This implementation |
 |----------------------|----------------------|---------------------|
-| SRC INVITE           | RFC 7866 §6.1        | `siprec_send_invite()` (sofia-sip NUA) |
+| SRC INVITE           | RFC 7866 §6.1        | `siprec_invite_send()` (`switch_ivr_originate` over the call's sofia profile) |
 | Required SDP labels  | RFC 7866 §7.2 + §8.5 | `a=label:1` on the single mixed stream |
-| `a=sendonly` on SRC  | RFC 7866 §7.4        | media bug taps original RTP, never receives |
+| `a=sendonly` on SRC  | RFC 7866 §7.4        | `origination_audio_mode=sendonly` on the recording leg's offer |
 | Multipart body       | RFC 7866 §6.1.2      | `multipart/mixed`; SDP first, metadata second |
 | Metadata XML         | RFC 7865             | `application/rs-metadata+xml` |
 | Session lifecycle    | RFC 7866 §6.4        | INVITE on start, BYE on hangup, re-INVITE on pause/resume |
-| Mid-call updates     | RFC 7866 §6.4 + §8.6 | re-INVITE with updated participant XML |
-| Communication failure| RFC 7866 §11.1.1     | retry policy + soft-fail (recording is best-effort) |
+| Mid-call updates     | RFC 7866 §6.4 + §8.6 | not implemented (re-INVITEs carry SDP only) |
+| Communication failure| RFC 7866 §11.1.1     | ordered failover across same-named servers + soft-fail (recording is best-effort) |
 
 ## File layout
 
@@ -30,18 +30,31 @@ mod_siprec.h          public types (recording_t, recording_server_t, globals_t)
 recording_session.c   lifecycle: start/stop/pause/resume
 recording_session.h
 
-siprec_sdp.c          SDP body builder (RFC 7866 §7)
+siprec_sdp.c          SRS SDP-answer parser (RFC 7866 §7)
 siprec_sdp.h
 
-siprec_metadata.c     RFC 7865 XML metadata builder
+siprec_metadata.c     RFC 7865 XML metadata builder, §6.9 IDs, AORs
 siprec_metadata.h
 
-siprec_invite.c       SIP INVITE/BYE/re-INVITE via sofia-sip NUA
+siprec_uri.c          allowlist check for per-call SRS URIs
+siprec_uri.h
+
+siprec_sb.c           growable string buffer used by the metadata builder
+siprec_sb.h
+
+siprec_g711.c         G.711 reference encoders + lookup tables
+siprec_g711.h
+
+siprec_invite.c       SIP INVITE / BYE / pause-resume re-INVITE via mod_sofia
 siprec_invite.h
 
 siprec_media.c        switch_core_media_bug callback, RTP forwarding
 siprec_media.h
 ```
+
+Only `mod_siprec.c`, `recording_session.c`, `siprec_invite.c` and
+`siprec_media.c` depend on FreeSWITCH; the rest are unit-tested
+standalone.
 
 ## Phase plan
 
@@ -55,7 +68,9 @@ siprec_media.h
       `<recording xmlns="urn:ietf:params:xml:ns:recording:1">` with
       `<datamode>complete</datamode>`, `<group>`, `<session>`,
       `<participant>` per leg, `<stream>` cross-references via
-      `participant_session_assoc`. Schema lives in RFC 7865 §5.
+      `participantsessionassoc` / `participantstreamassoc`. IDs are
+      base64-encoded UUIDs (RFC 7865 §6.9) and AORs are normalized to
+      URIs. Schema lives in RFC 7865 Appendix A.
 
 ### Phase 2 — SIP signaling
 
@@ -69,32 +84,32 @@ siprec_media.h
       body). `process_mp` in sofia_media.c parses
       `<Content-Type>:~<extra-headers>\r\n<body>` and
       assembles `multipart/mixed` with the auto-generated SDP
-      as part 1, our metadata as part 2.
+      as part 1, our metadata as part 2. `sip_multipart` is cleared
+      once the INVITE is answered so re-INVITEs carry SDP only. The
+      per-candidate timeout is the `originate-timeout` setting.
 - [x] BYE: `siprec_invite_send_bye` looks up the recording
       leg by stashed UUID via `switch_core_session_locate`
       and hangs up via `switch_channel_hangup(NORMAL_CLEARING)`.
       Sofia emits the BYE; idempotent — locate returns NULL
       when the dialog is already gone.
-- [x] re-INVITE: `siprec_invite_reinvite` pushes the updated
-      metadata as a fresh `sip_multipart` entry and drives
-      the re-INVITE via `SWITCH_MESSAGE_INDICATE_MEDIA_REDIRECT`.
-      mod_sofia's handler calls `switch_core_media_set_local_sdp`
-      + `sofia_glue_do_invite` to emit on the existing dialog.
-      Locate-by-UUID is used so a torn-down recording leg
+- [x] re-INVITE: `siprec_invite_set_direction` (pause/resume; see
+      Phase 4). mod_sofia regenerates the local SDP on every
+      re-INVITE of a non-proxy leg, so the module never hands it an
+      SDP body: direction and label are requested through channel
+      variables. Locate-by-UUID is used so a torn-down recording leg
       doesn't UAF the message dispatch.
 
 ### Phase 3 — media tap & RTP fork
 
-- [x] `siprec_media.c` — `switch_core_media_bug_add()` with the
-      observe-only `SMBF_READ_STREAM | SMBF_WRITE_STREAM` flag set
-      (the canonical pattern from `record_callback` in
-      switch_ivr_async.c). Callback handles `SWITCH_ABC_TYPE_READ`
-      / `_WRITE` and pulls each frame via
-      `switch_core_media_bug_read(bug, &frame, SWITCH_FALSE)`.
-      One UDP socket per stream — opened ipv4-only at attach
-      with kernel-assigned ephemeral source port. Per-stream
-      endpoint comes from parsing `sip_remote_sdp_str` in
-      `siprec_invite.c:parse_remote_sdp_streams`.
+- [x] `siprec_media.c` — `switch_core_media_bug_add()` with
+      `SMBF_READ_STREAM | SMBF_WRITE_STREAM | SMBF_READ_PING`. On each
+      `SWITCH_ABC_TYPE_READ_PING` tick the callback drains
+      `switch_core_media_bug_read`, which returns both directions
+      mixed into one mono stream, and forks it to one IPv4 UDP socket
+      (kernel-assigned source port). The endpoint comes from
+      `siprec_sdp_parse_remote_streams` on the answer's
+      `sip_remote_sdp_str`. Send failures are counted and
+      rate-limit-logged; a per-stream summary is logged on close.
 - [x] Codec: the SRS answer's payload type selects PCMU/PCMA. The
       bug delivers L16 at the leg's native rate and channel count;
       multichannel frames are downmixed and non-8 kHz frames (G.722,
@@ -102,10 +117,11 @@ siprec_media.h
 - [x] RTP framing: G.711 encoding via branch-free lookup tables
       (`siprec_g711.c`, built once at load from INT16_MIN-safe
       reference encoders, bit-verified for all 65536 inputs) +
-      RFC 3550 §5.1 header packing. SSRC pulled from
-      `/dev/urandom` per RFC 3550 §8.1; sequence + timestamp
-      incremented in lock-step with each frame; M-bit set on
-      the first packet after silence per RFC 3551 §4.1.
+      RFC 3550 §5.1 header packing. SSRC, initial sequence number and
+      initial timestamp come from `/dev/urandom` (RFC 3550 §5.1,
+      §8.1). The timestamp keeps advancing through silent ticks and
+      across a pause; M-bit set on the first packet of each talkspurt
+      per RFC 3551 §4.1.
 - [ ] DTMF tone forking (RFC 7866 §8.4) — passes through
       transparently via the bug's read path; explicit RFC 2833
       passthrough is a future enhancement.
@@ -113,7 +129,8 @@ siprec_media.h
 ### Phase 4 — lifecycle integration
 
 - [x] `stop_recording_session` drives the ordered teardown:
-      `siprec_media_detach` (removes bug + closes UDP sockets) →
+      `siprec_media_detach` (removes the bug if the core hasn't
+      already, closes UDP sockets) →
       `siprec_invite_send_bye` (BYE on recording dialog) → pool
       free. Removal from the recordings hash is an atomic claim
       (`claim_recording`: find + delete under one lock hold) so
@@ -122,32 +139,35 @@ siprec_media.h
       non-atomic find-then-free would double-free it. The on-hangup
       teardown finds this leg's recordings by **uuid** in the
       recordings hash (snapshot keys under the lock, then
-      claim+teardown each), not by re-deriving keys from the
-      configured servers — so a per-call ad-hoc recording whose
-      handle was never in `siprec.conf` is reaped too, instead of
-      leaking until module shutdown.
-- [x] **Reader pin for pause/resume.** Paths that must use a
-      recording *outside* `recordings_mutex` (pause/resume) take a
+      claim+teardown each, via `drain_recordings`), not by
+      re-deriving keys from the configured servers, so a per-call
+      ad-hoc recording is reaped too.
+- [x] **Pins for start and pause/resume.** Paths that use a
+      recording *outside* `recordings_mutex` (start, pause/resume) take a
       use-count pin via `acquire_recording` / `release_recording`
       (`use_count` + `doomed` on `recording_t`, both under the
       mutex). A stop that races an in-flight pause finds `use_count
       > 0`, removes the hash entry, marks the recording `doomed`,
       and defers the teardown to the last releaser — so the pool the
-      `recording_t` lives in is never freed under a live user. The
-      old find-under-lock / unlock / dereference pattern had no pin
-      and was a use-after-free window against any concurrent stop.
+      `recording_t` lives in is never freed under a live user. Start
+      inserts the recording already pinned, so a hangup during the
+      (blocking) INVITE is torn down by start's final release.
 - [x] **Shutdown drains atomically.** `mod_siprec_shutdown` calls
       `siprec_teardown_all_recordings`, the same snapshot-then-claim
       drain as the stop paths, so no blocking teardown (bug remove,
       BYE) runs while holding `recordings_mutex`; the hash is empty
       before it is destroyed.
-- [x] `start_recording_session` builds the metadata XML, dispatches
-      the INVITE via `siprec_invite_send`, then attaches the media
-      bug with `siprec_media_attach`.
-- [x] State-handler bound: `switch_channel_add_state_handler(
-      channel, &state_handlers)` runs at the end of
-      `start_recording_session`, so caller-side hangup of the
-      original call automatically tears down the recording.
+- [x] `start_recording_session` requires the call's media to be up,
+      snapshots the server's failover chain into the recording's pool,
+      inserts the recording (dup check + insert under one lock),
+      binds the hangup handler, builds the metadata XML, dispatches
+      the INVITE via `siprec_invite_send_failover`, then attaches the
+      media bug with `siprec_media_attach`.
+- [x] State handler: `on_hangup` (with `on_destroy` as an idempotent
+      backstop) is bound *before* the INVITE, so a hangup at any point
+      tears the recording down. The core removes media bugs before any
+      hangup handler runs; the bug callback's `CLOSE` clears the
+      stored bug pointer so detach never touches a destroyed bug.
 - [x] `siprec_pause` / `siprec_resume` apps — wire dialplan
       entry points through `siprec_change_direction`, which calls
       `siprec_invite_set_direction`: it sets the one-shot
@@ -159,7 +179,9 @@ siprec_media.h
       pause also sets the media bug's native `SMBF_PAUSE`
       (`siprec_media_set_paused`) before the re-INVITE, so the
       FS core stops capturing audio at the io pump — cardholder
-      audio is never forked while paused. Resume re-starts
+      audio is never forked while paused. The gate is applied before
+      any other check, so it holds even if the re-INVITE can't be
+      sent. Resume re-starts
       transmission, so it is gated by the `src-enabled` master
       switch (pause, which only removes audio, is not). The handle
       argument is tokenized (`siprec_arg_handle`) the same way as
@@ -179,6 +201,7 @@ siprec_media.h
       <configuration name="siprec.conf">
         <settings>
           <param name="src-enabled" value="true"/>
+          <param name="originate-timeout" value="20"/>
         </settings>
         <recording-servers>
           <recording-server name="default">
@@ -195,7 +218,9 @@ siprec_media.h
 - [x] **Ad-hoc per-call SRS**: `siprec <handle> <sip-uri>` skips
       the config lookup and builds an ephemeral `recording_server_t`
       from the recording's own pool (no hash entry, no shutdown
-      reaping; `siprec_uri_for` returns the URI verbatim). The
+      reaping; `siprec_uri_for` returns the URI verbatim). Config
+      entries are validated at load (name, host, port, transport).
+      The
       handle stays the key for pause/resume/stop. Lets the recording
       target be chosen per call (e.g. supplied by an upstream API)
       instead of provisioned in `siprec.conf`. The URI is validated
@@ -204,8 +229,7 @@ siprec_media.h
       so an untrusted per-call value can't inject an extra originate
       leg through the `sofia/<profile>/<uri>` bridge string.
 
-- [x] **`src-enabled` master switch** (now enforced — was parsed
-      but dead): `false` makes `start_recording_session` a logged
+- [x] **`src-enabled` master switch**: `false` makes `start_recording_session` a logged
       no-op, so no INVITE or RTP fork happens. Soft fail-closed: an
       unresolved handle with no ad-hoc URI warns ("recording NOT
       active … no audio transmitted") and lets the call continue.
@@ -223,11 +247,17 @@ siprec_media.h
       of caller-supplied content (no entity injection).
       Run with `make -f Makefile.test test`; lint with
       `make -f Makefile.test lint` (cppcheck
-      `--enable=all --check-level=exhaustive` clean).
+      `--enable=all --check-level=exhaustive` clean). Also covered:
+      RFC 7865 §6.9 ID encoding and AOR normalization.
+- [x] Unit tests for `siprec_uri.c` — accepted and rejected ad-hoc
+      URIs, including every dial-string metacharacter and `:_:`.
+- [x] `make -f Makefile.test fscheck FS_SRC=<tree>` compiles the four
+      FreeSWITCH-dependent files with `-Werror` against FreeSWITCH's
+      headers (cppcheck can't see them).
 - [x] Unit tests for `siprec_g711.c` — the branch-free encode
       tables are swept against the reference quantisers for all
       65536 int16 inputs (PCMU + PCMA) plus an idempotent-init
-      check; suite total is 132/132.
+      check; suite total is 135/135.
 - [x] Host coverage — `make -f Makefile.test coverage` (gcov;
       **100%** of the FS-free units). The string builder's
       allocator-failure paths are exercised through the
@@ -259,9 +289,10 @@ siprec_media.h
   `m=audio` blocks, one per recorded direction, each with its
   own `a=label:N` per RFC 7866 §8.5) needs the SRC to control
   the SDP body carried on the initial INVITE. mod_sofia
-  auto-generates that body single-track and there's no
-  per-call hook today that lets mod_siprec inject a
-  pre-built SDP. Until this lands, the SRC sends a
+  auto-generates that body single-track; channel variables can
+  set its direction (`origination_audio_mode`) and append lines to
+  its one audio block (`rtp_append_audio_sdp`), but can't add a
+  second `m=` line. Until this lands, the SRC sends a
   single-track offer carrying **both** call directions mixed
   into one stream (`switch_core_media_bug_read` sums read+write
   and normalizes to 16-bit) — RFC 7866 §7 explicitly permits a
