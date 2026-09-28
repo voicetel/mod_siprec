@@ -126,6 +126,17 @@ typedef struct {
  * then set to ""). */
 int siprec_metadata_uuid_to_id(const char *uuid, char out[SIPREC_METADATA_ID_LEN + 1]);
 
+/* siprec_metadata_aor: normalize a FreeSWITCH-side address into the
+ * URI RFC 7865 expects in <nameID aor="...">.
+ *   - "sip:", "sips:" or "tel:" URIs (any case) are kept as-is;
+ *   - "user@host" (e.g. sip_from_uri, which carries no scheme) gets
+ *     "sip:" prepended;
+ *   - a bare user or number (e.g. caller_id_number) becomes
+ *     "sip:<raw>@<host>", with host "invalid" (RFC 2606) if NULL/empty.
+ * Returns a heap string (free with siprec_metadata_free), or NULL for a
+ * NULL/empty `raw` or on allocation failure. */
+char *siprec_metadata_aor(const char *raw, const char *host);
+
 /* siprec_metadata_build: render the XML to a heap buffer.
  * Returns NULL on allocation failure or invalid input.
  *

@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "siprec_sb.h"   /* shared growable string buffer (sb_t) */
 
@@ -93,6 +94,23 @@ int siprec_metadata_uuid_to_id(const char *uuid, char out[SIPREC_METADATA_ID_LEN
     *o++ = '=';
     *o = '\0';
     return 0;
+}
+
+char *siprec_metadata_aor(const char *raw, const char *host) {
+    sb_t sb;
+
+    if (!raw || !*raw) return NULL;
+
+    sb_init(&sb);
+    if (!strncasecmp(raw, "sip:", 4) || !strncasecmp(raw, "sips:", 5)
+        || !strncasecmp(raw, "tel:", 4)) {
+        sb_appendf(&sb, "%s", raw);
+    } else if (strchr(raw, '@')) {
+        sb_appendf(&sb, "sip:%s", raw);
+    } else {
+        sb_appendf(&sb, "sip:%s@%s", raw, (host && *host) ? host : "invalid");
+    }
+    return sb_take(&sb);
 }
 
 /* ──────────────────────────────────────────────────────────── *

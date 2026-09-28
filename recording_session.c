@@ -383,6 +383,28 @@ static int metadata_id_fresh(char out[SIPREC_METADATA_ID_LEN + 1])
     return siprec_metadata_uuid_to_id(uuid, out);
 }
 
+/* recording_aor: the participant AOR for <nameID aor>, from the first
+ * set of `uri_var` / `fallback_var`, normalized to a URI by
+ * siprec_metadata_aor (bare values take their host from `host_var`).
+ * Allocated in `pool`. */
+static const char *recording_aor(switch_memory_pool_t *pool, switch_channel_t *ch,
+    const char *uri_var, const char *fallback_var, const char *host_var)
+{
+    const char *raw = switch_channel_get_variable(ch, uri_var);
+    char *aor;
+    const char *out;
+
+    if (zstr(raw)) {
+        raw = switch_channel_get_variable(ch, fallback_var);
+    }
+    if (!(aor = siprec_metadata_aor(raw, switch_channel_get_variable(ch, host_var)))) {
+        return "sip:unknown@invalid";
+    }
+    out = switch_core_strdup(pool, aor);
+    siprec_metadata_free(aor);
+    return out;
+}
+
 /* copy_server_chain: deep-copy a recording-server failover chain into
  * `pool`. Returns the new head, or NULL if `src` is NULL. */
 static recording_server_t *copy_server_chain(switch_memory_pool_t *pool, const recording_server_t *src)
@@ -596,17 +618,13 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
      */
     orig_ch = switch_core_session_get_channel(session);
 
-    caller_aor = switch_channel_get_variable(orig_ch, "sip_from_uri");
-    if (!caller_aor) {
-        caller_aor = switch_channel_get_variable(orig_ch, "caller_id_number");
-    }
-    if (!caller_aor) caller_aor = "sip:unknown@unknown";
-
-    callee_aor = switch_channel_get_variable(orig_ch, "sip_to_uri");
-    if (!callee_aor) {
-        callee_aor = switch_channel_get_variable(orig_ch, "destination_number");
-    }
-    if (!callee_aor) callee_aor = "sip:unknown@unknown";
+    /* <nameID aor> must be a URI. sip_from_uri / sip_to_uri carry
+     * "user@host" with no scheme, and the caller_id_number /
+     * destination_number fallbacks are bare numbers, so normalize. */
+    caller_aor = recording_aor(recording->pool, orig_ch,
+        "sip_from_uri", "caller_id_number", "sip_from_host");
+    callee_aor = recording_aor(recording->pool, orig_ch,
+        "sip_to_uri", "destination_number", "sip_to_host");
 
     /* RFC 7865 §6.9: every metadata ID is a base64-encoded UUID, and
      * the XSD types them xs:base64Binary, so "<uuid>-caller" style IDs

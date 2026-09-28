@@ -82,6 +82,26 @@ static void check_str(const char *got, const char *want, const char *what) {
     }
 }
 
+static void expect_null(const void *p, const char *what) {
+    test_count++;
+    if (p == NULL) {
+        printf("PASS %s\n", what);
+    } else {
+        fprintf(stderr, "FAIL %s: expected NULL\n", what);
+        fail_count++;
+    }
+}
+
+static void expect_true(int cond, const char *what) {
+    test_count++;
+    if (cond) {
+        printf("PASS %s\n", what);
+    } else {
+        fprintf(stderr, "FAIL %s\n", what);
+        fail_count++;
+    }
+}
+
 /* ──────────────────────────────────────────────────────────── *
  * SDP answer parser tests (siprec_sdp_parse_remote_streams)   *
  * ──────────────────────────────────────────────────────────── */
@@ -627,6 +647,31 @@ static void test_metadata_uuid_to_id(void) {
         -1, "id:reject bad separator");
 }
 
+static void test_metadata_aor(void) {
+    char *a;
+
+    a = siprec_metadata_aor("sip:alice@example.com", "ignored");
+    check_str(a, "sip:alice@example.com", "aor:sip uri kept");
+    siprec_metadata_free(a);
+    a = siprec_metadata_aor("SIPS:bob@example.com", NULL);
+    check_str(a, "SIPS:bob@example.com", "aor:sips uri kept (case-insensitive)");
+    siprec_metadata_free(a);
+    a = siprec_metadata_aor("tel:+15551234567", NULL);
+    check_str(a, "tel:+15551234567", "aor:tel uri kept");
+    siprec_metadata_free(a);
+    a = siprec_metadata_aor("1000@pbx.example.com", "other");
+    check_str(a, "sip:1000@pbx.example.com", "aor:user@host gets sip:");
+    siprec_metadata_free(a);
+    a = siprec_metadata_aor("15551234567", "carrier.example.net");
+    check_str(a, "sip:15551234567@carrier.example.net", "aor:bare number uses host");
+    siprec_metadata_free(a);
+    a = siprec_metadata_aor("15551234567", "");
+    check_str(a, "sip:15551234567@invalid", "aor:bare number, no host");
+    siprec_metadata_free(a);
+    expect_null(siprec_metadata_aor(NULL, "h"), "aor:NULL rejected");
+    expect_null(siprec_metadata_aor("", "h"), "aor:empty rejected");
+}
+
 /* ──────────────────────────────────────────────────────────── *
  * Main                                                        *
  * ──────────────────────────────────────────────────────────── */
@@ -678,26 +723,6 @@ static void *failing_realloc(void *ptr, size_t size) {
         return realloc(ptr, size);
     }
     return NULL;
-}
-
-static void expect_null(const void *p, const char *what) {
-    test_count++;
-    if (p == NULL) {
-        printf("PASS %s\n", what);
-    } else {
-        fprintf(stderr, "FAIL %s: expected NULL\n", what);
-        fail_count++;
-    }
-}
-
-static void expect_true(int cond, const char *what) {
-    test_count++;
-    if (cond) {
-        printf("PASS %s\n", what);
-    } else {
-        fprintf(stderr, "FAIL %s\n", what);
-        fail_count++;
-    }
 }
 
 static void test_sb_defensive_paths(void) {
@@ -852,6 +877,7 @@ int main(void) {
     test_metadata_assoc_elements();
     test_metadata_element_ordering();
     test_metadata_uuid_to_id();
+    test_metadata_aor();
 
     test_g711_tables_match_reference();
 
