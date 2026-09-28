@@ -28,9 +28,14 @@
  * `struct siprec_media_ctx` resolves to the same type as
  * `siprec_media_ctx_t`. */
 typedef struct siprec_media_ctx {
-    /* The bug attached to the original session. NULL when not
-     * yet attached or after detach. */
+    /* The bug attached to the original session. NULL when not yet
+     * attached, after detach, or once the core has removed it (the
+     * callback clears it on SWITCH_ABC_TYPE_CLOSE). */
     switch_media_bug_t *bug;
+
+    /* Set by siprec_media_detach before it removes the bug, so the
+     * CLOSE callback can tell our removal from the core's. */
+    int detaching;
 
     /* The RTP socket (UDP) we send tapped audio over. One
      * socket per stream; v1 caps at 2 streams (read + write
@@ -96,7 +101,7 @@ typedef struct siprec_media_ctx {
 switch_status_t siprec_media_attach(recording_t *recording);
 
 /* siprec_media_detach: remove the bug + close the RTP
- * sockets. Idempotent. Safe to call from on_destroy. */
+ * sockets. Idempotent. Safe to call from state handlers. */
 switch_status_t siprec_media_detach(recording_t *recording);
 
 /* siprec_media_set_paused: gate the RTP fork without tearing it

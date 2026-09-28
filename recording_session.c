@@ -39,34 +39,25 @@
 #include "siprec_media.h"
 #include "siprec_metadata.h"
 
-static switch_status_t my_on_destroy(switch_core_session_t *session)
+/* Hangup teardown. The core has already removed every media bug on
+ * the leg by the time any on_hangup handler runs
+ * (switch_core_session_hangup_state), so the fork has stopped; this
+ * BYEs the SRS leg and frees the recording. Running at hangup rather
+ * than destroy sends the BYE before CDR/reporting instead of after.
+ * on_destroy is bound too, as an idempotent backstop. */
+static switch_status_t siprec_on_hangup(switch_core_session_t *session)
 {
     switch_assert(session);
-    if (stop_recording_session(session) == SWITCH_STATUS_FALSE) {
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING, "Failed to stop recording session\n");
-    }
+    stop_recording_session(session);
     return SWITCH_STATUS_SUCCESS;
 }
 
-/* state_handlers gets attached to the original call's channel
- * inside start_recording_session via switch_channel_add_state_handler.
- * SSH_FLAG_STICKY keeps the handler bound across dialplan
- * transfers so a recording started during the IVR phase still
- * fires on_destroy when the bridged leg hangs up. */
+/* Bound to the original call's channel by start_recording_session.
+ * SSH_FLAG_STICKY keeps it across dialplan transfers. */
 static switch_state_handler_table_t state_handlers = {
-    /*.on_init */ NULL,
-    /*.on_routing */ NULL,
-    /*.on_execute */ NULL,
-    /*.on_hangup */ NULL,
-    /*.on_exchange_media */ NULL,
-    /*.on_soft_execute */ NULL,
-    /*.on_consume_media */ NULL,
-    /*.on_hibernate */ NULL,
-    /*.on_reset */ NULL,
-    /*.on_park */ NULL,
-    /*.on_reporting */ NULL,
-    /*.on_destroy */ my_on_destroy,
-    SSH_FLAG_STICKY
+    .on_hangup  = siprec_on_hangup,
+    .on_destroy = siprec_on_hangup,
+    .flags      = SSH_FLAG_STICKY
 };
 
 
@@ -172,10 +163,9 @@ void release_recording(recording_t *recording)
  *
  * Order matters: detach the media bug FIRST (stops new RTP from
  * being forked — the PCI-relevant guarantee), then BYE the
- * recording leg (lets the SRS flush any pending write before
- * the dialog closes). The bug callback may still fire while the
- * bug is being removed; siprec_media_detach handles that
- * ordering safely (switch_core_media_bug_remove is synchronous).
+ * recording leg. switch_core_media_bug_remove is synchronous. On the
+ * hangup path the core has already removed the bug, which the
+ * callback's CLOSE records, so detach only closes the sockets.
  *
  * The pool-free retires the recording_t and its whole allocation
  * arena. The original code removed the hash entry but never
@@ -338,7 +328,7 @@ switch_status_t stop_recording_session_for_server(switch_core_session_t *session
 
     /* Atomic claim — see claim_recording. Removing it from the
      * hash under one lock hold is what guarantees only this thread
-     * frees it, even if on_destroy / another siprec_stop fires for
+     * frees it, even if the hangup handler / another siprec_stop fires for
      * the same recording concurrently. */
     recording = claim_recording(recording_key);
 
@@ -367,7 +357,7 @@ switch_status_t stop_recording_session_for_server(switch_core_session_t *session
 
 /* discard_pending_recording: tear down a half-built recording_t
  * that's already in globals.recordings_hash but hasn't yet had
- * its on_destroy state-handler bound to the original session.
+ * its hangup state handler bound to the original session.
  * Called from every failure path between hash-insert and
  * state-handler-bind in start_recording_session — without it,
  * any failure between those two points leaks the recording_t
@@ -657,7 +647,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 
     if (inv != SWITCH_STATUS_SUCCESS) {
         /* INVITE failed: there is no recording leg, no media
-         * bug, and the original session's on_destroy
+         * bug, and the original session's hangup
          * state-handler hasn't been bound yet (we only do
          * that on the success path below), so nobody else
          * will reap this recording_t. */
@@ -684,10 +674,8 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
         return SWITCH_STATUS_FALSE;
     }
 
-    /* Bind the on_destroy state-handler so caller-side hangup
-     * automatically tears down the recording. Without this
-     * the recording_t survives the original call's destroy
-     * cycle and only gets reaped at module shutdown. */
+    /* Bind the hangup state handler so hangup of the original call
+     * tears the recording down. */
     switch_channel_add_state_handler(
         switch_core_session_get_channel(session), &state_handlers);
 

@@ -81,10 +81,10 @@ first deploy.
    port, opens UDP sockets, installs the media bug.
 6. Audio frames flow: original session → bug callback →
    PCMU-encoded RTP → cb-srs's RTP listener.
-7. On hangup, `my_on_destroy` fires (state handler) →
+7. On hangup the core removes the media bug, then the
+   `siprec_on_hangup` state handler runs →
    `stop_recording_session` → `siprec_media_detach` (closes
-   sockets, removes bug) → `siprec_invite_send_bye` (BYE on
-   recording dialog).
+   sockets) → `siprec_invite_send_bye` (BYE on recording dialog).
 8. cb-srs flushes the WAV file with both streams.
 
 ### Error path: SRS not reachable

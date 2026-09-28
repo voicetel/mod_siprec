@@ -117,7 +117,7 @@ switch_status_t siprec_invite_send_failover(
 
 /* siprec_invite_send_bye: tear down the recording leg.
  * Idempotent — repeated calls after the first are no-ops.
- * Safe to call from on_destroy state-handlers (will not
+ * Safe to call from state handlers (will not
  * deadlock on the same session lock).
  *
  * v1: synchronously calls switch_core_session_kill_channel

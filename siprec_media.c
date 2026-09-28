@@ -152,8 +152,18 @@ static switch_bool_t media_bug_callback(
         return SWITCH_TRUE;
 
     case SWITCH_ABC_TYPE_CLOSE:
-        /* Bug is detaching — sockets are closed in
-         * siprec_media_detach. */
+        /* The bug is being removed, either by siprec_media_detach or
+         * by the core (hangup removes every bug before any state
+         * handler runs). Forget the pointer so detach doesn't pass
+         * an already-destroyed bug back to switch_core_media_bug_remove.
+         * Sockets are closed in siprec_media_detach. */
+        if (!ctx->detaching) {
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(
+                    switch_core_media_bug_get_session(bug)),
+                SWITCH_LOG_INFO,
+                "siprec: media bug removed by the core; RTP fork stopped\n");
+        }
+        ctx->bug = NULL;
         return SWITCH_TRUE;
 
     case SWITCH_ABC_TYPE_READ_PING: {
@@ -495,6 +505,7 @@ switch_status_t siprec_media_detach(recording_t *recording)
     }
     mctx = recording->media_ctx;
 
+    mctx->detaching = 1;
     if (mctx->bug) {
         switch_core_media_bug_remove(recording->session, &mctx->bug);
         mctx->bug = NULL;
