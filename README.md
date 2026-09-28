@@ -145,8 +145,24 @@ four apps:
 tests/load/run.sh   # ~30-45 min FS-from-source build, then the gate
 ```
 
-This does NOT exercise live RTP/SRS — that remains the operator
-verification path in [`tests/README.md`](tests/README.md).
+### Live SIPREC test (real calls against a minimal SRS)
+
+With that image built, `tests/live/` places real sofia calls inside the
+container against a small Python SRS and asserts on what arrives on the
+wire:
+
+```sh
+tests/live/run.sh   # ~2 min; needs the tests/load image
+```
+
+It checks the initial INVITE (`Require: siprec`, `+sip.src`,
+multipart body, `a=sendonly`, `a=label:1`, RFC 7865 IDs and AORs), the
+pause/resume re-INVITEs (`a=inactive` / `a=sendonly`, SDP only, `o=`
+bumped), the RTP (no packets while paused, markers, contiguous sequence,
+an 8 kHz clock that keeps running across the pause, from an Opus leg),
+`siprec_stop` with an ad-hoc URI, and failover past a dead SRS. Interop
+with a production SRS remains the operator verification path in
+[`tests/README.md`](tests/README.md).
 
 ## Configuration
 

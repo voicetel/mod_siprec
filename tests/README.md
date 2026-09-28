@@ -26,6 +26,15 @@ project) already drives a `siprec-start-stop.xml` TwiML
 fixture against a real SRS — this file documents how to plug
 mod_siprec into that path once the field-test gaps are closed.
 
+## Automated live test
+
+`tests/live/run.sh` (after `tests/load/run.sh` has built the image)
+runs three real calls inside the container against `tests/live/srs.py`,
+a minimal SRS that records every SIP request and RTP header it
+receives, and asserts on them with `tests/live/check.py`. It covers
+most of the checklist below automatically; interop with a production
+SRS (cb-srs, ClearIP, …) still needs the manual steps.
+
 ## Running locally
 
 ```sh

@@ -276,6 +276,10 @@ standalone.
       verification checklist with one row per code-path
       (multipart insertion, per-stream endpoint parsing,
       pause/resume, marker bit, SSRC randomness).
+- [x] Live SIPREC test — `tests/live/run.sh` runs real sofia calls in
+      the load-gate image against a minimal Python SRS (`srs.py`) and
+      checks the SIP and RTP on the wire (`check.py`): pause/resume,
+      `siprec_stop` with an ad-hoc URI, and failover.
 - [ ] Live integration against `cb-srs` — run
       `siprec-start-stop.xml` from callBroadcast's TwiML suite
       with mod_siprec built from this fork; the suite already
