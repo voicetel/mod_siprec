@@ -29,6 +29,8 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
+#include <string.h>
 #include <unistd.h>
 
 /* siprec_invite.h declares siprec_invite_ctx_t (the type the
@@ -131,8 +133,8 @@ static int rtp_pack_and_send(
     n = sendto(fd, pkt, pkt_len,
         MSG_NOSIGNAL, dst, dst_len);
     if (n < 0) {
-        /* sendto on a UDP socket only fails for packet-too-big
-         * or out-of-buffer-space; we log once and drop. */
+        /* The caller counts and rate-limit-logs failures (errno is
+         * preserved for it); the packet is dropped. */
         return -1;
     }
     return 0;
@@ -257,7 +259,7 @@ static switch_bool_t media_bug_callback(
                 }
             }
 
-            rtp_pack_and_send(
+            if (rtp_pack_and_send(
                 ctx->streams[0].fd,
                 (struct sockaddr *)&ctx->streams[0].dst,
                 ctx->streams[0].dst_len,
@@ -266,7 +268,23 @@ static switch_bool_t media_bug_callback(
                 ctx->streams[0].ssrc,
                 ctx->streams[0].sequence++,
                 ctx->streams[0].timestamp,
-                encoded, sample_count);
+                encoded, sample_count) == 0) {
+                ctx->streams[0].packets_sent++;
+            } else {
+                /* Log the first failure and then every 500th (~10 s of
+                 * 20 ms packets) so a dead route is visible without
+                 * flooding the log from the media thread. */
+                if (ctx->streams[0].send_errors++ % 500 == 0) {
+                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(
+                            switch_core_media_bug_get_session(bug)),
+                        SWITCH_LOG_WARNING,
+                        "siprec: RTP send to %s:%u failed: %s "
+                        "(%" PRIu64 " failures so far)\n",
+                        ctx->streams[0].remote_ip,
+                        (unsigned)ctx->streams[0].remote_port,
+                        strerror(errno), ctx->streams[0].send_errors);
+                }
+            }
 
             ctx->streams[0].marker_pending = 0;
             ctx->streams[0].timestamp += sample_count;
@@ -509,6 +527,16 @@ switch_status_t siprec_media_detach(recording_t *recording)
     if (mctx->bug) {
         switch_core_media_bug_remove(recording->session, &mctx->bug);
         mctx->bug = NULL;
+    }
+    /* The bug is gone, so the callback no longer updates these. */
+    for (size_t i = 0; i < mctx->stream_count; i++) {
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+            SWITCH_LOG_INFO,
+            "siprec: RTP fork stream[%zu] to %s:%u closing: %" PRIu64
+            " packets sent, %" PRIu64 " send failures\n",
+            i, mctx->streams[i].remote_ip,
+            (unsigned)mctx->streams[i].remote_port,
+            mctx->streams[i].packets_sent, mctx->streams[i].send_errors);
     }
     for (size_t i = 0; i < mctx->stream_count; i++) {
         if (mctx->streams[i].fd >= 0) {

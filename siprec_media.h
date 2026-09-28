@@ -72,6 +72,11 @@ typedef struct siprec_media_ctx {
          * we encode in-place before send. v1 supports payload
          * type 0 (PCMU) and 8 (PCMA) only. */
         uint8_t    pt;
+
+        /* Written only by the media-bug callback; read by detach
+         * after the bug is removed. Logged when the fork closes. */
+        uint64_t   packets_sent;
+        uint64_t   send_errors;
     } streams[SIPREC_MAX_STREAMS];
     size_t stream_count;
 
