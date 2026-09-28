@@ -40,6 +40,62 @@ static void xml_escape_into(sb_t *sb, const char *s) {
 }
 
 /* ──────────────────────────────────────────────────────────── *
+ * RFC 7865 §6.9 IDs                                           *
+ * ──────────────────────────────────────────────────────────── */
+
+static int hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+int siprec_metadata_uuid_to_id(const char *uuid, char out[SIPREC_METADATA_ID_LEN + 1]) {
+    static const char b64[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    unsigned char bytes[16];
+    size_t len, i, n = 0;
+    int hyphenated;
+    char *o = out;
+
+    out[0] = '\0';
+    if (!uuid) return -1;
+    len = strlen(uuid);
+    if (len != 36 && len != 32) return -1;
+    hyphenated = (len == 36);
+
+    for (i = 0; i < len; i++) {
+        int hi, lo;
+        if (hyphenated && (i == 8 || i == 13 || i == 18 || i == 23)) {
+            if (uuid[i] != '-') return -1;
+            continue;
+        }
+        if (i + 1 >= len) return -1;
+        hi = hex_nibble(uuid[i]);
+        lo = hex_nibble(uuid[i + 1]);
+        if (hi < 0 || lo < 0) return -1;
+        bytes[n++] = (unsigned char)((hi << 4) | lo);
+        i++;
+    }
+    if (n != sizeof(bytes)) return -1;
+
+    /* 16 bytes = five 3-byte groups + one trailing byte ("xx=="). */
+    for (i = 0; i + 3 <= sizeof(bytes); i += 3) {
+        unsigned v = ((unsigned)bytes[i] << 16) | ((unsigned)bytes[i + 1] << 8) | bytes[i + 2];
+        *o++ = b64[(v >> 18) & 0x3F];
+        *o++ = b64[(v >> 12) & 0x3F];
+        *o++ = b64[(v >> 6) & 0x3F];
+        *o++ = b64[v & 0x3F];
+    }
+    *o++ = b64[bytes[15] >> 2];
+    *o++ = b64[(bytes[15] & 0x03) << 4];
+    *o++ = '=';
+    *o++ = '=';
+    *o = '\0';
+    return 0;
+}
+
+/* ──────────────────────────────────────────────────────────── *
  * Validation                                                  *
  * ──────────────────────────────────────────────────────────── */
 

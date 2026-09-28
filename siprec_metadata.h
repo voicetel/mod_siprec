@@ -16,11 +16,10 @@
  * defines stream as the unit of recordable media — for a 2-leg
  * audio call we typically have 2 streams (one per direction). */
 typedef struct {
-    /* stream_id is the unique identifier referenced from the
-     * SDP's a=label and from the participant binding emitted
-     * inside <participantstreamassoc>'s <send>/<recv> child
-     * elements. RFC 7865 §5 — a UUID URN is the canonical form,
-     * e.g. "urn:uuid:55c93cc4-...". */
+    /* stream_id: referenced from <participantstreamassoc>'s
+     * <send>/<recv>. RFC 7865 §6.9: a base64-encoded UUID (see
+     * siprec_metadata_uuid_to_id). The builder escapes but does not
+     * validate IDs. */
     const char *stream_id;
 
     /* Mode determines the XML element under <participant> that
@@ -46,7 +45,7 @@ typedef struct {
 } siprec_metadata_stream_t;
 
 typedef struct {
-    /* participant_id — UUID URN. RFC 7865 §5. */
+    /* participant_id — base64-encoded UUID (RFC 7865 §6.9). */
     const char *participant_id;
 
     /* nameID/aor — the SIP AOR ("Address of Record") of the
@@ -71,8 +70,8 @@ typedef enum {
 } siprec_metadata_datamode_t;
 
 typedef struct {
-    /* session_id — UUID URN identifying the recording session.
-     * Stays stable across re-INVITEs. RFC 7865 §5. */
+    /* session_id — base64-encoded UUID (RFC 7865 §6.9) identifying
+     * the recorded session. */
     const char *session_id;
 
     /* group_id — RFC 7865 Appendix A grouptype — groups
@@ -114,6 +113,18 @@ typedef struct {
     const siprec_metadata_stream_t *streams;
     size_t stream_count;
 } siprec_metadata_options_t;
+
+/* RFC 7865 §6.9: every *_id attribute, <group-ref>, <send> and <recv>
+ * is typed xs:base64Binary and carries a UUID encoded with standard
+ * base64 (RFC 4648 §4). 16 bytes encode to 24 characters. */
+#define SIPREC_METADATA_ID_LEN 24
+
+/* siprec_metadata_uuid_to_id: encode a textual UUID as an RFC 7865
+ * metadata ID. Accepts the canonical 8-4-4-4-12 form or 32 bare hex
+ * digits, either case. Writes SIPREC_METADATA_ID_LEN characters plus a
+ * NUL to `out`. Returns 0 on success, -1 on malformed input (out is
+ * then set to ""). */
+int siprec_metadata_uuid_to_id(const char *uuid, char out[SIPREC_METADATA_ID_LEN + 1]);
 
 /* siprec_metadata_build: render the XML to a heap buffer.
  * Returns NULL on allocation failure or invalid input.

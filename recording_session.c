@@ -375,6 +375,14 @@ static void discard_pending_recording(recording_t *recording)
     release_recording(recording);
 }
 
+static int metadata_id_fresh(char out[SIPREC_METADATA_ID_LEN + 1])
+{
+    char uuid[SWITCH_UUID_FORMATTED_LENGTH + 1];
+
+    switch_uuid_str(uuid, sizeof(uuid));
+    return siprec_metadata_uuid_to_id(uuid, out);
+}
+
 /* copy_server_chain: deep-copy a recording-server failover chain into
  * `pool`. Returns the new head, or NULL if `src` is NULL. */
 static recording_server_t *copy_server_chain(switch_memory_pool_t *pool, const recording_server_t *src)
@@ -411,8 +419,12 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
     switch_channel_t *orig_ch;
     const char *caller_aor;
     const char *callee_aor;
-    char p_caller_id[80];
-    char p_callee_id[80];
+    /* RFC 7865 §6.9 IDs: base64 of a 16-byte UUID. */
+    char session_id[SIPREC_METADATA_ID_LEN + 1];
+    char group_id[SIPREC_METADATA_ID_LEN + 1];
+    char p_caller_id[SIPREC_METADATA_ID_LEN + 1];
+    char p_callee_id[SIPREC_METADATA_ID_LEN + 1];
+    char stream_id[SIPREC_METADATA_ID_LEN + 1];
     siprec_metadata_participant_t parts[2];
     siprec_metadata_stream_t streams_arr[1];
     char associate_time[64] = {0};
@@ -596,11 +608,21 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
     }
     if (!callee_aor) callee_aor = "sip:unknown@unknown";
 
-    /* participant IDs are derived from the call-uuid +
-     * suffix so they're unique within the recording session
-     * but stable across re-INVITEs. */
-    switch_snprintf(p_caller_id, sizeof(p_caller_id), "%s-caller", uuid);
-    switch_snprintf(p_callee_id, sizeof(p_callee_id), "%s-callee", uuid);
+    /* RFC 7865 §6.9: every metadata ID is a base64-encoded UUID, and
+     * the XSD types them xs:base64Binary, so "<uuid>-caller" style IDs
+     * fail schema validation. The session ID is the call's own UUID so
+     * an SRS-side record can be correlated with the FreeSWITCH call;
+     * the group, participants and stream get fresh UUIDs. */
+    if (siprec_metadata_uuid_to_id(uuid, session_id) != 0
+        || metadata_id_fresh(group_id) != 0
+        || metadata_id_fresh(p_caller_id) != 0
+        || metadata_id_fresh(p_callee_id) != 0
+        || metadata_id_fresh(stream_id) != 0) {
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+            SWITCH_LOG_ERROR, "siprec: could not derive RFC 7865 metadata IDs\n");
+        discard_pending_recording(recording);
+        return SWITCH_STATUS_FALSE;
+    }
 
     parts[0].participant_id = p_caller_id;
     parts[0].aor            = caller_aor;
@@ -618,7 +640,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
      * so it has no single speaker. It is attributed to participant[0]
      * by convention; per-direction attribution needs separated tracks,
      * which need the multi-track offer path mod_sofia doesn't offer. */
-    streams_arr[0].stream_id       = "stream-1";
+    streams_arr[0].stream_id       = stream_id;
     streams_arr[0].mode            = SIPREC_STREAM_SEND;
     streams_arr[0].participant_idx = 0;
     streams_arr[0].label           = "1";
@@ -632,8 +654,8 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
     }
 
     memset(&mopts, 0, sizeof(mopts));
-    mopts.session_id         = uuid;
-    mopts.group_id           = uuid;
+    mopts.session_id         = session_id;
+    mopts.group_id           = group_id;
     mopts.associate_time_utc = associate_time;
     mopts.datamode           = SIPREC_DATAMODE_COMPLETE;
     mopts.participants       = parts;

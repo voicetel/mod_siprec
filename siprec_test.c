@@ -604,6 +604,29 @@ static void test_metadata_invalid_returns_null(void) {
     }
 }
 
+static void test_metadata_uuid_to_id(void) {
+    /* RFC 7865 §6.9: IDs are the UUID's 16 bytes in standard base64. */
+    char id[SIPREC_METADATA_ID_LEN + 1];
+
+    check_int(siprec_metadata_uuid_to_id("00112233-4455-6677-8899-aabbccddeeff", id),
+        0, "id:canonical uuid accepted");
+    check_str(id, "ABEiM0RVZneImaq7zN3u/w==", "id:canonical uuid encodes");
+    check_int(siprec_metadata_uuid_to_id("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", id),
+        0, "id:bare uppercase hex accepted");
+    check_str(id, "/////////////////////w==", "id:bare hex encodes");
+    check_int((long)strlen(id), SIPREC_METADATA_ID_LEN, "id:24 chars");
+
+    check_int(siprec_metadata_uuid_to_id(NULL, id), -1, "id:reject NULL");
+    check_int(siprec_metadata_uuid_to_id("0011", id), -1, "id:reject short");
+    check_str(id, "", "id:out empty on failure");
+    check_int(siprec_metadata_uuid_to_id("00112233-4455-6677-8899-aabbccddeefg", id),
+        -1, "id:reject non-hex");
+    check_int(siprec_metadata_uuid_to_id("001122334-455-6677-8899-aabbccddeeff", id),
+        -1, "id:reject misplaced hyphen");
+    check_int(siprec_metadata_uuid_to_id("00112233-4455-6677-8899+aabbccddeeff", id),
+        -1, "id:reject bad separator");
+}
+
 /* ──────────────────────────────────────────────────────────── *
  * Main                                                        *
  * ──────────────────────────────────────────────────────────── */
@@ -828,6 +851,7 @@ int main(void) {
     test_metadata_reason_elements();
     test_metadata_assoc_elements();
     test_metadata_element_ordering();
+    test_metadata_uuid_to_id();
 
     test_g711_tables_match_reference();
 

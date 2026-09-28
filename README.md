@@ -70,6 +70,7 @@ verification path; production interop is verified against
 | `<group>` (`group_id`, `<associate-time>`) | [RFC 7865 Appendix A][rfc7865] | ✅ |
 | `<session>` (`session_id`, `<reason>`, `<group-ref>`, `<start-time>`) | [RFC 7865 Appendix A][rfc7865] | ✅ |
 | `<participant>` (`participant_id`, `<nameID>`) | [RFC 7865 Appendix A][rfc7865] | ✅ schema-strict (no inline send/recv, no session_id attr) |
+| Metadata IDs (`*_id`, `<group-ref>`, `<send>`) | [RFC 7865 §6.9][rfc7865] | ✅ standard base64 of a 16-byte UUID (`xs:base64Binary`); `session_id` is the call's UUID, the rest are fresh |
 | `<stream>` (`stream_id`, `session_id`, `<label>`) | [RFC 7865 Appendix A][rfc7865] | ✅ |
 | `<participantsessionassoc>` / `<participantstreamassoc>` | [RFC 7865 Appendix A][rfc7865] | ✅ |
 | XML escaping for caller-supplied content | [RFC 7865 §5][rfc7865] | ✅ &amp; &lt; &gt; &quot; &apos; |
