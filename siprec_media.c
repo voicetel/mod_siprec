@@ -379,21 +379,13 @@ switch_status_t siprec_media_attach(recording_t *recording)
      * unbound (the kernel picks an ephemeral); the SRS's SDP
      * answer told us where to send.
      *
-     * Fork only ONE stream today, even if the SRS answered more.
-     * The media-bug callback mixes the read/write directions into a
-     * single mono stream and sends just streams[0] (streams[1] is
-     * reserved for the future separated-track work), and the RFC 7865
-     * metadata built in start_recording_session declares exactly one
-     * <stream label="1">. Provisioning a fork per negotiated endpoint
-     * left the two inconsistent — a second stream received RTP with no
-     * metadata binding (RFC 7866 §8.5) — wasted a socket that never
-     * carried a packet, and let a non-IPv4 stream[1] abort the whole
-     * attach even when stream[0] was fine. negotiated_count is >= 1
-     * here (guarded above). Widen this in lockstep with multi-track
-     * metadata when separated tracks land. */
+     * Mixed mode forks one stream; separate-streams forks two (see
+     * the separate check above). Each stream gets a socket of the
+     * family the SRS answered in. */
     mctx->stream_count = 1;
     for (size_t i = 0; i < mctx->stream_count; i++) {
         uint8_t neg_pt;
+        int     kind;
         /* IPv4-only RTP fork in v1. inet_pton returns 0 for a
          * well-formed IPv6 address (or for any other non-IPv4
          * string) — fail loudly here rather than open a socket
@@ -403,31 +395,40 @@ switch_status_t siprec_media_attach(recording_t *recording)
          * callback can sendto() with a cached pointer instead
          * of re-running inet_pton + sockaddr setup on every
          * 20 ms tick. */
-        memset(&mctx->streams[i].dst, 0, sizeof(mctx->streams[i].dst));
-        mctx->streams[i].dst.sin_family = AF_INET;
-        mctx->streams[i].dst.sin_port =
-            htons(ictx->negotiated[i].remote_port);
-        if (inet_pton(AF_INET, ictx->negotiated[i].remote_ip,
-                      &mctx->streams[i].dst.sin_addr) != 1) {
-            /* recording->session is non-null per the entry guard
-             * at the top of siprec_media_attach; SESSION_LOG lets
-             * mod_syslog stamp this line with the original-leg
-             * UUID so a "siprec on UUID X failed" trace shows up
-             * under the same channel-id as the rest of the call. */
+        /* Build the destination for whichever family the SRS's answer
+         * named (c=IN IP4 / IP6), and open a matching socket. iptables
+         * aside, the SRC's RTP fork is send-only, so no bind is needed;
+         * the kernel assigns the source port. */
+        kind = siprec_sdp_addr_kind(ictx->negotiated[i].remote_ip);
+        if (kind == SIPREC_ADDR_NONE) {
             switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
                 SWITCH_LOG_ERROR,
-                "siprec: stream[%zu] negotiated remote '%s' is not "
-                "an IPv4 address; v1 fork supports IPv4 only — "
-                "aborting media attach\n",
+                "siprec: stream[%zu] negotiated remote '%s' is not an "
+                "IP address; aborting media attach\n",
                 i, ictx->negotiated[i].remote_ip);
             for (size_t j = 0; j < i; j++) {
                 if (mctx->streams[j].fd >= 0) close(mctx->streams[j].fd);
             }
             return SWITCH_STATUS_FALSE;
         }
-        mctx->streams[i].dst_len = sizeof(mctx->streams[i].dst);
 
-        mctx->streams[i].fd = socket(AF_INET, SOCK_DGRAM, 0);
+        memset(&mctx->streams[i].dst, 0, sizeof(mctx->streams[i].dst));
+        if (kind == SIPREC_ADDR_IPV6) {
+            struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&mctx->streams[i].dst;
+            s6->sin6_family = AF_INET6;
+            s6->sin6_port   = htons(ictx->negotiated[i].remote_port);
+            inet_pton(AF_INET6, ictx->negotiated[i].remote_ip, &s6->sin6_addr);
+            mctx->streams[i].dst_len = sizeof(*s6);
+        } else {
+            struct sockaddr_in *s4 = (struct sockaddr_in *)&mctx->streams[i].dst;
+            s4->sin_family = AF_INET;
+            s4->sin_port   = htons(ictx->negotiated[i].remote_port);
+            inet_pton(AF_INET, ictx->negotiated[i].remote_ip, &s4->sin_addr);
+            mctx->streams[i].dst_len = sizeof(*s4);
+        }
+
+        mctx->streams[i].fd =
+            socket(kind == SIPREC_ADDR_IPV6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
         if (mctx->streams[i].fd < 0) {
             for (size_t j = 0; j < i; j++) {
                 if (mctx->streams[j].fd >= 0) close(mctx->streams[j].fd);

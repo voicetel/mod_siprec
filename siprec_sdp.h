@@ -36,6 +36,18 @@
  * with a real PT. */
 #define SIPREC_PT_UNSET 0xFF
 
+/* Address family of a negotiated RTP endpoint, from
+ * siprec_sdp_addr_kind: an IPv4 or IPv6 literal, or neither. */
+#define SIPREC_ADDR_NONE 0
+#define SIPREC_ADDR_IPV4 4
+#define SIPREC_ADDR_IPV6 6
+
+/* siprec_sdp_addr_kind: classify an IP address literal as IPv4, IPv6 or
+ * neither (SIPREC_ADDR_NONE for NULL/empty/garbage). Pure C, so the RTP
+ * fork can pick the socket family and the tests can cover it without
+ * FreeSWITCH. */
+int siprec_sdp_addr_kind(const char *ip);
+
 /* Per-stream negotiated remote endpoint state — the row type
  * siprec_sdp_parse_remote_streams writes, also embedded in
  * siprec_invite_ctx_t.negotiated[]. The struct is named (rather
@@ -44,6 +56,7 @@
  * their members match — a named tag is the only way to share the
  * type across translation units. */
 typedef struct siprec_negotiated_s {
+    /* IPv4 or IPv6 literal (RFC 4566 §5.7 connection address). */
     char     remote_ip[64];
     uint16_t remote_port;
 
@@ -75,8 +88,9 @@ typedef struct siprec_negotiated_s {
  * media. A block whose m= line carries no parseable PT gets
  * out[].pt = SIPREC_PT_UNSET.
  *
- * Only IPv4 is parsed; IPv6 (c=IN IP6 …) is ignored — the
- * downstream RTP fork is IPv4-only in v1.
+ * Both IPv4 and IPv6 connection lines (c=IN IP4 / c=IN IP6) are
+ * parsed; siprec_sdp_addr_kind classifies the result so the fork can
+ * open the matching socket family.
  *
  * Pure C, no FreeSWITCH dependency — unit-tested in
  * siprec_test.c. */

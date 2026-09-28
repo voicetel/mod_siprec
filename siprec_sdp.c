@@ -5,6 +5,7 @@
  */
 #include "siprec_sdp.h"
 
+#include <arpa/inet.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -37,7 +38,9 @@ int siprec_sdp_parse_remote_streams(
         const char *eol = strpbrk(p, "\r\n");
         size_t line_len = eol ? (size_t)(eol - p) : strlen(p);
 
-        if (line_len > 9 && memcmp(p, "c=IN IP4 ", 9) == 0) {
+        /* c=IN IP4 <addr> / c=IN IP6 <addr>: both prefixes are 9 bytes. */
+        if (line_len > 9
+            && (memcmp(p, "c=IN IP4 ", 9) == 0 || memcmp(p, "c=IN IP6 ", 9) == 0)) {
             size_t addr_len = line_len - 9;
             if (addr_len >= sizeof(session_ip)) addr_len = sizeof(session_ip) - 1;
 
@@ -97,4 +100,21 @@ int siprec_sdp_parse_remote_streams(
     }
 
     return n;
+}
+
+int siprec_sdp_addr_kind(const char *ip)
+{
+    struct in_addr v4;
+    struct in6_addr v6;
+
+    if (!ip || !*ip) {
+        return SIPREC_ADDR_NONE;
+    }
+    if (inet_pton(AF_INET, ip, &v4) == 1) {
+        return SIPREC_ADDR_IPV4;
+    }
+    if (inet_pton(AF_INET6, ip, &v6) == 1) {
+        return SIPREC_ADDR_IPV6;
+    }
+    return SIPREC_ADDR_NONE;
 }
