@@ -6,10 +6,12 @@ failure.
     check.py main     <capture.json> <fs.log>   full pause/resume call
     check.py stop     <capture.json> <fs.log>   ad-hoc URI + siprec_stop
     check.py failover <capture.json> <fs.log>   dead primary, live backup
+    check.py codec    <capture.json> <fs.log>   PCMA call, SRS answers PCMU
 """
 import base64
 import binascii
 import json
+import math
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -53,6 +55,46 @@ if mode == "stop":
     check(len(rtp) > 50, "RTP flowed before stop", f"{len(rtp)}")
     check("no active recording to stop" not in fslog, "siprec_stop found the recording")
     check("by another module mid-call" not in fslog, "no unexpected mid-call bug removal")
+    print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
+    sys.exit(1 if fails else 0)
+
+def ulaw(b):
+    b = ~b & 0xFF
+    v = ((((b & 0x0F) << 3) + 0x84) << ((b >> 4) & 7)) - 0x84
+    return -v if b & 0x80 else v
+
+
+def alaw(b):
+    b ^= 0x55
+    e, m = (b >> 4) & 7, b & 0x0F
+    v = (m << 4) + 8 if e == 0 else ((m << 4) + 0x108) << (e - 1)
+    return v if b & 0x80 else -v
+
+
+def tone_purity(pkts, decode, freq=440.0):
+    """Fraction of the decoded signal's power at `freq` (1.0 = pure tone)."""
+    x = [decode(b) for p in pkts for b in bytes.fromhex(p[7])]
+    if not x:
+        return 0.0
+    c = sum(v * math.cos(2 * math.pi * freq * i / 8000) for i, v in enumerate(x))
+    s_ = sum(v * math.sin(2 * math.pi * freq * i / 8000) for i, v in enumerate(x))
+    power = sum(v * v for v in x) / len(x)
+    return (2 * math.hypot(c, s_) / len(x)) ** 2 / 2 / power if power else 0.0
+
+
+if mode == "codec":
+    # Regression for GitHub issue #5: the call is PCMA, the SRS answers
+    # PCMU; the fork must send PCMU, in the header AND in the bytes.
+    check(re.search(r"Set Codec sofia/internal/siprec_tone\S* PCMA/8000", fslog) is not None,
+          "source call negotiated PCMA")
+    check(len(rtp) > 50, "RTP received", f"{len(rtp)}")
+    check({p[4] for p in rtp} == {0}, "payload type is PCMU/0 as answered", str({p[4] for p in rtp}))
+    mid = rtp[len(rtp) // 4: len(rtp) // 4 + 40]
+    pu, pa = tone_purity(mid, ulaw), tone_purity(mid, alaw)
+    check(pu > 0.9 and pu > pa, "payload bytes are mu-law (decode to the 440 Hz tone)",
+          f"mu-law purity {pu:.3f}, a-law purity {pa:.3f}")
+    check(not re.search(r"no usable answer SDP|answer carried no usable payload type", fslog),
+          "answer SDP parsed (no codec fallback)")
     print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
     sys.exit(1 if fails else 0)
 
@@ -123,6 +165,8 @@ if len(reinvites) == 2:
     v0, v1, v2 = o_version(sdp_part), o_version(pz["body"]), o_version(rs["body"])
     check(None not in (v0, v1, v2) and v0 < v1 < v2, "o= session-version increases", f"{v0} {v1} {v2}")
 check(len(byes) >= 1, "SRS received BYE")
+check(not re.search(r"no usable answer SDP|answer carried no usable payload type", fslog),
+      "answer SDP parsed (no codec fallback)")
 
 # ---- RTP (RFC 3550 / 3551)
 check(len(rtp) > 100, "RTP received", f"{len(rtp)} packets")

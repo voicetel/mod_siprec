@@ -27,7 +27,7 @@ args = p.parse_args()
 
 t0 = time.monotonic()
 sip_log = []      # every request received
-rtp_log = []      # [t, seq, ts, marker, pt, ssrc, payload_len]
+rtp_log = []      # [t, seq, ts, marker, pt, ssrc, payload_len, payload_hex]
 lock = threading.Lock()
 done = threading.Event()
 responses = {}    # (call-id, cseq) -> response bytes, for retransmissions
@@ -134,7 +134,8 @@ def rtp_loop(sock):
             continue
         b0, b1, seq, ts, ssrc = struct.unpack("!BBHII", data[:12])
         with lock:
-            rtp_log.append([now(), seq, ts, (b1 >> 7) & 1, b1 & 0x7F, ssrc, len(data) - 12])
+            rtp_log.append([now(), seq, ts, (b1 >> 7) & 1, b1 & 0x7F, ssrc, len(data) - 12,
+                            data[12:].hex()])
 
 
 def stop(*_):

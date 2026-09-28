@@ -9,6 +9,7 @@
 #   main      siprec -> 4 s -> pause -> 3 s -> resume -> 4 s -> hangup
 #   stop      siprec <handle> <ad-hoc uri> -> 2 s -> siprec_stop -> 3 s -> hangup
 #   failover  siprec fo (dead primary, live backup) -> 2 s -> hangup
+#   codec     PCMA call, SRS answers PCMU: the fork must send mu-law
 set -uo pipefail
 PREFIX=/usr/local/freeswitch
 CONF=${PREFIX}/etc/freeswitch
@@ -72,6 +73,15 @@ cat > "${CONF}/dialplan/default/00_siprec_live.xml" <<EOF
       <action application="hangup"/>
     </condition>
   </extension>
+  <extension name="siprec_live_codec">
+    <condition field="destination_number" expression="^siprec_live_codec\$">
+      <action application="answer"/>
+      <action application="sleep" data="500"/>
+      <action application="siprec" data="default"/>
+      <action application="sleep" data="3000"/>
+      <action application="hangup"/>
+    </condition>
+  </extension>
   <extension name="siprec_live_failover">
     <condition field="destination_number" expression="^siprec_live_failover\$">
       <action application="answer"/>
@@ -120,12 +130,13 @@ done
 LOGFILE="$("$CLI" -x "global_getvar log_dir" | tr -d '[:space:]')/freeswitch.log"
 "$CLI" -x "load mod_siprec"
 
-# run_call <scenario> <extension>: fresh SRS capture, one call, wait for it.
+# run_call <scenario> <extension> [<dial-string vars>]: fresh SRS capture,
+# one call, wait for it.
 run_call() {
     python3 "${HERE}/srs.py" --ip "$IP" --out "${OUT}/$1.json" --duration 90 > "${OUT}/srs-$1.log" 2>&1 &
     local srs=$!
     sleep 1
-    echo "[$1] originate: $("$CLI" -x "originate sofia/internal/siprec_tone@${IP}:5080 $2 XML default")"
+    echo "[$1] originate: $("$CLI" -x "originate ${3:-}sofia/internal/siprec_tone@${IP}:5080 $2 XML default")"
     for _ in $(seq 1 40); do
         sleep 1
         n=$("$CLI" -x "show channels count" | grep -oE '^[0-9]+' || echo 0)
@@ -138,6 +149,7 @@ run_call() {
 run_call main siprec_live
 run_call stop siprec_live_stop
 run_call failover siprec_live_failover
+run_call codec siprec_live_codec "{absolute_codec_string=PCMA}"
 
 "$CLI" -x "shutdown" >/dev/null 2>&1 || kill "$FSPID"
 wait "$FSPID" 2>/dev/null
@@ -147,7 +159,7 @@ echo "--- negotiated codecs:"; grep -oE "Set Codec sofia/[a-z]+/[^ ]+ [A-Za-z0-9
 echo "--- mod_siprec log lines (INFO and above):"
 grep -E "siprec_[a-z]+\.c:[0-9]+ siprec|mod_siprec" "${OUT}/fs.log" | grep -v "\[DEBUG\]" | sed -E 's/^[0-9a-f-]{36} //' | cut -c1-200
 rc=0
-for mode in main stop failover; do
+for mode in main stop failover codec; do
     echo "--- checks: ${mode}"
     python3 "${HERE}/check.py" "$mode" "${OUT}/${mode}.json" "${OUT}/fs.log" || rc=1
 done
