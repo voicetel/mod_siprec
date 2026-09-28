@@ -704,6 +704,7 @@ static void test_sdp_separate_append(void) {
         "a=label:2",
         "sep-append:sendonly text");
     n = siprec_sdp_separate_append(buf, sizeof(buf), "inactive");
+    check_int(n > 0 && (size_t)n < sizeof(buf), 1, "sep-append:inactive fits");
     check_contains(buf, "a=label:1\r\na=inactive\r\nm=audio", "sep-append:inactive closes stream 1");
     check_int(siprec_sdp_separate_append(buf, sizeof(buf), "sendrecv"), -1, "sep-append:reject sendrecv");
     check_int(siprec_sdp_separate_append(buf, sizeof(buf), NULL), -1, "sep-append:reject NULL direction");

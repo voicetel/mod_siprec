@@ -46,6 +46,11 @@ struct recording_server {
 	 * Default ("udp" / NULL) keeps the v1 plain-UDP path. */
 	char *transport;
 
+	/* separate-streams override for this server: 1 = two labelled
+	 * streams (RX and TX), 0 = one mixed stream, -1 = not set (use the
+	 * global setting), -2 = invalid value (rejected at load). */
+	int separate_streams;
+
 	/* Per-call ad-hoc SRS endpoint. When set, this is a complete
 	 * SIP URI ("sip:host:port;transport=tls" / "sips:...") supplied
 	 * at dispatch time via the `siprec <handle> <uri>` second app
@@ -97,6 +102,12 @@ struct recording {
 	int use_count;
 	int doomed;
 
+	/* Requested stream mode, fixed at start: 1 = separate RX/TX streams
+	 * (label 1 = audio this leg receives, label 2 = audio it sends),
+	 * 0 = one mixed stream. The offer's m= lines follow this for the
+	 * life of the dialog (RFC 3264 §8 forbids dropping m= lines). */
+	int separate;
+
 	/* SIP signalling context — populated by siprec_invite_send.
 	 * Owns the recording-leg session pointer + dialog
 	 * negotiation state. NULL until siprec_invite_send fires. */
@@ -115,6 +126,9 @@ typedef struct {
 	 * failover candidates) bounds how long `siprec` can stall the
 	 * dialplan when SRSes are unreachable. */
 	int originate_timeout;
+	/* Default stream mode for servers that don't set separate-streams
+	 * (and for ad-hoc URIs). */
+	int separate_streams;
 	switch_hash_t *recording_servers_hash;
 	switch_mutex_t *recording_servers_mutex;
 	switch_hash_t *recordings_hash;

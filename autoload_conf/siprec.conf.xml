@@ -16,10 +16,17 @@
                     answer the SIPREC INVITE (1-300, default 20).
                     The INVITE is sent from the call's own thread,
                     so the dialplan stalls for up to this long per
-                    failover candidate when an SRS is unreachable. -->
+                    failover candidate when an SRS is unreachable.
+       separate-streams: record the two call directions as two
+                    labelled streams (label 1 = audio the recorded
+                    leg receives, label 2 = audio it sends) instead
+                    of one mixed stream. Default false. Also settable
+                    per recording-server, overriding this. Falls back
+                    to one mixed stream if the SRS declines either. -->
   <settings>
     <param name="src-enabled" value="true"/>
     <param name="originate-timeout" value="20"/>
+    <param name="separate-streams" value="false"/>
   </settings>
 
   <!-- One <recording-server> per Session Recording Server

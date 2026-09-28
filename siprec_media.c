@@ -15,6 +15,9 @@
  *                                   to SRS          to SRS
  *                                   (a=label:1)     (a=label:2)
  *
+ * Mixed mode sends one mono mix on stream[0] only; separate mode
+ * (separate-streams) sends read on stream[0] and write on stream[1].
+ *
  * RTP framing per RFC 3550:
  *   - 12-byte header (V=2, PT, sequence, timestamp, SSRC)
  *   - Payload: encoded L16 → 8-bit PCMU/PCMA samples
@@ -42,13 +45,9 @@
 
 /* Compile-time invariants:
  *
- *  1. The bug callback MIXES the READ and WRITE directions into
- *     a single mono stream (switch_core_media_bug_read sums both
- *     directions when SMBF_READ_STREAM | SMBF_WRITE_STREAM are
- *     set — see media_bug_callback) and forks that mix to
- *     streams[0]. streams[1] is reserved for the future
- *     separated-track work and is not sent today, so streams[]
- *     MUST hold at least one entry.
+ *  1. Mixed mode forks one mono mix to streams[0]; separate mode
+ *     forks read to streams[0] and write to streams[1] (see
+ *     media_bug_callback), so streams[] MUST hold at least two.
  *
  *  2. invite_ctx->negotiated[] and media_ctx->streams[] are
  *     paired (one negotiated entry feeds one streams entry).
@@ -58,8 +57,8 @@
  * If anyone changes SIPREC_MAX_STREAMS or either array size
  * without updating its peer, these assertions fire at
  * compile time. */
-_Static_assert(SIPREC_MAX_STREAMS >= 1,
-    "SIPREC_MAX_STREAMS must provide streams[0] for the mixed fork");
+_Static_assert(SIPREC_MAX_STREAMS >= 2,
+    "SIPREC_MAX_STREAMS must provide streams[0] and [1] for separate mode");
 _Static_assert(
     sizeof(((siprec_media_ctx_t *)0)->streams)
         / sizeof(((siprec_media_ctx_t *)0)->streams[0])
@@ -127,6 +126,59 @@ static int rtp_pack_and_send(
     return 0;
 }
 
+/* send_stream: G.711-encode `n` 8 kHz samples for stream `idx` (read
+ * from `pcm` every `stride` samples, so one call can take one channel
+ * of an interleaved stereo frame) and send them as one RTP packet.
+ * Advances the stream's sequence and timestamp and clears its marker. */
+static void send_stream(siprec_media_ctx_t *ctx, size_t idx, switch_media_bug_t *bug,
+    const int16_t *pcm, size_t stride, size_t n)
+{
+    uint8_t encoded[1500];
+    size_t i;
+
+    if (n > sizeof(encoded)) {
+        n = sizeof(encoded);
+    }
+    if (ctx->streams[idx].pt == 8) {
+        for (i = 0; i < n; i++) {
+            encoded[i] = siprec_l16_to_alaw(pcm[i * stride]);
+        }
+    } else {
+        /* default + PT 0 = PCMU */
+        for (i = 0; i < n; i++) {
+            encoded[i] = siprec_l16_to_ulaw(pcm[i * stride]);
+        }
+    }
+
+    if (rtp_pack_and_send(
+            ctx->streams[idx].fd,
+            (struct sockaddr *)&ctx->streams[idx].dst,
+            ctx->streams[idx].dst_len,
+            ctx->streams[idx].pt,
+            ctx->streams[idx].marker_pending,
+            ctx->streams[idx].ssrc,
+            ctx->streams[idx].sequence++,
+            ctx->streams[idx].timestamp,
+            encoded, n) == 0) {
+        ctx->streams[idx].packets_sent++;
+    } else if (ctx->streams[idx].send_errors++ % 500 == 0) {
+        /* Log the first failure and then every 500th (~10 s of 20 ms
+         * packets) so a dead route is visible without flooding the
+         * log from the media thread. */
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(
+                switch_core_media_bug_get_session(bug)),
+            SWITCH_LOG_WARNING,
+            "siprec: RTP send on stream[%zu] to %s:%u failed: %s "
+            "(%" PRIu64 " failures so far)\n",
+            idx, ctx->streams[idx].remote_ip,
+            (unsigned)ctx->streams[idx].remote_port,
+            strerror(errno), ctx->streams[idx].send_errors);
+    }
+
+    ctx->streams[idx].marker_pending = 0;
+    ctx->streams[idx].timestamp += (uint32_t)n;
+}
+
 /* ──────────────────────────────────────────────────────────── *
  * Media bug callback                                          *
  * ──────────────────────────────────────────────────────────── */
@@ -162,24 +214,22 @@ static switch_bool_t media_bug_callback(
         return SWITCH_TRUE;
 
     case SWITCH_ABC_TYPE_READ_PING: {
-        /* Single mixed fork (RFC 7866 §7 permits one mixed
-         * stream). Because the bug is attached with BOTH
-         * SMBF_READ_STREAM | SMBF_WRITE_STREAM,
-         * switch_core_media_bug_read returns a MONO MIX of the
-         * two directions — it sums the read- and write-side L16
-         * samples and normalises to 16-bit (switch_core_media_
-         * bug.c). So one read yields both parties' audio; we
-         * encode it and fork it to streams[0].
+        /* Mixed mode: with SMBF_READ_STREAM | SMBF_WRITE_STREAM,
+         * switch_core_media_bug_read returns a MONO MIX of the two
+         * directions (read + write summed and normalised to 16-bit),
+         * forked to streams[0] (RFC 7866 §7 permits one mixed stream).
          *
-         * READ_PING gives a steady per-read-frame tick that
-         * drains the bug regardless of which direction currently
-         * carries voice, so a one-sided talkspurt can't strand
-         * frames in the opposite buffer. The drain loop mirrors
-         * mod's session_record: the first read uses fill=FALSE
-         * (emit only when there's real audio); subsequent reads
-         * use fill=TRUE, which bug_read returns only while BOTH
-         * direction buffers still hold backlog — that bounds the
-         * loop and keeps the two sides time-aligned. */
+         * Separate mode: the bug also has SMBF_STEREO, so bug_read
+         * returns interleaved stereo, left = read (audio this leg
+         * receives), right = write (audio it sends). Left goes to
+         * streams[0] (a=label:1) and right to streams[1] (a=label:2),
+         * sharing one RTP clock.
+         *
+         * READ_PING gives a steady per-read-frame tick that drains the
+         * bug regardless of which direction carries voice. As in
+         * session_record, the first read uses fill=FALSE (emit only
+         * real audio) and later reads fill=TRUE, which bug_read
+         * returns only while BOTH direction buffers hold backlog. */
         switch_frame_t  frame;
         uint8_t         frame_buf[SWITCH_RECOMMENDED_BUFFER_SIZE];
         int             sent_any = 0;
@@ -193,9 +243,8 @@ static switch_bool_t media_bug_callback(
             switch_status_t rs;
             const int16_t  *samples;
             int16_t        *data16;
-            size_t          sample_count;
-            uint32_t        channels, rate;
-            uint8_t         encoded[1500];
+            size_t          frames;
+            uint32_t        channels, rate, out_channels;
 
             memset(&frame, 0, sizeof(frame));
             frame.data   = frame_buf;
@@ -207,80 +256,52 @@ static switch_bool_t media_bug_callback(
             if (rs != SWITCH_STATUS_SUCCESS || frame.datalen == 0) {
                 break;
             }
-            /* bug_read returns L16 at the leg's native rate and
-             * channel count. G.711 is 8 kHz mono, so downmix and
-             * resample first; otherwise a wideband (G.722 / Opus) leg
-             * is encoded at 2-6x the sample count and plays back
-             * slowed down with an RTP clock running too fast. */
+            /* L16 at the leg's native rate and channel count. G.711 is
+             * 8 kHz, so resample (and in mixed mode downmix) first;
+             * otherwise a wideband (G.722 / Opus) leg is encoded at 2-6x
+             * the sample count and plays back slowed down. */
             channels = frame.channels ? frame.channels : 1;
             rate     = frame.rate ? frame.rate : SIPREC_G711_RATE;
             data16   = (int16_t *)frame.data;
-            sample_count = frame.datalen / sizeof(int16_t) / channels;
+            frames   = frame.datalen / sizeof(int16_t) / channels;
 
-            if (channels > 1) {
-                switch_mux_channels(data16, sample_count, channels, 1);
+            if (ctx->separate) {
+                if (channels != 2) {
+                    continue; /* not the stereo layout attach asked for */
+                }
+                out_channels = 2;
+            } else {
+                if (channels > 1) {
+                    switch_mux_channels(data16, frames, channels, 1);
+                }
+                out_channels = 1;
             }
+
             if (rate != SIPREC_G711_RATE) {
-                if (!ctx->resampler || ctx->resampler->from_rate != (int)rate) {
+                if (!ctx->resampler || ctx->resampler->from_rate != (int)rate
+                    || ctx->resampler->channels != (int)out_channels) {
                     switch_resample_destroy(&ctx->resampler);
                     if (switch_resample_create(&ctx->resampler, rate,
-                            SIPREC_G711_RATE, (uint32_t)sizeof(encoded),
-                            SWITCH_RESAMPLE_QUALITY, 1) != SWITCH_STATUS_SUCCESS) {
+                            SIPREC_G711_RATE, 1500,
+                            SWITCH_RESAMPLE_QUALITY, out_channels) != SWITCH_STATUS_SUCCESS) {
                         ctx->resampler = NULL;
                         continue;
                     }
                 }
-                sample_count = switch_resample_process(ctx->resampler,
-                    data16, (uint32_t)sample_count);
+                /* Frame counts are per channel on both sides. */
+                frames = switch_resample_process(ctx->resampler,
+                    data16, (uint32_t)frames);
                 samples = ctx->resampler->to;
             } else {
                 samples = data16;
             }
 
-            if (sample_count > sizeof(encoded)) {
-                sample_count = sizeof(encoded);
-            }
-
-            if (ctx->streams[0].pt == 8) {
-                for (size_t i = 0; i < sample_count; i++) {
-                    encoded[i] = siprec_l16_to_alaw(samples[i]);
-                }
+            if (ctx->separate) {
+                send_stream(ctx, 0, bug, samples,     2, frames);
+                send_stream(ctx, 1, bug, samples + 1, 2, frames);
             } else {
-                /* default + PT 0 = PCMU */
-                for (size_t i = 0; i < sample_count; i++) {
-                    encoded[i] = siprec_l16_to_ulaw(samples[i]);
-                }
+                send_stream(ctx, 0, bug, samples, 1, frames);
             }
-
-            if (rtp_pack_and_send(
-                ctx->streams[0].fd,
-                (struct sockaddr *)&ctx->streams[0].dst,
-                ctx->streams[0].dst_len,
-                ctx->streams[0].pt,
-                ctx->streams[0].marker_pending,
-                ctx->streams[0].ssrc,
-                ctx->streams[0].sequence++,
-                ctx->streams[0].timestamp,
-                encoded, sample_count) == 0) {
-                ctx->streams[0].packets_sent++;
-            } else {
-                /* Log the first failure and then every 500th (~10 s of
-                 * 20 ms packets) so a dead route is visible without
-                 * flooding the log from the media thread. */
-                if (ctx->streams[0].send_errors++ % 500 == 0) {
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(
-                            switch_core_media_bug_get_session(bug)),
-                        SWITCH_LOG_WARNING,
-                        "siprec: RTP send to %s:%u failed: %s "
-                        "(%" PRIu64 " failures so far)\n",
-                        ctx->streams[0].remote_ip,
-                        (unsigned)ctx->streams[0].remote_port,
-                        strerror(errno), ctx->streams[0].send_errors);
-                }
-            }
-
-            ctx->streams[0].marker_pending = 0;
-            ctx->streams[0].timestamp += sample_count;
             sent_any = 1;
         }
 
@@ -293,6 +314,7 @@ static switch_bool_t media_bug_callback(
              * next real packet opens a new talkspurt (RFC 3551 §4.1). */
             switch_codec_implementation_t impl = { 0 };
             uint32_t tick = 160; /* 20 ms @ 8 kHz */
+            size_t s;
 
             switch_core_session_get_read_impl(
                 switch_core_media_bug_get_session(bug), &impl);
@@ -300,8 +322,10 @@ static switch_bool_t media_bug_callback(
                 tick = (uint32_t)(impl.microseconds_per_packet
                     / (1000000 / SIPREC_G711_RATE));
             }
-            ctx->streams[0].timestamp += tick;
-            ctx->streams[0].marker_pending = 1;
+            for (s = 0; s < ctx->stream_count; s++) {
+                ctx->streams[s].timestamp += tick;
+                ctx->streams[s].marker_pending = 1;
+            }
         }
         return SWITCH_TRUE;
     }
@@ -375,23 +399,37 @@ switch_status_t siprec_media_attach(recording_t *recording)
     fallback_pt = (read_codec && read_codec->implementation
         && read_codec->implementation->ianacode == 8) ? 8 : 0;
 
-    /* One UDP socket per stream. The source port is left
-     * unbound (the kernel picks an ephemeral); the SRS's SDP
-     * answer told us where to send.
+    /* One UDP socket per stream. The source port is left unbound
+     * (the kernel picks an ephemeral); the SRS's SDP answer told us
+     * where to send.
      *
-     * Fork only ONE stream today, even if the SRS answered more.
-     * The media-bug callback mixes the read/write directions into a
-     * single mono stream and sends just streams[0] (streams[1] is
-     * reserved for the future separated-track work), and the RFC 7865
-     * metadata built in start_recording_session declares exactly one
-     * <stream label="1">. Provisioning a fork per negotiated endpoint
-     * left the two inconsistent — a second stream received RTP with no
-     * metadata binding (RFC 7866 §8.5) — wasted a socket that never
-     * carried a packet, and let a non-IPv4 stream[1] abort the whole
-     * attach even when stream[0] was fine. negotiated_count is >= 1
-     * here (guarded above). Widen this in lockstep with multi-track
-     * metadata when separated tracks land. */
-    mctx->stream_count = 1;
+     * Separate mode (two labelled streams) needs the SRS to have
+     * accepted BOTH offered m= lines, in order, and a mono leg (the
+     * stereo bug layout is read/write only for mono). Otherwise fall
+     * back to one mixed stream on the first accepted endpoint, and say
+     * why: the metadata already declared two streams. */
+    mctx->separate = 0;
+    if (recording->separate) {
+        switch_codec_implementation_t impl = { 0 };
+        const char *why = NULL;
+
+        switch_core_session_get_read_impl(recording->session, &impl);
+        if (ictx->negotiated_count < 2
+            || ictx->negotiated[0].mline != 0 || ictx->negotiated[1].mline != 1) {
+            why = "the SRS did not accept both offered streams";
+        } else if (impl.number_of_channels > 1) {
+            why = "the call leg is multichannel";
+        }
+        if (why) {
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(recording->session),
+                SWITCH_LOG_WARNING,
+                "siprec: separate streams requested but %s; "
+                "recording both directions mixed on one stream\n", why);
+        } else {
+            mctx->separate = 1;
+        }
+    }
+    mctx->stream_count = mctx->separate ? 2 : 1;
     for (size_t i = 0; i < mctx->stream_count; i++) {
         uint8_t neg_pt;
         /* IPv4-only RTP fork in v1. inet_pton returns 0 for a
@@ -475,7 +513,8 @@ switch_status_t siprec_media_attach(recording_t *recording)
     /* Attach the bug. SMBF_READ_STREAM | SMBF_WRITE_STREAM is
      * the observe-only pattern used by session_record; with
      * both set, switch_core_media_bug_read returns a mono MIX
-     * of the two directions. SMBF_READ_PING adds a steady
+     * of the two directions, or with SMBF_STEREO (separate mode)
+     * read and write as left/right channels. SMBF_READ_PING adds a steady
      * per-read-frame tick (SWITCH_ABC_TYPE_READ_PING) so the
      * callback drains the bug on a fixed cadence rather than
      * racing the separate READ/WRITE events — this is how
@@ -490,7 +529,8 @@ switch_status_t siprec_media_attach(recording_t *recording)
         media_bug_callback,
         mctx,
         0,    /* stop_time = 0 (never) */
-        SMBF_READ_STREAM | SMBF_WRITE_STREAM | SMBF_READ_PING,
+        SMBF_READ_STREAM | SMBF_WRITE_STREAM | SMBF_READ_PING
+            | (mctx->separate ? SMBF_STEREO : 0),
         &mctx->bug);
 
     if (st != SWITCH_STATUS_SUCCESS) {
@@ -571,13 +611,18 @@ void siprec_media_set_paused(recording_t *recording, int paused)
          * concurrent writer here. Advance the RTP clock by the paused
          * wall-clock time (RFC 3550 §5.1) and mark the next packet
          * as a fresh talkspurt so the SRS sees the discontinuity. */
+        uint32_t gap = 0;
+        size_t i;
+
         if (mctx->paused_at) {
-            switch_time_t us = switch_micro_time_now() - mctx->paused_at;
-            mctx->streams[0].timestamp +=
-                (uint32_t)(us / (1000000 / SIPREC_G711_RATE));
+            gap = (uint32_t)((switch_micro_time_now() - mctx->paused_at)
+                / (1000000 / SIPREC_G711_RATE));
             mctx->paused_at = 0;
         }
-        mctx->streams[0].marker_pending = 1;
+        for (i = 0; i < mctx->stream_count; i++) {
+            mctx->streams[i].timestamp += gap;
+            mctx->streams[i].marker_pending = 1;
+        }
         switch_core_media_bug_clear_flag(mctx->bug, SMBF_PAUSE);
     }
 }

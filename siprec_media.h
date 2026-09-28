@@ -82,6 +82,11 @@ typedef struct siprec_media_ctx {
      * until siprec_media_detach destroys it after the bug is gone. */
     switch_audio_resampler_t *resampler;
 
+    /* 1 when forking RX and TX as two streams (streams[0] = what the
+     * leg receives, streams[1] = what it sends, bug has SMBF_STEREO);
+     * 0 for one mixed stream. Fixed at attach. */
+    int separate;
+
     /* Wall-clock time the fork was paused (0 when running), so
      * resume can advance the RTP timestamp across the gap. */
     switch_time_t paused_at;

@@ -48,6 +48,7 @@ static switch_xml_config_int_options_t originate_timeout_opts = { SWITCH_TRUE, 1
 
 static switch_xml_config_item_t general_instructions[] = {
 	SWITCH_CONFIG_ITEM("src-enabled", SWITCH_CONFIG_BOOL, CONFIG_RELOADABLE, &globals.src_enabled, SWITCH_TRUE, NULL, "true|false", "Enable/Disable Server Recording Client"),
+	SWITCH_CONFIG_ITEM("separate-streams", SWITCH_CONFIG_BOOL, CONFIG_RELOADABLE, &globals.separate_streams, SWITCH_FALSE, NULL, "true|false", "Record RX and TX as two labelled streams instead of one mixed stream"),
 	SWITCH_CONFIG_ITEM("originate-timeout", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.originate_timeout, (void *) 20, &originate_timeout_opts, "1-300", "Seconds to wait for each SRS candidate to answer the SIPREC INVITE"),
 	SWITCH_CONFIG_ITEM_END()
 };
@@ -79,6 +80,9 @@ static const char *recording_server_config_error(const recording_server_t *srv, 
 		&& strcasecmp(srv->transport, "tcp") && strcasecmp(srv->transport, "tls")) {
 		return "transport must be udp, tcp or tls";
 	}
+	if (srv->separate_streams == -2) {
+		return "separate-streams must be true or false";
+	}
 	return NULL;
 }
 
@@ -99,6 +103,7 @@ static switch_status_t load_recording_server(switch_xml_t xml)
 	recording_server = (recording_server_t *) switch_core_alloc(recording_server_pool, sizeof(*recording_server));
 	recording_server->name = switch_core_strdup(recording_server_pool, name);
 	recording_server->pool = recording_server_pool;
+	recording_server->separate_streams = -1;
 
 	if ((settings = switch_xml_child(xml, "settings"))) {
 		for (switch_xml_t param = switch_xml_child(settings, "param"); param; param = param->next) {
@@ -119,6 +124,8 @@ static switch_status_t load_recording_server(switch_xml_t xml)
 				 * URI uses sips:; the sofia profile MUST have
 				 * sip-tls-port configured. */
 				recording_server->transport = switch_core_strdup(recording_server_pool, val);
+			} else if (!strcmp(var, "separate-streams")) {
+				recording_server->separate_streams = switch_true(val) ? 1 : switch_false(val) ? 0 : -2;
 			} else {
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
 					"siprec: recording-server '%s': ignoring unknown param '%s'\n",

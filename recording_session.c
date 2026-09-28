@@ -369,6 +369,7 @@ static recording_server_t *copy_server_chain(switch_memory_pool_t *pool, const r
 		c->host      = src->host ? switch_core_strdup(pool, src->host) : NULL;
 		c->port      = src->port;
 		c->transport = src->transport ? switch_core_strdup(pool, src->transport) : NULL;
+		c->separate_streams = src->separate_streams;
 		c->uri       = src->uri ? switch_core_strdup(pool, src->uri) : NULL;
 		c->pool      = pool;
 		*tail = c;
@@ -399,8 +400,10 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 	char p_caller_id[SIPREC_METADATA_ID_LEN + 1];
 	char p_callee_id[SIPREC_METADATA_ID_LEN + 1];
 	char stream_id[SIPREC_METADATA_ID_LEN + 1];
+	char stream2_id[SIPREC_METADATA_ID_LEN + 1];
+	size_t rx_idx;
 	siprec_metadata_participant_t parts[2];
-	siprec_metadata_stream_t streams_arr[1];
+	siprec_metadata_stream_t streams_arr[2];
 	char associate_time[64] = {0};
 	siprec_metadata_options_t mopts;
 	char *metadata_body;
@@ -490,6 +493,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 		server->name = switch_core_strdup(recording->pool, recording_server_name);
 		server->uri  = switch_core_strdup(recording->pool, srs_uri);
 		server->next = NULL;
+		server->separate_streams = -1; /* use the global default */
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
 			"siprec: ad-hoc SRS endpoint %s (handle '%s')\n",
 			srs_uri, recording_server_name);
@@ -515,6 +519,8 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 	}
 
 	recording->server = server;
+	recording->separate = server->separate_streams >= 0
+		? server->separate_streams : (globals.separate_streams ? 1 : 0);
 
 	/* Duplicate check and insert under ONE lock hold, so two
 	 * concurrent `siprec` calls for the same handle on the same leg
@@ -570,7 +576,8 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 		|| metadata_id_fresh(group_id) != 0
 		|| metadata_id_fresh(p_caller_id) != 0
 		|| metadata_id_fresh(p_callee_id) != 0
-		|| metadata_id_fresh(stream_id) != 0) {
+		|| metadata_id_fresh(stream_id) != 0
+		|| metadata_id_fresh(stream2_id) != 0) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
 			SWITCH_LOG_ERROR, "siprec: could not derive RFC 7865 metadata IDs\n");
 		discard_pending_recording(recording);
@@ -585,18 +592,26 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 	parts[1].display_name   = NULL;
 
 	/* RFC 7865 §5 + RFC 7866 §8.5: each metadata <stream> binds to
-	 * the SDP stream carrying the same a=label. mod_sofia's offer is
-	 * single-track and siprec_invite_send labels it a=label:1, so the
-	 * metadata describes exactly one stream with label "1".
+	 * the SDP stream carrying the same a=label (see siprec_invite.c).
 	 *
-	 * That stream is a mono mix of both directions (siprec_media.c),
-	 * so it has no single speaker. It is attributed to participant[0]
-	 * by convention; per-direction attribution needs separated tracks,
-	 * which need the multi-track offer path mod_sofia doesn't offer. */
+	 * Mixed mode: one stream, label "1", a mono mix of both directions,
+	 * so it has no single speaker; attributed to participant[0] by
+	 * convention.
+	 *
+	 * Separate mode: label "1" is what this leg RECEIVES (the far end
+	 * speaking) and label "2" what it SENDS. The far end is the caller
+	 * (sip_from) on an inbound leg and the callee (sip_to) on an
+	 * outbound leg. */
+	rx_idx = switch_channel_direction(orig_ch) == SWITCH_CALL_DIRECTION_INBOUND ? 0 : 1;
+
 	streams_arr[0].stream_id       = stream_id;
 	streams_arr[0].mode            = SIPREC_STREAM_SEND;
-	streams_arr[0].participant_idx = 0;
+	streams_arr[0].participant_idx = recording->separate ? rx_idx : 0;
 	streams_arr[0].label           = "1";
+	streams_arr[1].stream_id       = stream2_id;
+	streams_arr[1].mode            = SIPREC_STREAM_SEND;
+	streams_arr[1].participant_idx = 1 - rx_idx;
+	streams_arr[1].label           = "2";
 
 	{
 		time_t now = time(NULL);
@@ -614,7 +629,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 	mopts.participants       = parts;
 	mopts.participant_count  = 2;
 	mopts.streams            = streams_arr;
-	mopts.stream_count       = sizeof(streams_arr) / sizeof(streams_arr[0]);
+	mopts.stream_count       = recording->separate ? 2 : 1;
 	metadata_body = siprec_metadata_build(&mopts);
 	if (!metadata_body) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
