@@ -21,6 +21,7 @@ import time
 
 p = argparse.ArgumentParser()
 p.add_argument("--ip", required=True, help="address advertised in SDP/Contact")
+p.add_argument("--ip6", help="if set, answer c=IN IP6 <ip6> and bind RTP there")
 p.add_argument("--sip-port", type=int, default=5070)
 p.add_argument("--rtp-port", type=int, default=40000)
 p.add_argument("--out", required=True)
@@ -58,6 +59,7 @@ def hget(headers, name, compact=None):
 
 
 def answer_sdp(call_id, offer):
+    fam, advert = ("IP6", args.ip6) if args.ip6 else ("IP4", args.ip)
     sdp = offer[offer.find("v=0"):]
     sections = [sec for sec in re.split(r"(?m)^(?=m=)", sdp)[1:]
                 if sec.startswith("m=audio")][:MAX_STREAMS]
@@ -65,9 +67,9 @@ def answer_sdp(call_id, offer):
     sdp_version[call_id] = ver
     out = (
         "v=0\r\n"
-        f"o=srs 4242 {ver} IN IP4 {args.ip}\r\n"
+        f"o=srs 4242 {ver} IN {fam} {advert}\r\n"
         "s=srs\r\n"
-        f"c=IN IP4 {args.ip}\r\n"
+        f"c=IN {fam} {advert}\r\n"
         "t=0 0\r\n"
     )
     for i, sec in enumerate(sections):
@@ -155,8 +157,8 @@ sip = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sip.bind(("0.0.0.0", args.sip_port))
 threads = [threading.Thread(target=sip_loop, args=(sip,), daemon=True)]
 for i in range(MAX_STREAMS):
-    rtp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    rtp.bind(("0.0.0.0", args.rtp_port + 2 * i))
+    rtp = socket.socket(socket.AF_INET6 if args.ip6 else socket.AF_INET, socket.SOCK_DGRAM)
+    rtp.bind((args.ip6 if args.ip6 else "0.0.0.0", args.rtp_port + 2 * i))
     threads.append(threading.Thread(target=rtp_loop, args=(rtp, i), daemon=True))
 for th in threads:
     th.start()

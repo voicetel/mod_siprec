@@ -315,8 +315,8 @@ standalone.
 - **Video tracks**: RFC 7866 supports them; v1 is audio-only.
 - **IPv6 RTP fork**: supported. The answer's `c=IN IP4` / `c=IN IP6`
   endpoint is classified by `siprec_sdp_addr_kind` and the fork opens
-  an `AF_INET` or `AF_INET6` socket accordingly. (The SG3 unit tests
-  cover parsing and family detection; the fork has no live IPv6 test.)
+  an `AF_INET` or `AF_INET6` socket accordingly. Covered by the unit
+  tests and the live test's `ipv6` scenario (RTP to `::1`).
 - **Persistence/resume across module reloads**: a recording
   session is a per-call construct; module reload terminates
   active recordings (the shutdown handler detaches the bug

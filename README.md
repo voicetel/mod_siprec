@@ -71,7 +71,7 @@ upgrading.
 | SDP offer + `a=label:N` cross-reference | [RFC 4566][rfc4566] / [RFC 7866 §7][rfc7866-7] / [RFC 7866 §8.5][rfc7866-8.5] | ✅ mod_sofia auto-generates the single-`m=audio` offer; `a=label:1` matches the metadata's `<stream><label>1</label>` |
 | Pause/resume `o=` version bump | [RFC 4566 §5.2][rfc4566] | ✅ mod_sofia bumps session-version on every regenerated offer |
 | RTP packet framing (V=2, M-bit at talkspurt start, big-endian seq/ts/SSRC) | [RFC 3550 §5.1][rfc3550] / [RFC 3551 §4.1][rfc3551] | ✅ `siprec_media.c` |
-| IPv4 and IPv6 RTP fork | [RFC 4566 §5.7][rfc4566] | ✅ `c=IN IP4` / `c=IN IP6` answer endpoints are both parsed (`siprec_sdp_addr_kind`) and the fork opens the matching socket family |
+| IPv4 and IPv6 RTP fork | [RFC 4566 §5.7][rfc4566] | ✅ `c=IN IP4` / `c=IN IP6` answer endpoints are both parsed (`siprec_sdp_addr_kind`) and the fork opens the matching socket family. The live test's `ipv6` scenario verifies RTP delivery to `::1` |
 | Random SSRC | [RFC 3550 §8.1][rfc3550] | ✅ /dev/urandom seed |
 | G.711 µ-law / A-law encoders | [G.711][g711] | ✅ branch-free lookup tables (`siprec_g711.c`), INT16_MIN-safe, bit-verified vs reference for all 65536 inputs. Wideband / multichannel legs are downmixed and resampled to 8 kHz first |
 | `<recording>` schema (top-level element + sequence) | [RFC 7865 §5 / Appendix A][rfc7865] | ✅ |
@@ -167,8 +167,9 @@ bumped), the RTP (no packets while paused, markers, contiguous sequence,
 an 8 kHz clock that keeps running across the pause, from an Opus leg),
 `siprec_stop` with an ad-hoc URI, failover past a dead SRS, and a
 PCMA call recorded to an SRS that answers PCMU (the payload bytes are
-decoded to prove they are μ-law), and separate-streams mode (each
-labelled stream must carry only its own direction's tone). Interop
+decoded to prove they are μ-law), separate-streams mode (each labelled
+stream must carry only its own direction's tone), and an IPv6 answer
+(`c=IN IP6 ::1`). Interop
 with a production SRS remains the operator verification path in
 [`tests/README.md`](tests/README.md).
 

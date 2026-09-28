@@ -8,6 +8,7 @@ failure.
     check.py failover <capture.json> <fs.log>   dead primary, live backup
     check.py codec    <capture.json> <fs.log>   PCMA call, SRS answers PCMU
     check.py separate <capture.json> <fs.log>   separate RX/TX streams
+    check.py ipv6     <capture.json> <fs.log>   SRS answers c=IN IP6 ::1
 """
 import base64
 import binascii
@@ -187,6 +188,19 @@ if mode == "separate":
     m2 = re.findall(r"RTP fork stream\[(\d)\] .* closing: (\d+) packets sent, (\d+) send failures", fslog)
     check(sorted({x[0] for x in m2}) == ["0", "1"] and all(x[2] == "0" for x in m2),
           "both forks closed with no send failures", str(m2[-2:]))
+    print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
+    sys.exit(1 if fails else 0)
+
+if mode == "ipv6":
+    # The SRS answers c=IN IP6 ::1; the fork must parse it and send RTP
+    # over an AF_INET6 socket (the capture's rtp list comes from an
+    # ::1-bound socket).
+    check(len(invites) >= 1, "SRS received the INVITE", f"{len(invites)}")
+    check("remote=::1" in fslog, "module parsed the IPv6 answer endpoint")
+    check(len(rtp) > 50, "RTP delivered to the IPv6 endpoint", f"{len(rtp)}")
+    check({p_[4] for p_ in rtp} <= {0, 8}, "payload type is G.711", str({p_[4] for p_ in rtp}))
+    check("aborting media attach" not in fslog, "IPv6 endpoint accepted (no attach abort)")
+    check("is not an IP address" not in fslog, "IPv6 endpoint classified as an IP address")
     print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
     sys.exit(1 if fails else 0)
 

@@ -13,6 +13,7 @@
 #   separate  siprec sep (separate-streams) -> pause -> resume while the
 #             recorded leg plays 1000 Hz and its far end 440 Hz: RX and TX
 #             arrive as two labelled streams, one tone each
+#   ipv6      SRS answers c=IN IP6 ::1: the fork must send RTP over IPv6
 set -uo pipefail
 PREFIX=/usr/local/freeswitch
 CONF=${PREFIX}/etc/freeswitch
@@ -153,10 +154,10 @@ done
 LOGFILE="$("$CLI" -x "global_getvar log_dir" | tr -d '[:space:]')/freeswitch.log"
 "$CLI" -x "load mod_siprec"
 
-# run_call <scenario> <extension> [<dial-string vars>]: fresh SRS capture,
-# one call, wait for it.
+# run_call <scenario> <extension> [<dial-string vars>] [<extra srs args>]:
+# fresh SRS capture, one call, wait for it.
 run_call() {
-    python3 "${HERE}/srs.py" --ip "$IP" --out "${OUT}/$1.json" --duration 90 > "${OUT}/srs-$1.log" 2>&1 &
+    python3 "${HERE}/srs.py" --ip "$IP" ${4:-} --out "${OUT}/$1.json" --duration 90 > "${OUT}/srs-$1.log" 2>&1 &
     local srs=$!
     sleep 1
     echo "[$1] originate: $("$CLI" -x "originate ${3:-}sofia/internal/siprec_tone@${IP}:5080 $2 XML default")"
@@ -174,6 +175,7 @@ run_call stop siprec_live_stop
 run_call failover siprec_live_failover
 run_call codec siprec_live_codec "{absolute_codec_string=PCMA}"
 run_call separate siprec_live_sep
+run_call ipv6 siprec_live "" "--ip6 ::1"
 
 "$CLI" -x "shutdown" >/dev/null 2>&1 || kill "$FSPID"
 wait "$FSPID" 2>/dev/null
@@ -183,7 +185,7 @@ echo "--- negotiated codecs:"; grep -oE "Set Codec sofia/[a-z]+/[^ ]+ [A-Za-z0-9
 echo "--- mod_siprec log lines (INFO and above):"
 grep -E "siprec_[a-z]+\.c:[0-9]+ siprec|mod_siprec" "${OUT}/fs.log" | grep -v "\[DEBUG\]" | sed -E 's/^[0-9a-f-]{36} //' | cut -c1-200
 rc=0
-for mode in main stop failover codec separate; do
+for mode in main stop failover codec separate ipv6; do
     echo "--- checks: ${mode}"
     python3 "${HERE}/check.py" "$mode" "${OUT}/${mode}.json" "${OUT}/fs.log" || rc=1
 done
