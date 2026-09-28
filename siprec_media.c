@@ -147,10 +147,16 @@ static switch_bool_t media_bug_callback(
          * an already-destroyed bug back to switch_core_media_bug_remove.
          * Sockets are closed in siprec_media_detach. */
         if (!ctx->detaching) {
-            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(
-                    switch_core_media_bug_get_session(bug)),
-                SWITCH_LOG_INFO,
-                "siprec: media bug removed by the core; RTP fork stopped\n");
+            switch_core_session_t *bs = switch_core_media_bug_get_session(bug);
+            /* Expected at hangup (the core removes every bug before the
+             * hangup handler runs). Mid-call it means something else
+             * removed the bug and the recording is silently dead, so
+             * say so loudly. */
+            int down = switch_channel_down_nosig(switch_core_session_get_channel(bs));
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(bs),
+                down ? SWITCH_LOG_DEBUG : SWITCH_LOG_WARNING,
+                "siprec: media bug removed %s; RTP fork stopped\n",
+                down ? "at hangup" : "by another module mid-call");
         }
         ctx->bug = NULL;
         return SWITCH_TRUE;
