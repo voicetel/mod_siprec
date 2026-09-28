@@ -317,6 +317,30 @@ static void test_parse_remote_streams(void) {
         check_int(out[0].pt, 8, "parse:lf-only pt");
     }
 
+    /* mline records which m= line each committed stream came from,
+     * so a declined (port 0) first stream doesn't shift labels. */
+    {
+        const char *sdp =
+            "c=IN IP4 10.0.0.1\r\n"
+            "m=audio 0 RTP/AVP 0\r\n"
+            "m=audio 40002 RTP/AVP 0\r\n";
+        memset(out, 0, sizeof(out));
+        int n = siprec_sdp_parse_remote_streams(sdp, out, SIPREC_MAX_STREAMS);
+        check_int(n, 1, "parse:mline declined-first count");
+        check_int(out[0].mline, 1, "parse:mline of survivor is 1");
+    }
+    {
+        const char *sdp =
+            "c=IN IP4 10.0.0.1\r\n"
+            "m=audio 40000 RTP/AVP 0\r\n"
+            "m=audio 40002 RTP/AVP 8\r\n";
+        memset(out, 0, sizeof(out));
+        int n = siprec_sdp_parse_remote_streams(sdp, out, SIPREC_MAX_STREAMS);
+        check_int(n, 2, "parse:mline two-stream count");
+        check_int(out[0].mline, 0, "parse:mline stream 0");
+        check_int(out[1].mline, 1, "parse:mline stream 1");
+    }
+
     /* Defensive: NULL sdp, NULL out, and out_max==0 all return 0
      * without dereferencing. */
     {
@@ -670,6 +694,24 @@ static void test_metadata_aor(void) {
     expect_null(siprec_metadata_aor("", "h"), "aor:empty rejected");
 }
 
+static void test_sdp_separate_append(void) {
+    char buf[256];
+    int n = siprec_sdp_separate_append(buf, sizeof(buf), "sendonly");
+    check_int(n > 0 && (size_t)n < sizeof(buf), 1, "sep-append:fits");
+    check_str(buf,
+        "a=label:1\r\na=sendonly\r\n"
+        "m=audio 9 RTP/AVP 0 8\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\n"
+        "a=label:2",
+        "sep-append:sendonly text");
+    n = siprec_sdp_separate_append(buf, sizeof(buf), "inactive");
+    check_contains(buf, "a=label:1\r\na=inactive\r\nm=audio", "sep-append:inactive closes stream 1");
+    check_int(siprec_sdp_separate_append(buf, sizeof(buf), "sendrecv"), -1, "sep-append:reject sendrecv");
+    check_int(siprec_sdp_separate_append(buf, sizeof(buf), NULL), -1, "sep-append:reject NULL direction");
+    check_int(siprec_sdp_separate_append(NULL, 10, "sendonly"), -1, "sep-append:reject NULL buf");
+    check_int(siprec_sdp_separate_append(buf, 0, "sendonly"), -1, "sep-append:reject zero len");
+    check_int(siprec_sdp_separate_append(buf, 8, "sendonly") >= 8, 1, "sep-append:reports truncation");
+}
+
 /* ──────────────────────────────────────────────────────────── *
  * Main                                                        *
  * ──────────────────────────────────────────────────────────── */
@@ -864,6 +906,7 @@ static void test_uri_check(void) {
 
 int main(void) {
     test_parse_remote_streams();
+    test_sdp_separate_append();
 
     test_metadata_two_participants();
     test_metadata_xml_escaping();

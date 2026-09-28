@@ -20,6 +20,7 @@ int siprec_sdp_parse_remote_streams(
     char session_ip[64] = {0};
     int  n        = 0;
     int  seen_m   = 0;
+    int  m_index  = -1; /* index of the current m= line */
     /* Index in out[] that the CURRENT m= block committed, or -1 if
      * the current block committed nothing (a non-audio m= section,
      * a declined port-0 audio block, or one beyond out_max). A
@@ -58,6 +59,7 @@ int siprec_sdp_parse_remote_streams(
              * to this block, not the previously committed stream. */
             seen_m  = 1;
             cur_idx = -1;
+            m_index++;
 
             if (line_len > 8 && memcmp(p, "m=audio ", 8) == 0) {
                 /* m=audio <port> <transport> <pt> [<pt> ...]
@@ -86,6 +88,7 @@ int siprec_sdp_parse_remote_streams(
                      * UNSET so the media fork uses its fallback. */
                     out[n].pt = (got == 2 && pt <= 0x7F)
                         ? (uint8_t)pt : SIPREC_PT_UNSET;
+                    out[n].mline = m_index;
                     cur_idx = n; /* per-media c= now targets this stream */
                     n++;
                 }
@@ -97,4 +100,20 @@ int siprec_sdp_parse_remote_streams(
     }
 
     return n;
+}
+
+int siprec_sdp_separate_append(char *buf, size_t len, const char *direction)
+{
+    if (!buf || len == 0 || !direction
+        || (strcmp(direction, "sendonly") && strcmp(direction, "inactive"))) {
+        return -1;
+    }
+    return snprintf(buf, len,
+        "a=label:1\r\n"
+        "a=%s\r\n"
+        "m=audio 9 RTP/AVP 0 8\r\n"
+        "a=rtpmap:0 PCMU/8000\r\n"
+        "a=rtpmap:8 PCMA/8000\r\n"
+        "a=label:2",
+        direction);
 }
