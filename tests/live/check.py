@@ -7,6 +7,7 @@ failure.
     check.py stop     <capture.json> <fs.log>   ad-hoc URI + siprec_stop
     check.py failover <capture.json> <fs.log>   dead primary, live backup
     check.py codec    <capture.json> <fs.log>   PCMA call, SRS answers PCMU
+    check.py separate <capture.json> <fs.log>   separate RX/TX streams
 """
 import base64
 import binascii
@@ -95,6 +96,97 @@ if mode == "codec":
           f"mu-law purity {pu:.3f}, a-law purity {pa:.3f}")
     check(not re.search(r"no usable answer SDP|answer carried no usable payload type", fslog),
           "answer SDP parsed (no codec fallback)")
+    print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
+    sys.exit(1 if fails else 0)
+
+def audio_sections(body):
+    sdp = body[body.find("v=0"):]
+    sdp = re.split(r"(?m)^--", sdp)[0]          # stop at a multipart boundary
+    return [sec for sec in re.split(r"(?m)^(?=m=)", sdp)[1:] if sec.startswith("m=audio")]
+
+
+def directions(sec):
+    return re.findall(r"(?m)^a=(sendonly|recvonly|inactive|sendrecv)\r?$", sec)
+
+
+if mode == "separate":
+    # siprec sep (separate-streams=true) -> 3 s -> pause -> 2 s -> resume -> 2.5 s.
+    # The recorded leg is the outbound (calling) leg. Its far end plays
+    # 440 Hz and the leg itself plays 1000 Hz, so label 1 (what the leg
+    # receives) must carry only 440 Hz and label 2 (what it sends) only
+    # 1000 Hz.
+    if not check(len(invites) == 3, "INVITE + pause + resume re-INVITEs", f"{len(invites)}"):
+        sys.exit(1)
+    for name, msg, want in (("initial", invites[0], "sendonly"), ("pause", invites[1], "inactive"),
+                            ("resume", invites[2], "sendonly")):
+        secs = audio_sections(msg["body"])
+        check(len(secs) == 2, f"{name} offer has two m=audio sections", f"{len(secs)}")
+        for i, sec in enumerate(secs[:2]):
+            check(re.search(rf"(?m)^a=label:{i + 1}\r?$", sec) is not None,
+                  f"{name} offer stream {i + 1} carries a=label:{i + 1}")
+            check(directions(sec) == [want], f"{name} offer stream {i + 1} is a={want} (once)",
+                  str(directions(sec)))
+
+    m = re.search(r"<\?xml.*?</recording>", invites[0]["body"], re.S)
+    ns = "{urn:ietf:params:xml:ns:recording:1}"
+    if check(m is not None, "metadata present"):
+        root = ET.fromstring(m.group(0))
+        labels = {st.get("stream_id"): (st.findtext(ns + "label") or "") for st in root.iter(ns + "stream")}
+        check(sorted(labels.values()) == ["1", "2"], "metadata declares streams labelled 1 and 2",
+              str(sorted(labels.values())))
+        aor = {p_.get("participant_id"): p_.find(ns + "nameID").get("aor") for p_ in root.iter(ns + "participant")}
+        owner = {}
+        for a in root.iter(ns + "participantstreamassoc"):
+            for snd in a.iter(ns + "send"):
+                owner[labels.get(snd.text.strip())] = aor.get(a.get("participant_id"), "")
+        check("siprec_tone" in owner.get("1", ""), "label 1 (received audio) is attributed to the far end",
+              owner.get("1", ""))
+        check(owner.get("1") != owner.get("2"), "labels 1 and 2 belong to different participants")
+
+    pause_t, resume_t = invites[1]["t"], invites[2]["t"]
+    per = {i: [p_ for p_ in rtp if p_[8] == i] for i in (0, 1)}
+    for i in (0, 1):
+        st = per[i]
+        check(len(st) > 100, f"stream {i + 1} received RTP", f"{len(st)}")
+        if not st:
+            continue
+        check(not [p_ for p_ in st if pause_t + 0.1 < p_[0] < resume_t - 0.05],
+              f"stream {i + 1}: no RTP while paused")
+        check(all(((b[1] - a[1]) & 0xFFFF) == 1 for a, b in zip(st, st[1:])),
+              f"stream {i + 1}: contiguous sequence numbers")
+        # The recorded leg runs playback, and FreeSWITCH's own playback
+        # stalls the channel thread at times (seen identically without
+        # siprec), so wall-clock rate isn't a property of the module here.
+        # Check what the module controls: 160 per 20 ms packet inside a
+        # talkspurt, and the pause gap carried into the timestamp.
+        steps_ok = all(((b[2] - a[2]) & 0xFFFFFFFF) == 160
+                       for a, b in zip(st, st[1:]) if not b[3])
+        check(steps_ok, f"stream {i + 1}: timestamp steps 160 per packet within talkspurts")
+        before = [p_ for p_ in st if p_[0] < pause_t]
+        after = [p_ for p_ in st if p_[0] > pause_t + 0.1]
+        if before and after:
+            wall = after[0][0] - before[-1][0]
+            ts = ((after[0][2] - before[-1][2]) & 0xFFFFFFFF) / 8000.0
+            check(abs(ts - wall) < 0.25 * wall, f"stream {i + 1}: RTP clock advances across the pause",
+                  f"ts {ts:.2f}s vs wall {wall:.2f}s")
+        check(len({p_[5] for p_ in st}) == 1, f"stream {i + 1}: single SSRC")
+    if per[0] and per[1]:
+        check(per[0][0][5] != per[1][0][5], "the two streams have different SSRCs")
+        d0 = (per[0][-1][2] - per[0][0][2]) & 0xFFFFFFFF
+        d1 = (per[1][-1][2] - per[1][0][2]) & 0xFFFFFFFF
+        check(abs(d0 - d1) <= 320, "the two streams share one clock", f"{d0} vs {d1}")
+        mid0 = per[0][len(per[0]) // 4: len(per[0]) // 4 + 40]
+        mid1 = per[1][len(per[1]) // 4: len(per[1]) // 4 + 40]
+        p0_440, p0_1k = tone_purity(mid0, ulaw, 440.0), tone_purity(mid0, ulaw, 1000.0)
+        p1_440, p1_1k = tone_purity(mid1, ulaw, 440.0), tone_purity(mid1, ulaw, 1000.0)
+        check(p0_440 > 0.9 and p0_1k < 0.05, "label 1 carries only the far end (440 Hz)",
+              f"440 {p0_440:.3f}, 1000 {p0_1k:.3f}")
+        check(p1_1k > 0.9 and p1_440 < 0.05, "label 2 carries only the near end (1000 Hz)",
+              f"1000 {p1_1k:.3f}, 440 {p1_440:.3f}")
+    check("separate streams requested but" not in fslog, "separate mode was not downgraded to mixed")
+    m2 = re.findall(r"RTP fork stream\[(\d)\] .* closing: (\d+) packets sent, (\d+) send failures", fslog)
+    check(sorted({x[0] for x in m2}) == ["0", "1"] and all(x[2] == "0" for x in m2),
+          "both forks closed with no send failures", str(m2[-2:]))
     print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
     sys.exit(1 if fails else 0)
 

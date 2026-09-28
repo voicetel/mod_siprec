@@ -2,15 +2,17 @@
 """Minimal SIPREC Session Recording Server for the live test.
 
 Answers SIP over UDP (INVITE / re-INVITE / ACK / BYE / anything else with
-200), answers each offer with a single PCMU stream whose direction mirrors
-the offer (sendonly -> recvonly, inactive -> inactive), and records RTP
-header fields plus arrival times. Everything it sees is written as JSON to
+200). Each offered m=audio section is answered with PCMU on its own RTP
+port (rtp-port, rtp-port+2, ...) and a direction mirroring that section's
+(sendonly -> recvonly, inactive -> inactive). Records RTP header fields,
+payload bytes, arrival times and which port (stream) each packet hit. Everything it sees is written as JSON to
 the output file when it exits (SIGTERM/SIGINT, or --duration elapsed).
 
 Only what the test needs; not a general SIP implementation.
 """
 import argparse
 import json
+import re
 import signal
 import socket
 import struct
@@ -27,7 +29,8 @@ args = p.parse_args()
 
 t0 = time.monotonic()
 sip_log = []      # every request received
-rtp_log = []      # [t, seq, ts, marker, pt, ssrc, payload_len, payload_hex]
+rtp_log = []      # [t, seq, ts, marker, pt, ssrc, payload_len, payload_hex, stream]
+MAX_STREAMS = 2
 lock = threading.Lock()
 done = threading.Event()
 responses = {}    # (call-id, cseq) -> response bytes, for retransmissions
@@ -55,23 +58,26 @@ def hget(headers, name, compact=None):
 
 
 def answer_sdp(call_id, offer):
-    direction = "recvonly"
-    if "a=inactive" in offer:
-        direction = "inactive"
-    elif "a=recvonly" in offer:
-        direction = "sendonly"
+    sdp = offer[offer.find("v=0"):]
+    sections = [sec for sec in re.split(r"(?m)^(?=m=)", sdp)[1:]
+                if sec.startswith("m=audio")][:MAX_STREAMS]
     ver = sdp_version.get(call_id, 0) + 1
     sdp_version[call_id] = ver
-    return (
+    out = (
         "v=0\r\n"
         f"o=srs 4242 {ver} IN IP4 {args.ip}\r\n"
         "s=srs\r\n"
         f"c=IN IP4 {args.ip}\r\n"
         "t=0 0\r\n"
-        f"m=audio {args.rtp_port} RTP/AVP 0\r\n"
-        "a=rtpmap:0 PCMU/8000\r\n"
-        f"a={direction}\r\n"
     )
+    for i, sec in enumerate(sections):
+        m = re.search(r"(?m)^a=(sendonly|recvonly|inactive|sendrecv)\r?$", sec)
+        offered = m.group(1) if m else "sendrecv"
+        direction = {"sendonly": "recvonly", "recvonly": "sendonly"}.get(offered, offered)
+        out += (f"m=audio {args.rtp_port + 2 * i} RTP/AVP 0\r\n"
+                "a=rtpmap:0 PCMU/8000\r\n"
+                f"a={direction}\r\n")
+    return out
 
 
 def response(headers, code, reason, body="", ctype=None, to_tag=True):
@@ -123,7 +129,7 @@ def sip_loop(sock):
         sock.sendto(resp, addr)
 
 
-def rtp_loop(sock):
+def rtp_loop(sock, stream):
     sock.settimeout(0.2)
     while not done.is_set():
         try:
@@ -135,7 +141,7 @@ def rtp_loop(sock):
         b0, b1, seq, ts, ssrc = struct.unpack("!BBHII", data[:12])
         with lock:
             rtp_log.append([now(), seq, ts, (b1 >> 7) & 1, b1 & 0x7F, ssrc, len(data) - 12,
-                            data[12:].hex()])
+                            data[12:].hex(), stream])
 
 
 def stop(*_):
@@ -147,10 +153,11 @@ signal.signal(signal.SIGINT, stop)
 
 sip = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sip.bind(("0.0.0.0", args.sip_port))
-rtp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-rtp.bind(("0.0.0.0", args.rtp_port))
-threads = [threading.Thread(target=sip_loop, args=(sip,), daemon=True),
-           threading.Thread(target=rtp_loop, args=(rtp,), daemon=True)]
+threads = [threading.Thread(target=sip_loop, args=(sip,), daemon=True)]
+for i in range(MAX_STREAMS):
+    rtp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    rtp.bind(("0.0.0.0", args.rtp_port + 2 * i))
+    threads.append(threading.Thread(target=rtp_loop, args=(rtp, i), daemon=True))
 for th in threads:
     th.start()
 print(f"srs: listening sip={args.sip_port} rtp={args.rtp_port}", flush=True)

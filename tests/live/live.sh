@@ -10,6 +10,9 @@
 #   stop      siprec <handle> <ad-hoc uri> -> 2 s -> siprec_stop -> 3 s -> hangup
 #   failover  siprec fo (dead primary, live backup) -> 2 s -> hangup
 #   codec     PCMA call, SRS answers PCMU: the fork must send mu-law
+#   separate  siprec sep (separate-streams) -> pause -> resume while the
+#             recorded leg plays 1000 Hz and its far end 440 Hz: RX and TX
+#             arrive as two labelled streams, one tone each
 set -uo pipefail
 PREFIX=/usr/local/freeswitch
 CONF=${PREFIX}/etc/freeswitch
@@ -44,6 +47,13 @@ cat > "${CONF}/autoload_configs/siprec.conf.xml" <<EOF
         <param name="transport" value="udp"/>
       </settings>
     </recording-server>
+    <recording-server name="sep">
+      <settings>
+        <param name="host" value="${IP}"/>
+        <param name="port" value="5070"/>
+        <param name="separate-streams" value="true"/>
+      </settings>
+    </recording-server>
     <recording-server name="fo">
       <settings>
         <param name="host" value="${IP}"/>
@@ -70,6 +80,19 @@ cat > "${CONF}/dialplan/default/00_siprec_live.xml" <<EOF
       <action application="sleep" data="2000"/>
       <action application="siprec_stop"/>
       <action application="sleep" data="3000"/>
+      <action application="hangup"/>
+    </condition>
+  </extension>
+  <extension name="siprec_live_sep">
+    <condition field="destination_number" expression="^siprec_live_sep\$">
+      <action application="answer"/>
+      <action application="sleep" data="500"/>
+      <action application="siprec" data="sep"/>
+      <action application="playback" data="tone_stream://%(3000,0,1000)"/>
+      <action application="siprec_pause" data="sep"/>
+      <action application="playback" data="tone_stream://%(2000,0,1000)"/>
+      <action application="siprec_resume" data="sep"/>
+      <action application="playback" data="tone_stream://%(2500,0,1000)"/>
       <action application="hangup"/>
     </condition>
   </extension>
@@ -150,6 +173,7 @@ run_call main siprec_live
 run_call stop siprec_live_stop
 run_call failover siprec_live_failover
 run_call codec siprec_live_codec "{absolute_codec_string=PCMA}"
+run_call separate siprec_live_sep
 
 "$CLI" -x "shutdown" >/dev/null 2>&1 || kill "$FSPID"
 wait "$FSPID" 2>/dev/null
@@ -159,7 +183,7 @@ echo "--- negotiated codecs:"; grep -oE "Set Codec sofia/[a-z]+/[^ ]+ [A-Za-z0-9
 echo "--- mod_siprec log lines (INFO and above):"
 grep -E "siprec_[a-z]+\.c:[0-9]+ siprec|mod_siprec" "${OUT}/fs.log" | grep -v "\[DEBUG\]" | sed -E 's/^[0-9a-f-]{36} //' | cut -c1-200
 rc=0
-for mode in main stop failover codec; do
+for mode in main stop failover codec separate; do
     echo "--- checks: ${mode}"
     python3 "${HERE}/check.py" "$mode" "${OUT}/${mode}.json" "${OUT}/fs.log" || rc=1
 done
