@@ -84,13 +84,20 @@ static void teardown_recording(recording_t *recording);
  * find-then-unlock-then-free TOCTOU) they would double-free the
  * pool and use-after-free recording->media_ctx. Folding find+delete
  * into one locked claim collapses that window: a second claimer for
- * the same key gets NULL and does nothing. */
-static recording_t *claim_recording(const char *key)
+ * the same key gets NULL and does nothing.
+ *
+ * *found (if non-NULL) is set to whether the key was present at all,
+ * so callers can tell "nothing to stop" from "stopped, teardown
+ * deferred to the pinning reader". */
+static recording_t *claim_recording(const char *key, int *found)
 {
     recording_t *recording;
 
     switch_mutex_lock(globals.recordings_mutex);
     recording = switch_core_hash_find(globals.recordings_hash, key);
+    if (found) {
+        *found = recording != NULL;
+    }
     if (recording) {
         /* Remove it so no new acquire/claim can find it. */
         switch_core_hash_delete(globals.recordings_hash, key);
@@ -188,10 +195,14 @@ static void teardown_recording(recording_t *recording)
  * keys, drop the lock, then claim + tear down each. claim_recording
  * re-finds atomically, so a recording a concurrent stop already took
  * just yields NULL. A full batch may have left matches behind, so scan
- * again until a pass comes back short. */
-static void drain_recordings(const char *uuid)
+ * again until a pass comes back short.
+ *
+ * Returns how many recordings this call stopped, counting pinned ones
+ * whose teardown was deferred to their last release. */
+static int drain_recordings(const char *uuid)
 {
     enum { SIPREC_DRAIN_BATCH = 16 };
+    int stopped = 0;
 
     for (;;) {
         char *keys[SIPREC_DRAIN_BATCH];
@@ -215,8 +226,10 @@ static void drain_recordings(const char *uuid)
         switch_mutex_unlock(globals.recordings_mutex);
 
         for (i = 0; i < n; i++) {
-            recording = claim_recording(keys[i]);
+            int found;
+            recording = claim_recording(keys[i], &found);
             switch_safe_free(keys[i]);
+            stopped += found;
             if (recording) {
                 teardown_recording(recording);
             }
@@ -226,15 +239,17 @@ static void drain_recordings(const char *uuid)
             break;
         }
     }
+    return stopped;
 }
 
 /* stop_recording_session: stop every recording on this leg, config
  * and ad-hoc alike (matched by the call uuid, not by configured
- * server names). */
+ * server names). SUCCESS if at least one was stopped, FALSE if there
+ * was nothing to stop. */
 switch_status_t stop_recording_session(switch_core_session_t *session)
 {
-    drain_recordings(switch_core_session_get_uuid(session));
-    return SWITCH_STATUS_SUCCESS;
+    return drain_recordings(switch_core_session_get_uuid(session)) > 0
+        ? SWITCH_STATUS_SUCCESS : SWITCH_STATUS_FALSE;
 }
 
 /* siprec_teardown_all_recordings: retire every recording (module
@@ -251,12 +266,14 @@ void siprec_teardown_all_recordings(void)
  * fall back to stopping every recording on the leg — the
  * PCI-safe default, so an explicit `siprec_stop` with no
  * argument can't leave a second SRS still receiving audio.
- * Returns SUCCESS if at least one recording was found and torn
- * down, FALSE if there was nothing to stop. */
+ * Returns SUCCESS if a recording was stopped (torn down now, or
+ * deferred to the release of an in-flight pin), FALSE if there was
+ * nothing to stop. */
 switch_status_t stop_recording_session_for_server(switch_core_session_t *session, const char *server_name)
 {
     char *recording_key;
     recording_t *recording;
+    int found;
 
     if (zstr(server_name)) {
         return stop_recording_session(session);
@@ -264,16 +281,18 @@ switch_status_t stop_recording_session_for_server(switch_core_session_t *session
 
     recording_key = siprec_recording_key(server_name, switch_core_session_get_uuid(session));
 
-    /* Atomic claim — see claim_recording. Removing it from the
-     * hash under one lock hold is what guarantees only this thread
-     * frees it, even if the hangup handler / another siprec_stop fires for
-     * the same recording concurrently. */
-    recording = claim_recording(recording_key);
+    /* Atomic claim — see claim_recording. A recording pinned by an
+     * in-flight start/pause/resume counts as stopped: it is out of the
+     * hash and its last release tears it down. */
+    recording = claim_recording(recording_key, &found);
 
     switch_safe_free(recording_key);
 
-    if (!recording) {
+    if (!found) {
         return SWITCH_STATUS_FALSE;
+    }
+    if (!recording) {
+        return SWITCH_STATUS_SUCCESS;
     }
 
     teardown_recording(recording);
