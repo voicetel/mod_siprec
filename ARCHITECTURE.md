@@ -95,8 +95,10 @@ siprec_media.h
       with kernel-assigned ephemeral source port. Per-stream
       endpoint comes from parsing `sip_remote_sdp_str` in
       `siprec_invite.c:parse_remote_sdp_streams`.
-- [x] Codec passthrough: `read_codec->ianacode` selects PCMU/PCMA
-      at attach time. v1 assumes 8 kHz mono 20 ms ptime.
+- [x] Codec: the SRS answer's payload type selects PCMU/PCMA. The
+      bug delivers L16 at the leg's native rate and channel count;
+      multichannel frames are downmixed and non-8 kHz frames (G.722,
+      Opus, …) are resampled to 8 kHz before G.711 encoding.
 - [x] RTP framing: G.711 encoding via branch-free lookup tables
       (`siprec_g711.c`, built once at load from INT16_MIN-safe
       reference encoders, bit-verified for all 65536 inputs) +

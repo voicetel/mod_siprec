@@ -75,6 +75,10 @@ _Static_assert(
 #define RTP_VERSION  2
 #define RTP_HEADER_LEN 12
 
+/* G.711 is 8 kHz mono (RFC 3551 §4.5.14); the RTP clock runs at
+ * the same rate. */
+#define SIPREC_G711_RATE 8000
+
 /* ──────────────────────────────────────────────────────────── *
  * G.711 encoding lives in siprec_g711.{c,h}: branch-free table  *
  * lookups (siprec_l16_to_ulaw / _alaw) built once at module      *
@@ -183,7 +187,9 @@ static switch_bool_t media_bug_callback(
         for (;;) {
             switch_status_t rs;
             const int16_t  *samples;
+            int16_t        *data16;
             size_t          sample_count;
+            uint32_t        channels, rate;
             uint8_t         encoded[1500];
 
             memset(&frame, 0, sizeof(frame));
@@ -204,8 +210,35 @@ static switch_bool_t media_bug_callback(
                 continue;
             }
 
-            samples      = (const int16_t *)frame.data;
-            sample_count = frame.datalen / 2;
+            /* bug_read returns L16 at the leg's native rate and
+             * channel count. G.711 is 8 kHz mono, so downmix and
+             * resample first; otherwise a wideband (G.722 / Opus) leg
+             * is encoded at 2-6x the sample count and plays back
+             * slowed down with an RTP clock running too fast. */
+            channels = frame.channels ? frame.channels : 1;
+            rate     = frame.rate ? frame.rate : SIPREC_G711_RATE;
+            data16   = (int16_t *)frame.data;
+            sample_count = frame.datalen / sizeof(int16_t) / channels;
+
+            if (channels > 1) {
+                switch_mux_channels(data16, sample_count, channels, 1);
+            }
+            if (rate != SIPREC_G711_RATE) {
+                if (!ctx->resampler || ctx->resampler->from_rate != (int)rate) {
+                    switch_resample_destroy(&ctx->resampler);
+                    if (switch_resample_create(&ctx->resampler, rate,
+                            SIPREC_G711_RATE, (uint32_t)sizeof(encoded),
+                            SWITCH_RESAMPLE_QUALITY, 1) != SWITCH_STATUS_SUCCESS) {
+                        ctx->resampler = NULL;
+                        continue;
+                    }
+                }
+                sample_count = switch_resample_process(ctx->resampler,
+                    data16, (uint32_t)sample_count);
+                samples = ctx->resampler->to;
+            } else {
+                samples = data16;
+            }
 
             if (sample_count > sizeof(encoded)) {
                 sample_count = sizeof(encoded);
@@ -466,6 +499,8 @@ switch_status_t siprec_media_detach(recording_t *recording)
             mctx->streams[i].fd = -1;
         }
     }
+    /* The bug is gone, so the callback can no longer touch this. */
+    switch_resample_destroy(&mctx->resampler);
     mctx->stream_count = 0;
     recording->media_ctx = NULL;
     return SWITCH_STATUS_SUCCESS;

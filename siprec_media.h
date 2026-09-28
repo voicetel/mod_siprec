@@ -73,6 +73,12 @@ typedef struct siprec_media_ctx {
         uint8_t    pt;
     } streams[SIPREC_MAX_STREAMS];
     size_t stream_count;
+
+    /* Downsampler to the 8 kHz G.711 clock, created lazily by the
+     * media-bug callback when the leg's L16 rate isn't 8 kHz and
+     * recreated if the rate changes mid-call. Owned by the callback
+     * until siprec_media_detach destroys it after the bug is gone. */
+    switch_audio_resampler_t *resampler;
 } siprec_media_ctx_t;
 
 /* siprec_media_attach: install the media bug on the original
