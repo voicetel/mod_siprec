@@ -202,14 +202,6 @@ static switch_bool_t media_bug_callback(
             if (rs != SWITCH_STATUS_SUCCESS || frame.datalen == 0) {
                 break;
             }
-            /* CNG / discontinuous-transmission frames signal
-             * silence — skip them and mark the next real packet
-             * as a fresh talkspurt (M=1). */
-            if (frame.flags & SFF_CNG) {
-                ctx->streams[0].marker_pending = 1;
-                continue;
-            }
-
             /* bug_read returns L16 at the leg's native rate and
              * channel count. G.711 is 8 kHz mono, so downmix and
              * resample first; otherwise a wideband (G.722 / Opus) leg
@@ -272,8 +264,22 @@ static switch_bool_t media_bug_callback(
         }
 
         if (!sent_any) {
-            /* Nothing emitted this tick (silence on both sides):
-             * the next real packet opens a new talkspurt. */
+            /* Nothing to send this tick (no audio in either
+             * direction). RFC 3550 §5.1: the RTP clock keeps running
+             * through silence, so advance the timestamp by one tick's
+             * worth of 8 kHz samples; otherwise gaps collapse and the
+             * SRS's recording comes out shorter than the call. The
+             * next real packet opens a new talkspurt (RFC 3551 §4.1). */
+            switch_codec_implementation_t impl = { 0 };
+            uint32_t tick = 160; /* 20 ms @ 8 kHz */
+
+            switch_core_session_get_read_impl(
+                switch_core_media_bug_get_session(bug), &impl);
+            if (impl.microseconds_per_packet > 0) {
+                tick = (uint32_t)(impl.microseconds_per_packet
+                    / (1000000 / SIPREC_G711_RATE));
+            }
+            ctx->streams[0].timestamp += tick;
             ctx->streams[0].marker_pending = 1;
         }
         return SWITCH_TRUE;
@@ -526,11 +532,20 @@ void siprec_media_set_paused(recording_t *recording, int paused)
      * leg are unaffected (unlike channel-wide CF_PAUSE_BUGS). */
     if (paused) {
         switch_core_media_bug_set_flag(mctx->bug, SMBF_PAUSE);
+        if (!mctx->paused_at) {
+            mctx->paused_at = switch_micro_time_now();
+        }
     } else {
-        /* Mark the next forwarded packet as a fresh talkspurt so
-         * the SRS sees the pause as a discontinuity boundary.
-         * Set before clearing the flag: while paused the callback
-         * doesn't run, so there's no concurrent writer here. */
+        /* While paused the callback doesn't run, so there's no
+         * concurrent writer here. Advance the RTP clock by the paused
+         * wall-clock time (RFC 3550 §5.1) and mark the next packet
+         * as a fresh talkspurt so the SRS sees the discontinuity. */
+        if (mctx->paused_at) {
+            switch_time_t us = switch_micro_time_now() - mctx->paused_at;
+            mctx->streams[0].timestamp +=
+                (uint32_t)(us / (1000000 / SIPREC_G711_RATE));
+            mctx->paused_at = 0;
+        }
         mctx->streams[0].marker_pending = 1;
         switch_core_media_bug_clear_flag(mctx->bug, SMBF_PAUSE);
     }
