@@ -318,6 +318,27 @@ static switch_bool_t media_bug_callback(
     }
 }
 
+/* random_u32: 32 bits from the kernel CSPRNG (/dev/urandom never
+ * blocks once seeded, which it is long before FreeSWITCH loads
+ * modules; RFC 4086 §6.2). Falls back to the microsecond clock only
+ * if the read fails. */
+static uint32_t random_u32(void)
+{
+    uint8_t b[4];
+    ssize_t got = -1;
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+
+    if (fd >= 0) {
+        got = read(fd, b, sizeof(b));
+        close(fd);
+    }
+    if (got != (ssize_t)sizeof(b)) {
+        return (uint32_t)switch_micro_time_now();
+    }
+    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16)
+         | ((uint32_t)b[2] << 8) | (uint32_t)b[3];
+}
+
 /* ──────────────────────────────────────────────────────────── *
  * Public API                                                  *
  * ──────────────────────────────────────────────────────────── */
@@ -380,7 +401,6 @@ switch_status_t siprec_media_attach(recording_t *recording)
     mctx->stream_count = 1;
     for (size_t i = 0; i < mctx->stream_count; i++) {
         uint8_t neg_pt;
-        int     rfd;
         /* IPv4-only RTP fork in v1. inet_pton returns 0 for a
          * well-formed IPv6 address (or for any other non-IPv4
          * string) — fail loudly here rather than open a socket
@@ -451,32 +471,13 @@ switch_status_t siprec_media_attach(recording_t *recording)
             }
         }
 
-        /* RFC 3550 §8.1: SSRC must be chosen at random with
-         * uniform distribution so collision detection works.
-         * Pull 4 bytes from /dev/urandom; fall back to the
-         * monotonic seed only if entropy is unavailable
-         * (extremely rare on real systems). The kernel
-         * CSPRNG never blocks once seeded, which it always
-         * is by the time FS is loading modules. RFC 4086 §6.2
-         * endorses /dev/urandom for unpredictable values. */
-        mctx->streams[i].ssrc =
-            (uint32_t)switch_micro_time_now() ^ (uint32_t)i;
-        rfd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
-        if (rfd >= 0) {
-            uint8_t ssrc_bytes[4];
-            ssize_t got = read(rfd, ssrc_bytes, sizeof(ssrc_bytes));
-            close(rfd);
-            if (got == (ssize_t)sizeof(ssrc_bytes)) {
-                mctx->streams[i].ssrc =
-                    ((uint32_t)ssrc_bytes[0] << 24)
-                    | ((uint32_t)ssrc_bytes[1] << 16)
-                    | ((uint32_t)ssrc_bytes[2] <<  8)
-                    |  (uint32_t)ssrc_bytes[3];
-            }
-        }
-
-        mctx->streams[i].timestamp = 0;
-        mctx->streams[i].sequence = 0;
+        /* RFC 3550 §8.1: the SSRC must be random so collision
+         * detection works; §5.1: the initial sequence number and
+         * timestamp SHOULD be random to resist known-plaintext attacks
+         * on encrypted streams. */
+        mctx->streams[i].ssrc      = random_u32();
+        mctx->streams[i].sequence  = (uint16_t)random_u32();
+        mctx->streams[i].timestamp = random_u32();
         mctx->streams[i].marker_pending = 1; /* first pkt opens talkspurt */
     }
 
