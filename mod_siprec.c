@@ -49,44 +49,86 @@ static switch_xml_config_item_t general_instructions[] = {
 	SWITCH_CONFIG_ITEM_END()
 };
 
+/* recording_server_config_error: why a parsed <recording-server> can't
+ * be used, or NULL if it can. Entries are validated at load so a typo
+ * surfaces in the log at startup rather than as a failed INVITE on the
+ * first recorded call. */
+static const char *recording_server_config_error(const recording_server_t *srv, char *hostbuf, size_t hostbuf_len)
+{
+	const char *why;
+
+	if (zstr(srv->name)) {
+		return "missing name attribute";
+	}
+	if (zstr(srv->host)) {
+		return "missing host param";
+	}
+	/* The host is assembled into the originate dial string, so hold it
+	 * to the same character allowlist as an ad-hoc URI. */
+	switch_snprintf(hostbuf, hostbuf_len, "sip:%s", srv->host);
+	if ((why = siprec_uri_check(hostbuf))) {
+		return why;
+	}
+	if (srv->port < 0) {
+		return "port is not an integer in 1-65535";
+	}
+	if (srv->transport && strcasecmp(srv->transport, "udp")
+		&& strcasecmp(srv->transport, "tcp") && strcasecmp(srv->transport, "tls")) {
+		return "transport must be udp, tcp or tls";
+	}
+	return NULL;
+}
+
 static switch_status_t load_recording_server(switch_xml_t xml)
 {
 	switch_xml_t settings;
-	char *name = (char *) switch_xml_attr_soft(xml, "name");
+	const char *name = switch_xml_attr_soft(xml, "name");
 	recording_server_t *recording_server;
 	recording_server_t *existing;
 	switch_memory_pool_t *recording_server_pool;
+	char hostbuf[SIPREC_URI_MAX_LEN + 8];
+	const char *why;
 
-	switch_core_new_memory_pool(&recording_server_pool);
+	if (switch_core_new_memory_pool(&recording_server_pool) != SWITCH_STATUS_SUCCESS) {
+		return SWITCH_STATUS_FALSE;
+	}
 
 	recording_server = (recording_server_t *) switch_core_alloc(recording_server_pool, sizeof(*recording_server));
-	recording_server->name = switch_core_strdup(recording_server_pool, switch_str_nil(name));
+	recording_server->name = switch_core_strdup(recording_server_pool, name);
 	recording_server->pool = recording_server_pool;
 
 	if ((settings = switch_xml_child(xml, "settings"))) {
 		for (switch_xml_t param = switch_xml_child(settings, "param"); param; param = param->next) {
 			const char *var = switch_xml_attr_soft(param, "name");
 			const char *val = switch_xml_attr_soft(param, "value");
-			/* Use switch_core_strdup (pool-bound) instead of bare
-			 * strdup. The recording_server's pool is destroyed at
-			 * module shutdown; strings allocated from the heap
-			 * (strdup) leak because nothing tracks their lifetime
-			 * — name was already pool-allocated, the others were
-			 * inconsistent. switch_atoui returns unsigned; the
-			 * cast keeps the signed-int port field tidy.
-			 */
+
 			if (!strcmp(var, "host")) {
 				recording_server->host = switch_core_strdup(recording_server_pool, val);
 			} else if (!strcmp(var, "port")) {
-				recording_server->port = (int) switch_atoui(val);
+				char *end = NULL;
+				long port = strtol(val, &end, 10);
+				/* -1 marks an invalid value for the check below; 0
+				 * (param absent) means the SIP default, 5060. */
+				recording_server->port = (!zstr(val) && end && !*end && port > 0 && port <= 65535)
+					? (int) port : -1;
 			} else if (!strcmp(var, "transport")) {
-				/* "udp" (default), "tcp", "tls". TLS implies
-				 * the dial URI uses sips:; the sofia profile
-				 * MUST have sip-tls-port configured. */
-				recording_server->transport =
-					switch_core_strdup(recording_server_pool, val);
+				/* "udp" (default), "tcp", "tls". TLS implies the dial
+				 * URI uses sips:; the sofia profile MUST have
+				 * sip-tls-port configured. */
+				recording_server->transport = switch_core_strdup(recording_server_pool, val);
+			} else {
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+					"siprec: recording-server '%s': ignoring unknown param '%s'\n",
+					switch_str_nil(name), var);
 			}
 		}
+	}
+
+	if ((why = recording_server_config_error(recording_server, hostbuf, sizeof(hostbuf)))) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+			"siprec: skipping recording-server '%s': %s\n", switch_str_nil(name), why);
+		switch_core_destroy_memory_pool(&recording_server_pool);
+		return SWITCH_STATUS_FALSE;
 	}
 
 	switch_mutex_lock(globals.recording_servers_mutex);
@@ -119,9 +161,8 @@ static switch_status_t switch_xml_config_parse_module_recording_servers(const ch
 
 	if ((servers = switch_xml_child(cfg, "recording-servers"))) {
 		for (switch_xml_t xserver = switch_xml_child(servers, "recording-server"); xserver; xserver = xserver->next) {
-			if (load_recording_server(xserver) != SWITCH_STATUS_SUCCESS) {
-				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "error loading recording server.\n");
-			}
+			/* A bad entry is logged and skipped; the rest still load. */
+			load_recording_server(xserver);
 		}
 	}
 

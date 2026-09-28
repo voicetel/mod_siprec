@@ -168,6 +168,13 @@ without unloading the module — the teardown verbs
 (`siprec_pause`/`resume`/`stop`) still work so an in-flight
 recording can be retired.
 
+Each `<recording-server>` is validated at load: it needs a `name`
+and a `host`; `port` (default 5060) must be 1-65535; `transport` must
+be `udp`, `tcp` or `tls`. The host is held to the same character
+allowlist as an ad-hoc URI (so IPv6 literals are rejected; the RTP fork
+is IPv4-only anyway). An invalid entry is logged and skipped, and an
+unknown param draws a warning.
+
 Multiple `<recording-server>` entries can coexist; the dialplan
 chooses one by name. A recording can also target an SRS that is
 **not** in this file by passing a SIP URI as a second `siprec`
