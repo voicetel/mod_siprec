@@ -179,11 +179,17 @@ per call rather than provisioned here.
 ```xml
 <extension name="record-with-siprec">
   <condition>
+    <action application="answer"/>
     <action application="siprec" data="default"/>
     <!-- ...the rest of your call flow... -->
   </condition>
 </extension>
 ```
+
+The call's media must already be up (`answer` or `pre_answer`):
+`siprec` refuses to start otherwise, rather than implicitly
+pre-answering the call and inviting the SRS for a call that may never
+connect.
 
 `siprec <handle>` resolves `<handle>` against `siprec.conf`. To
 record to an SRS chosen **per call** — with no config entry —

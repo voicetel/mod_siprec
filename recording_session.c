@@ -430,6 +430,18 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
         return SWITCH_STATUS_FALSE;
     }
 
+    /* Require established media. switch_core_media_bug_add pre-answers
+     * a channel whose media isn't up, so starting a recording before
+     * answer/pre_answer would send the caller a 183 as a side effect
+     * and INVITE the SRS for a call that may never connect. Refuse
+     * instead and let the dialplan decide when media starts. */
+    if (!switch_channel_media_ready(switch_core_session_get_channel(session))) {
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+            "siprec: channel media is not up — run answer (or pre_answer) "
+            "before siprec; recording NOT started\n");
+        return SWITCH_STATUS_FALSE;
+    }
+
     /* Config path only: resolve the named <recording-server> from
      * siprec.conf. The ad-hoc path has no config entry — its server
      * is built from the recording pool once that pool exists (below),
