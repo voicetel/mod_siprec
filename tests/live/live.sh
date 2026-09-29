@@ -14,6 +14,8 @@
 #             recorded leg plays 1000 Hz and its far end 440 Hz: RX and TX
 #             arrive as two labelled streams, one tone each
 #   ipv6      SRS answers c=IN IP6 ::1: the fork must send RTP over IPv6
+#   fallback  separate-streams on, SRS declines the 2nd stream: the module
+#             falls back to one mixed stream
 set -uo pipefail
 PREFIX=/usr/local/freeswitch
 CONF=${PREFIX}/etc/freeswitch
@@ -176,6 +178,7 @@ run_call failover siprec_live_failover
 run_call codec siprec_live_codec "{absolute_codec_string=PCMA}"
 run_call separate siprec_live_sep
 run_call ipv6 siprec_live "" "--ip6 ::1"
+run_call fallback siprec_live_sep "" "--reject-second"
 
 "$CLI" -x "shutdown" >/dev/null 2>&1 || kill "$FSPID"
 wait "$FSPID" 2>/dev/null
@@ -185,7 +188,7 @@ echo "--- negotiated codecs:"; grep -oE "Set Codec sofia/[a-z]+/[^ ]+ [A-Za-z0-9
 echo "--- mod_siprec log lines (INFO and above):"
 grep -E "siprec_[a-z]+\.c:[0-9]+ siprec|mod_siprec" "${OUT}/fs.log" | grep -v "\[DEBUG\]" | sed -E 's/^[0-9a-f-]{36} //' | cut -c1-200
 rc=0
-for mode in main stop failover codec separate ipv6; do
+for mode in main stop failover codec separate ipv6 fallback; do
     echo "--- checks: ${mode}"
     python3 "${HERE}/check.py" "$mode" "${OUT}/${mode}.json" "${OUT}/fs.log" || rc=1
 done

@@ -22,6 +22,7 @@ import time
 p = argparse.ArgumentParser()
 p.add_argument("--ip", required=True, help="address advertised in SDP/Contact")
 p.add_argument("--ip6", help="if set, answer c=IN IP6 <ip6> and bind RTP there")
+p.add_argument("--reject-second", action="store_true", help="answer the 2nd m=audio with port 0")
 p.add_argument("--sip-port", type=int, default=5070)
 p.add_argument("--rtp-port", type=int, default=40000)
 p.add_argument("--out", required=True)
@@ -76,7 +77,8 @@ def answer_sdp(call_id, offer):
         m = re.search(r"(?m)^a=(sendonly|recvonly|inactive|sendrecv)\r?$", sec)
         offered = m.group(1) if m else "sendrecv"
         direction = {"sendonly": "recvonly", "recvonly": "sendonly"}.get(offered, offered)
-        out += (f"m=audio {args.rtp_port + 2 * i} RTP/AVP 0\r\n"
+        port = 0 if (args.reject_second and i > 0) else args.rtp_port + 2 * i
+        out += (f"m=audio {port} RTP/AVP 0\r\n"
                 "a=rtpmap:0 PCMU/8000\r\n"
                 f"a={direction}\r\n")
     return out

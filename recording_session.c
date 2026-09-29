@@ -444,32 +444,6 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 		return SWITCH_STATUS_FALSE;
 	}
 
-	/* Config path only: resolve the named <recording-server> from
-	 * siprec.conf. The ad-hoc path has no config entry — its server
-	 * is built from the recording pool once that pool exists (below),
-	 * so an operator can point a recording at an SRS that was never
-	 * provisioned in siprec.conf. */
-	if (!adhoc) {
-		switch_mutex_lock(globals.recording_servers_mutex);
-		server = switch_core_hash_find(globals.recording_servers_hash, recording_server_name);
-		switch_mutex_unlock(globals.recording_servers_mutex);
-
-		if (!server) {
-			/* Soft fail-closed: no SRS resolved (handle not in
-			 * siprec.conf and no ad-hoc URI given). Warn clearly that
-			 * NOTHING is recording/transmitting and let the call go on.
-			 * Add the named server to siprec.conf, or pass an ad-hoc
-			 * SRS URI as the second app argument
-			 * (siprec <handle> sip:host:port). */
-			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
-				"siprec: recording '%s' NOT active — no SRS resolved "
-				"(no '%s' in siprec.conf and no ad-hoc SRS URI supplied); "
-				"no audio transmitted\n",
-				recording_server_name, recording_server_name);
-			return SWITCH_STATUS_FALSE;
-		}
-	}
-
 	if (switch_core_new_memory_pool(&recording_pool) != SWITCH_STATUS_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
 			"siprec: failed to allocate recording memory pool\n");
@@ -501,18 +475,24 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 
 	if (!adhoc) {
 		/* Snapshot the failover chain into the recording's pool under
-		 * the servers lock. The config entries live in pools that
-		 * module unload destroys, and the INVITE walk below can outlast
-		 * a concurrent unload by the full originate timeout per
-		 * candidate; a private copy makes the recording self-contained. */
+		 * the servers lock, in one lookup: the config entries live in
+		 * pools that module unload destroys, and the INVITE walk below
+		 * can outlast a concurrent unload by the originate timeout per
+		 * candidate. A private copy makes the recording self-contained. */
 		switch_mutex_lock(globals.recording_servers_mutex);
 		server = copy_server_chain(recording->pool,
 			switch_core_hash_find(globals.recording_servers_hash, recording_server_name));
 		switch_mutex_unlock(globals.recording_servers_mutex);
 		if (!server) {
+			/* Soft fail-closed: nothing is recording/transmitting, and
+			 * the call continues. Add the named server to siprec.conf, or
+			 * pass an ad-hoc SRS URI as the second app argument
+			 * (siprec <handle> sip:host:port). */
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
-				"siprec: recording-server '%s' disappeared during start "
-				"(config reload?); recording NOT started\n", recording_server_name);
+				"siprec: recording '%s' NOT active — no SRS resolved "
+				"(no '%s' in siprec.conf and no ad-hoc SRS URI supplied); "
+				"no audio transmitted\n",
+				recording_server_name, recording_server_name);
 			switch_core_destroy_memory_pool(&recording_pool);
 			return SWITCH_STATUS_FALSE;
 		}

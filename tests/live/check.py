@@ -9,6 +9,7 @@ failure.
     check.py codec    <capture.json> <fs.log>   PCMA call, SRS answers PCMU
     check.py separate <capture.json> <fs.log>   separate RX/TX streams
     check.py ipv6     <capture.json> <fs.log>   SRS answers c=IN IP6 ::1
+    check.py fallback <capture.json> <fs.log>   separate requested, 2nd declined
 """
 import base64
 import binascii
@@ -201,6 +202,20 @@ if mode == "ipv6":
     check({p_[4] for p_ in rtp} <= {0, 8}, "payload type is G.711", str({p_[4] for p_ in rtp}))
     check("aborting media attach" not in fslog, "IPv6 endpoint accepted (no attach abort)")
     check("is not an IP address" not in fslog, "IPv6 endpoint classified as an IP address")
+    print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
+    sys.exit(1 if fails else 0)
+
+if mode == "fallback":
+    # separate-streams requested but the SRS answers the 2nd m=audio with
+    # port 0. The module must fall back to one mixed stream and say so.
+    check(re.search(r"separate streams requested but .*did not accept both", fslog) is not None,
+          "fallback logged a clear reason")
+    check(len([p_ for p_ in rtp if p_[8] == 1]) == 0, "no RTP on the declined stream (port 2)")
+    st = [p_ for p_ in rtp if p_[8] == 0]
+    check(len(st) > 50, "mixed RTP flowed on stream 1", f"{len(st)}")
+    mids = st[len(st) // 4: len(st) // 4 + 40]
+    pur = tone_purity(mids, ulaw)
+    check(pur > 0.9, "the fallback stream carries the far end's tone (mixed decode ok)", f"purity {pur:.3f}")
     print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
     sys.exit(1 if fails else 0)
 
