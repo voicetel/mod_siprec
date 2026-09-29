@@ -317,6 +317,11 @@ standalone.
   endpoint is classified by `siprec_sdp_addr_kind` and the fork opens
   an `AF_INET` or `AF_INET6` socket accordingly. Covered by the unit
   tests and the live test's `ipv6` scenario (RTP to `::1`).
+- **Separate-streams fallback metadata**: if the SRS declines one of the
+  two offered streams, the fork records one mixed stream, but the
+  metadata already sent on the initial INVITE still declares two
+  `<stream>`s (including one the SRS declined). Correcting it would need
+  a mid-call metadata re-INVITE, which is not implemented.
 - **Persistence/resume across module reloads**: a recording
   session is a per-call construct; module reload terminates
   active recordings (the shutdown handler detaches the bug

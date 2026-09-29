@@ -185,7 +185,6 @@ if mode == "separate":
               f"440 {p0_440:.3f}, 1000 {p0_1k:.3f}")
         check(p1_1k > 0.9 and p1_440 < 0.05, "label 2 carries only the near end (1000 Hz)",
               f"1000 {p1_1k:.3f}, 440 {p1_440:.3f}")
-    check("separate streams requested but" not in fslog, "separate mode was not downgraded to mixed")
     m2 = re.findall(r"RTP fork stream\[(\d)\] .* closing: (\d+) packets sent, (\d+) send failures", fslog)
     check(sorted({x[0] for x in m2}) == ["0", "1"] and all(x[2] == "0" for x in m2),
           "both forks closed with no send failures", str(m2[-2:]))
@@ -214,8 +213,10 @@ if mode == "fallback":
     st = [p_ for p_ in rtp if p_[8] == 0]
     check(len(st) > 50, "mixed RTP flowed on stream 1", f"{len(st)}")
     mids = st[len(st) // 4: len(st) // 4 + 40]
-    pur = tone_purity(mids, ulaw)
-    check(pur > 0.9, "the fallback stream carries the far end's tone (mixed decode ok)", f"purity {pur:.3f}")
+    p440, p1000 = tone_purity(mids, ulaw, 440.0), tone_purity(mids, ulaw, 1000.0)
+    check(p440 > 0.2 and p1000 > 0.2,
+          "the fallback stream is the mix of both ends (440 Hz and 1000 Hz)",
+          f"440 {p440:.2f}, 1000 {p1000:.2f}")
     print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
     sys.exit(1 if fails else 0)
 

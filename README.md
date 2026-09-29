@@ -60,7 +60,7 @@ upgrading.
 | sendonly direction on SRC streams | [RFC 7866 §7.4][rfc7866-7.4] | ✅ `origination_audio_mode=sendonly` on the recording leg (mod_sofia's default offer is `sendrecv`) |
 | `a=label:N` per stream | [RFC 7866 §8.5][rfc7866-8.5] | ✅ `a=label:1` (and `a=label:2` in separate-streams mode) in the initial offer via the `rtp_append_audio_sdp` ovar (mod_sofia appends it inside the audio `m=` block of every offer it generates, so pause/resume re-INVITEs keep it) |
 | Single mixed-audio stream (both directions) | [RFC 7866 §7][rfc7866-7] | ✅ default: one `m=audio` block in the offer, one `<stream>` in metadata. The audio bug observes both directions (`SMBF_READ_STREAM \| SMBF_WRITE_STREAM`); `switch_core_media_bug_read` returns them already mixed, so the single forked stream carries **both** parties. Drained on a fixed `SMBF_READ_PING` tick, the same way `session_record` clocks its mixed capture |
-| Separate RX / TX streams | [RFC 7866 §7][rfc7866-7] / [§8.5][rfc7866-8.5] | ✅ opt-in `separate-streams`: the offer carries two labelled `m=audio` sections (label 1 = audio the recorded leg receives, label 2 = audio it sends), the metadata two `<stream>`s attributed to the right participants, and the fork two RTP streams (own SSRC and sequence, one clock) from a stereo media bug. mod_sofia can't emit a second `m=` line itself, so the module appends it through `rtp_append_audio_sdp`; if the SRS declines either stream, or the leg is multichannel, the call falls back to one mixed stream with a logged warning |
+| Separate RX / TX streams | [RFC 7866 §7][rfc7866-7] / [§8.5][rfc7866-8.5] | ✅ opt-in `separate-streams`: the offer carries two labelled `m=audio` sections (label 1 = audio the recorded leg receives, label 2 = audio it sends), the metadata two `<stream>`s attributed to the right participants, and the fork two RTP streams (own SSRC and sequence, one clock) from a stereo media bug. mod_sofia can't emit a second `m=` line itself, so the module appends it through `rtp_append_audio_sdp`; if the SRS declines either stream, or the leg is multichannel, the call falls back to one mixed stream with a logged warning (the already-sent metadata still names two streams) |
 | DTMF tone forking | [RFC 7866 §8.4][rfc7866-8.4] | ✅ passes through the audio bug |
 | communication-failure soft-fail | [RFC 7866 §11.1.1][rfc7866-11.1.1] | ✅ original call unaffected on dispatch failure |
 | SRS failover (multiple endpoints, ordered) | [RFC 7866 §11.1.1][rfc7866-11.1.1] | ✅ multiple `<recording-server>` entries, walked in config order |
@@ -169,7 +169,8 @@ an 8 kHz clock that keeps running across the pause, from an Opus leg),
 PCMA call recorded to an SRS that answers PCMU (the payload bytes are
 decoded to prove they are μ-law), separate-streams mode (each labelled
 stream must carry only its own direction's tone), and an IPv6 answer
-(`c=IN IP6 ::1`). Interop
+(`c=IN IP6 ::1`), and a separate-streams fallback (the SRS declines
+the second stream). Interop
 with a production SRS remains the operator verification path in
 [`tests/README.md`](tests/README.md).
 
