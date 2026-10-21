@@ -248,7 +248,18 @@ SWITCH_STANDARD_APP(siprec_app_function)
 		srs_uri = argv[1];
 	}
 
-	start_recording_session(session, recording_server_name, srs_uri);
+	/* Publish the start's outcome as a channel variable so the
+	 * dispatching control plane can learn it: SWITCH_STANDARD_APPs
+	 * return void and set nothing, so a caller watching only
+	 * CHANNEL_EXECUTE_COMPLETE cannot tell a start whose SRS leg
+	 * answered and attached from one that failed mid-way. The
+	 * variable is set BEFORE the app returns — once the completion
+	 * fires it is guaranteed readable (callBroadcast #171). */
+	{
+		switch_status_t st = start_recording_session(session, recording_server_name, srs_uri);
+		switch_channel_set_variable(switch_core_session_get_channel(session),
+			"siprec_start_status", st == SWITCH_STATUS_SUCCESS ? "success" : "failed");
+	}
 }
 
 /* siprec_arg_handle: extract the recording handle — the first
@@ -390,16 +401,32 @@ static switch_status_t siprec_change_direction(
 	return st;
 }
 
+/* siprec_direction_status maps a direction change's status to the
+ * variable value published for the completion watcher (#171). The
+ * module gates the RTP fork BEFORE the re-INVITE and leaves it gated
+ * when the re-INVITE fails (the fail-safe direction is "not
+ * recording"), so even a "failed" pause guarantees no audio leaves
+ * the box — the control plane can treat pause as quiescing either
+ * way and uses the distinction only for diagnostics. */
+static const char *siprec_direction_status(switch_status_t st)
+{
+	return st == SWITCH_STATUS_SUCCESS ? "success" : "failed";
+}
+
 SWITCH_STANDARD_APP(siprec_pause_app_function)
 {
-	siprec_change_direction(session, siprec_arg_handle(session, data),
-		/*paused*/ 1);
+	switch_status_t st = siprec_change_direction(session,
+		siprec_arg_handle(session, data), /*paused*/ 1);
+	switch_channel_set_variable(switch_core_session_get_channel(session),
+		"siprec_pause_status", siprec_direction_status(st));
 }
 
 SWITCH_STANDARD_APP(siprec_resume_app_function)
 {
-	siprec_change_direction(session, siprec_arg_handle(session, data),
-		/*paused*/ 0);
+	switch_status_t st = siprec_change_direction(session,
+		siprec_arg_handle(session, data), /*paused*/ 0);
+	switch_channel_set_variable(switch_core_session_get_channel(session),
+		"siprec_resume_status", siprec_direction_status(st));
 }
 
 SWITCH_STANDARD_APP(siprec_stop_app_function)
@@ -415,14 +442,26 @@ SWITCH_STANDARD_APP(siprec_stop_app_function)
 	 * resumable — to record again, start a fresh `siprec`, which
 	 * opens a new SRS recording with new metadata. Idempotent
 	 * with the on-hangup teardown: if nothing is active this is a
-	 * no-op. */
-	if (stop_recording_session_for_server(session, server_name)
-		== SWITCH_STATUS_FALSE) {
-		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
-			SWITCH_LOG_WARNING,
-			"siprec_stop: no active recording to stop%s%s\n",
-			server_name ? " for server " : "",
-			server_name ? server_name : "");
+	 * no-op.
+	 *
+	 * The outcome is published as a channel variable (set before
+	 * the app returns, so a CHANNEL_EXECUTE_COMPLETE watcher can
+	 * read it — callBroadcast #171): "success" when at least one
+	 * recording was torn down, "no_recording" when nothing was
+	 * active. Both mean no audio is leaving the box for this
+	 * handle; the distinction is diagnostic. */
+	{
+		switch_status_t st = stop_recording_session_for_server(session, server_name);
+		switch_channel_set_variable(switch_core_session_get_channel(session),
+			"siprec_stop_status",
+			st == SWITCH_STATUS_FALSE ? "no_recording" : "success");
+		if (st == SWITCH_STATUS_FALSE) {
+			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+				SWITCH_LOG_WARNING,
+				"siprec_stop: no active recording to stop%s%s\n",
+				server_name ? " for server " : "",
+				server_name ? server_name : "");
+		}
 	}
 }
 
