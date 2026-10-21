@@ -62,6 +62,12 @@ int siprec_metadata_uuid_to_id(const char *uuid, char out[SIPREC_METADATA_ID_LEN
     out[0] = '\0';
     if (!uuid) return -1;
     len = strlen(uuid);
+    /* VoiceML uses the CallSid as origination_uuid. Encode its 16
+     * identity bytes, not a fresh UUID, so webhooks can correlate. */
+    if (len == 34 && uuid[0] == 'C' && uuid[1] == 'A') {
+        uuid += 2;
+        len -= 2;
+    }
     if (len != 36 && len != 32) return -1;
     hyphenated = (len == 36);
 
