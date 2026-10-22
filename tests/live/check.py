@@ -11,6 +11,8 @@ failure.
     check.py ipv6     <capture.json> <fs.log>   SRS answers c=IN IP6 ::1
     check.py fallback <capture.json> <fs.log>   separate requested, 2nd declined
     check.py srsbye   <capture.json> <fs.log>   SRS ends the dialog; restart
+    check.py unload   <capture.json> <fs.log>   module unloaded mid-recording
+    check.py reloaded <capture.json> <fs.log>   the reloaded module records
     check.py callsid  <capture.json> <fs.log> <callsid> <events.json>
                                                 CallSid-shaped channel UUID and
                                                 each app's Application-Response
@@ -301,6 +303,27 @@ if mode == "long":
     check(len(rtp) > 400, "RTP flowed the whole call", f"{len(rtp)}")
     check(not re.search(r"sip:\S+:5070 \[CS_PARK\] \[MEDIA_TIMEOUT\]", fslog),
           "no recording leg was hung up with MEDIA_TIMEOUT")
+    print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
+    sys.exit(1 if fails else 0)
+
+if mode == "unload":
+    # siprec -> 3 s -> unload mod_siprec -> load -> call hangs up at 7.5 s.
+    import os
+    check(len(invites) == 1, "SRS received the INVITE", f"{len(invites)}")
+    check(len(byes) == 1, "unload ended the recording with a BYE", f"{len(byes)}")
+    if invites and byes:
+        rec = byes[0]["t"] - invites[0]["t"]
+        check(2.0 < rec < 5.5, "BYE came at the unload, not the hangup", f"{rec:.1f}s after INVITE")
+        late = [p for p in rtp if p[0] > byes[0]["t"] + 0.5]
+        check(len(late) == 0, "no RTP after the unload BYE", f"{len(late)}")
+    check(os.path.exists(os.path.join(os.path.dirname(capture), "unload-alive")),
+          "FreeSWITCH survived the call's hangup after the module was swapped")
+    print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
+    sys.exit(1 if fails else 0)
+
+if mode == "reloaded":
+    check(len(invites) >= 1, "the reloaded module sent an INVITE", f"{len(invites)}")
+    check(len(rtp) > 100, "and forked RTP", f"{len(rtp)}")
     print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
     sys.exit(1 if fails else 0)
 

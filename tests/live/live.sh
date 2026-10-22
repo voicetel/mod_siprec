@@ -23,6 +23,11 @@
 #   srsbye    the SRS BYEs the recording 2 s in: the fork must stop at
 #             once, and a second siprec start under the same handle
 #             must replace the dead recording rather than report exists
+#   unload    `unload mod_siprec` + `load mod_siprec` while a call is
+#             recording (what a module-only deploy does): the recording
+#             ends with a BYE, and FreeSWITCH must survive the call's
+#             hangup afterwards (no handler left pointing into the old .so)
+#
 #   long      9 s of recording with no re-INVITE: the internal profile
 #             (which places the recording legs) runs rtp-timeout-sec=6 and
 #             the SRS never sends RTP back, so a recording leg that kept
@@ -117,6 +122,15 @@ cat > "${CONF}/dialplan/default/00_siprec_live.xml" <<EOF
       <action application="sleep" data="500"/>
       <action application="siprec" data="default"/>
       <action application="sleep" data="9000"/>
+      <action application="hangup"/>
+    </condition>
+  </extension>
+  <extension name="siprec_live_unload">
+    <condition field="destination_number" expression="^siprec_live_unload\$">
+      <action application="answer"/>
+      <action application="sleep" data="500"/>
+      <action application="siprec" data="default"/>
+      <action application="sleep" data="7000"/>
       <action application="hangup"/>
     </condition>
   </extension>
@@ -244,6 +258,33 @@ kill -TERM "$ESL"; wait "$ESL"
 run_call srsbye siprec_live_srsbye "" "--bye-after 2"
 run_call long siprec_live_long
 
+# unload: swap the module out from under a recording call, then let the
+# call hang up on its own and see whether FreeSWITCH is still there.
+python3 "${HERE}/srs.py" --ip "$IP" --out "${OUT}/unload.json" --duration 90 > "${OUT}/srs-unload.log" 2>&1 &
+SRS=$!
+sleep 1
+echo "[unload] originate: $("$CLI" -x "originate sofia/internal/siprec_tone@${IP}:5080 siprec_live_unload XML default")"
+# Unload only once the recording leg is up.
+for _ in $(seq 1 40); do
+    "$CLI" -x "show channels" | grep -q "sip:${IP}:5070" && break
+    sleep 0.5
+done
+sleep 2
+echo "[unload] $("$CLI" -x "unload mod_siprec" | head -1)"
+sleep 1
+echo "[unload] $("$CLI" -x "load mod_siprec" | head -1)"
+for _ in $(seq 1 40); do
+    sleep 1
+    n=$("$CLI" -x "show channels count" | grep -oE '^[0-9]+' || echo 0)
+    [ "${n:-0}" = 0 ] && break
+done
+sleep 2
+if kill -0 "$FSPID" 2>/dev/null && "$CLI" -x "module_exists mod_siprec" | grep -q true; then
+    echo alive > "${OUT}/unload-alive"
+fi
+kill -TERM "$SRS"; wait "$SRS"
+# The reloaded module still records.
+run_call reloaded siprec_live
 
 "$CLI" -x "shutdown" >/dev/null 2>&1 || kill "$FSPID"
 wait "$FSPID" 2>/dev/null
@@ -253,7 +294,7 @@ echo "--- negotiated codecs:"; grep -oE "Set Codec sofia/[a-z]+/[^ ]+ [A-Za-z0-9
 echo "--- mod_siprec log lines (INFO and above):"
 grep -E "siprec_[a-z]+\.c:[0-9]+ siprec|mod_siprec" "${OUT}/fs.log" | grep -v "\[DEBUG\]" | sed -E 's/^[0-9a-f-]{36} //' | cut -c1-200
 rc=0
-for mode in main stop failover codec separate ipv6 fallback srsbye long; do
+for mode in main stop failover codec separate ipv6 fallback srsbye long unload reloaded; do
     echo "--- checks: ${mode}"
     python3 "${HERE}/check.py" "$mode" "${OUT}/${mode}.json" "${OUT}/fs.log" || rc=1
 done

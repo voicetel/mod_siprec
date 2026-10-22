@@ -42,7 +42,10 @@ two stops, and checks each app's `Application-Response` as
 `tests/live/esl_events.py` reads it over the event socket. The
 `srsbye` scenario has the SRS BYE the recording 2 s in and checks
 the fork stops at once and a second `siprec` replaces the dead
-recording. The internal profile runs `rtp-timeout-sec=6` and
+recording. The `unload` scenario swaps the module out (`unload` +
+`load`, as a module-only deploy does) under a recording call and checks
+FreeSWITCH survives the call's hangup, then `reloaded` records again.
+The internal profile runs `rtp-timeout-sec=6` and
 `rtp-hold-timeout-sec=8`, and the `long` scenario records 9 s with no
 re-INVITE, so a recording leg hung up for receiving no RTP from the
 SRS fails it. It covers

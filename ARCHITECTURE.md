@@ -191,6 +191,12 @@ standalone.
       recording stays hashed until the call's own thread retires it
       (stop, hangup, or a new start under the handle, which replaces
       it). Our own BYE matches nothing: teardown unhashes first.
+- [x] Unload safety: FreeSWITCH `dlclose`s a module on unload, so no
+      channel may keep a state handler table that lives in it. A call's
+      handler is unbound once its last recording stops (siprec_stop, a
+      failed start) and at unload; a recording leg's watcher is unbound
+      before the module BYEs the leg itself. The handlers are never
+      unbound from inside themselves (FreeSWITCH walks the array by index).
 - [x] State handler: `on_hangup` (with `on_destroy` as an idempotent
       backstop) is bound *before* the INVITE, so a hangup at any point
       tears the recording down. The core removes media bugs before any

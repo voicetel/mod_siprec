@@ -536,6 +536,11 @@ switch_status_t siprec_invite_send_bye(recording_t *recording)
     }
 
     ch = switch_core_session_get_channel(s);
+    /* This is our own BYE, so the leg's watcher has nothing to report;
+     * unbind it first. Its table lives in this module, and module
+     * unload BYEs every leg: a hangup handler still bound when the .so
+     * is unmapped would be called into freed code. */
+    switch_channel_clear_state_handler(ch, &siprec_leg_state_handlers);
     switch_channel_hangup(ch, SWITCH_CAUSE_NORMAL_CLEARING);
     switch_core_session_rwunlock(s);
 

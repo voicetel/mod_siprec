@@ -214,6 +214,50 @@ static void teardown_recording(recording_t *recording)
 	switch_core_destroy_memory_pool(&recording->pool);
 }
 
+/* unbind_call_handler: remove this module's hangup handler from the
+ * call `uuid`. The handler table lives in this module: a channel still
+ * holding it after `unload mod_siprec` unmaps the .so would call into
+ * freed code when it hangs up. Never called from inside that handler
+ * (FreeSWITCH walks the handler array by index while running it). */
+static void unbind_call_handler(const char *uuid)
+{
+	switch_core_session_t *s;
+
+	if (zstr(uuid) || !(s = switch_core_session_locate(uuid))) {
+		return;
+	}
+	switch_channel_clear_state_handler(switch_core_session_get_channel(s), &state_handlers);
+	switch_core_session_rwunlock(s);
+}
+
+/* release_call_handler: unbind the call's hangup handler once no
+ * recording on it remains, so a call whose recordings were all stopped
+ * holds nothing of this module (see unbind_call_handler). */
+static void release_call_handler(const char *uuid)
+{
+	switch_hash_index_t *hi;
+	void *val;
+	const void *vvar;
+	int live = 0;
+
+	switch_mutex_lock(globals.recordings_mutex);
+	for (hi = switch_core_hash_first(globals.recordings_hash); hi; hi = switch_core_hash_next(&hi)) {
+		const recording_t *recording;
+
+		switch_core_hash_this(hi, &vvar, NULL, &val);
+		recording = (const recording_t *) val;
+		/* Keep iterating: breaking out early leaks the hash index. */
+		if (recording->uuid && !strcmp(recording->uuid, uuid)) {
+			live = 1;
+		}
+	}
+	switch_mutex_unlock(globals.recordings_mutex);
+
+	if (!live) {
+		unbind_call_handler(uuid);
+	}
+}
+
 /* drain_recordings: claim and tear down every recording on the leg
  * whose uuid is `uuid`, or every recording when `uuid` is NULL.
  *
@@ -226,14 +270,17 @@ static void teardown_recording(recording_t *recording)
  * again until a pass comes back short.
  *
  * Returns how many recordings this call stopped, counting pinned ones
- * whose teardown was deferred to their last release. */
-static int drain_recordings(const char *uuid)
+ * whose teardown was deferred to their last release. With `unbind`
+ * (module unload) each stopped recording's call also loses this
+ * module's hangup handler. */
+static int drain_recordings(const char *uuid, int unbind)
 {
 	enum { SIPREC_DRAIN_BATCH = 16 };
 	int stopped = 0;
 
 	for (;;) {
 		char *keys[SIPREC_DRAIN_BATCH];
+		char *uuids[SIPREC_DRAIN_BATCH];
 		int n = 0, i;
 		switch_hash_index_t *hi;
 		void *val;
@@ -248,6 +295,7 @@ static int drain_recordings(const char *uuid)
 			 * early leaks the hash index. */
 			if (n < SIPREC_DRAIN_BATCH
 				&& (!uuid || (recording->uuid && !strcmp(recording->uuid, uuid)))) {
+				uuids[n] = switch_mprintf("%s", recording->uuid ? recording->uuid : "");
 				keys[n++] = switch_mprintf("%s", recording->key);
 			}
 		}
@@ -261,6 +309,10 @@ static int drain_recordings(const char *uuid)
 			if (recording) {
 				teardown_recording(recording);
 			}
+			if (unbind && found) {
+				unbind_call_handler(uuids[i]);
+			}
+			switch_safe_free(uuids[i]);
 		}
 
 		if (n < SIPREC_DRAIN_BATCH) {
@@ -276,7 +328,7 @@ static int drain_recordings(const char *uuid)
  * was nothing to stop. */
 switch_status_t stop_recording_session(switch_core_session_t *session)
 {
-	return drain_recordings(switch_core_session_get_uuid(session)) > 0
+	return drain_recordings(switch_core_session_get_uuid(session), 0) > 0
 		? SWITCH_STATUS_SUCCESS : SWITCH_STATUS_FALSE;
 }
 
@@ -286,7 +338,7 @@ switch_status_t stop_recording_session(switch_core_session_t *session)
  * release. When this returns the hash is empty. */
 void siprec_teardown_all_recordings(void)
 {
-	drain_recordings(NULL);
+	drain_recordings(NULL, 1);
 }
 
 /* stop_recording_session_for_server: stop just the recording on
@@ -302,9 +354,12 @@ switch_status_t stop_recording_session_for_server(switch_core_session_t *session
 	char *recording_key;
 	recording_t *recording;
 	int found;
+	switch_status_t st;
 
 	if (zstr(server_name)) {
-		return stop_recording_session(session);
+		st = stop_recording_session(session);
+		release_call_handler(switch_core_session_get_uuid(session));
+		return st;
 	}
 
 	recording_key = siprec_recording_key(server_name, switch_core_session_get_uuid(session));
@@ -319,11 +374,10 @@ switch_status_t stop_recording_session_for_server(switch_core_session_t *session
 	if (!found) {
 		return SWITCH_STATUS_FALSE;
 	}
-	if (!recording) {
-		return SWITCH_STATUS_SUCCESS;
+	if (recording) {
+		teardown_recording(recording);
 	}
-
-	teardown_recording(recording);
+	release_call_handler(switch_core_session_get_uuid(session));
 	return SWITCH_STATUS_SUCCESS;
 }
 
@@ -350,6 +404,11 @@ switch_status_t stop_recording_session_for_server(switch_core_session_t *session
  * no-ops for state that was never attached. */
 static void discard_pending_recording(recording_t *recording)
 {
+	char uuid[SWITCH_UUID_FORMATTED_LENGTH + 64];
+
+	/* The release below can free the recording's pool. */
+	switch_copy_string(uuid, recording->uuid, sizeof(uuid));
+
 	switch_mutex_lock(globals.recordings_mutex);
 	if (switch_core_hash_find(globals.recordings_hash, recording->key) == recording) {
 		switch_core_hash_delete(globals.recordings_hash, recording->key);
@@ -358,6 +417,7 @@ static void discard_pending_recording(recording_t *recording)
 	switch_mutex_unlock(globals.recordings_mutex);
 
 	release_recording(recording);
+	release_call_handler(uuid);
 }
 
 static int metadata_id_fresh(char out[SIPREC_METADATA_ID_LEN + 1])
