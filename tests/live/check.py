@@ -358,6 +358,12 @@ if len(reinvites) == 2:
     v0, v1, v2 = o_version(sdp_part), o_version(pz["body"]), o_version(rs["body"])
     check(None not in (v0, v1, v2) and v0 < v1 < v2, "o= session-version increases", f"{v0} {v1} {v2}")
 check(len(byes) >= 1, "SRS received BYE")
+if byes and invites:
+    # The internal profile runs rtp-timeout-sec=6 / rtp-hold-timeout-sec=8
+    # and the SRS sends no RTP: the 11 s recording leg must still last.
+    span = byes[0]["t"] - invites[0]["t"]
+    check(span > 10.0, "recording leg outlived the profile's media timeouts", f"BYE {span:.1f}s after INVITE")
+check("MEDIA_TIMEOUT" not in fslog, "no leg hung up with MEDIA_TIMEOUT")
 check(not re.search(r"no usable answer SDP|answer carried no usable payload type", fslog),
       "answer SDP parsed (no codec fallback)")
 

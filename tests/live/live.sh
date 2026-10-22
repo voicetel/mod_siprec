@@ -23,6 +23,11 @@
 #   srsbye    the SRS BYEs the recording 2 s in: the fork must stop at
 #             once, and a second siprec start under the same handle
 #             must replace the dead recording rather than report exists
+#
+# The internal profile (which places the recording legs) runs with
+# rtp-timeout-sec=6 and rtp-hold-timeout-sec=8. The SRS never sends RTP
+# back, so main (11 s) guards against a recording leg being hung up by
+# its profile's media timeouts.
 set -uo pipefail
 PREFIX=/usr/local/freeswitch
 CONF=${PREFIX}/etc/freeswitch
@@ -42,6 +47,13 @@ IP=$(hostname -I | awk '{print $1}')
 # go there and are lost. Pin both to the container's own address.
 sed -i -E "s#<X-PRE-PROCESS cmd=\"stun-set\" data=\"(external_(rtp|sip)_ip)=[^\"]*\"/>#<X-PRE-PROCESS cmd=\"set\" data=\"\\1=${IP}\"/>#" \
     "${CONF}/vars.xml"
+
+# Short media timeouts on the profile that places the recording legs:
+# a recording leg must not be hung up (MEDIA_TIMEOUT) because the SRS
+# sends no RTP back.
+sed -i -E -e 's#<param name="rtp-timeout-sec" value="[0-9]+"/>#<param name="rtp-timeout-sec" value="6"/>#' \
+    -e 's#<param name="rtp-hold-timeout-sec" value="[0-9]+"/>#<param name="rtp-hold-timeout-sec" value="8"/>#' \
+    "${CONF}/sip_profiles/internal.xml"
 
 cat > "${CONF}/autoload_configs/siprec.conf.xml" <<EOF
 <configuration name="siprec.conf" description="live test">
