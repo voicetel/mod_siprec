@@ -176,6 +176,15 @@ switch_status_t siprec_invite_send(
      *   ignore_early_media     suppresses 1xx media progress.
      *   hangup_after_bridge    the recording leg lives until
      *                          we BYE it explicitly.
+     *   media_timeout,         the SRS never sends RTP back on a
+     *   media_hold_timeout,    recording leg, so a profile's
+     *   rtp_timeout_sec,       rtp-timeout-sec (300 s in the vanilla
+     *   rtp_hold_timeout_sec   profiles) hangs the leg up with
+     *                          MEDIA_TIMEOUT once that long passes
+     *                          without a re-INVITE. FreeSWITCH clears
+     *                          it only for a session-level a=recvonly
+     *                          answer, which not every SRS sends; 0
+     *                          disables it per leg.
      */
     if (switch_event_create_plain(&ovars, SWITCH_EVENT_CHANNEL_DATA)
         != SWITCH_STATUS_SUCCESS) {
@@ -244,6 +253,8 @@ switch_status_t siprec_invite_send(
     dn = switch_snprintf(dial_string, sizeof(dial_string),
         "{ignore_early_media=true,"
         "hangup_after_bridge=false,"
+        "media_timeout=0,media_hold_timeout=0,"
+        "rtp_timeout_sec=0,rtp_hold_timeout_sec=0,"
         "absolute_codec_string='PCMU,PCMA'"
         "}sofia/%s/%s",
         sofia_profile, srs_uri);

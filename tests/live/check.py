@@ -291,6 +291,19 @@ if mode == "srsbye":
     print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
     sys.exit(1 if fails else 0)
 
+if mode == "long":
+    # siprec -> 9 s, no re-INVITE -> hangup, with rtp-timeout-sec=6 on the
+    # profile and no RTP from the SRS.
+    check(len(invites) == 1 and len(byes) == 1, "one recording dialog", f"{len(invites)} INVITE, {len(byes)} BYE")
+    if invites and byes:
+        span = byes[0]["t"] - invites[0]["t"]
+        check(span > 8.0, "the recording leg outlived the profile's media timeout", f"BYE {span:.1f}s after INVITE")
+    check(len(rtp) > 400, "RTP flowed the whole call", f"{len(rtp)}")
+    check(not re.search(r"sip:\S+:5070 \[CS_PARK\] \[MEDIA_TIMEOUT\]", fslog),
+          "no recording leg was hung up with MEDIA_TIMEOUT")
+    print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
+    sys.exit(1 if fails else 0)
+
 if mode == "failover":
     # recording-server "fo": dead primary, then this SRS.
     check("failover attempt 2" in fslog, "failover tried the second candidate")
@@ -358,12 +371,6 @@ if len(reinvites) == 2:
     v0, v1, v2 = o_version(sdp_part), o_version(pz["body"]), o_version(rs["body"])
     check(None not in (v0, v1, v2) and v0 < v1 < v2, "o= session-version increases", f"{v0} {v1} {v2}")
 check(len(byes) >= 1, "SRS received BYE")
-if byes and invites:
-    # The internal profile runs rtp-timeout-sec=6 / rtp-hold-timeout-sec=8
-    # and the SRS sends no RTP: the 11 s recording leg must still last.
-    span = byes[0]["t"] - invites[0]["t"]
-    check(span > 10.0, "recording leg outlived the profile's media timeouts", f"BYE {span:.1f}s after INVITE")
-check("MEDIA_TIMEOUT" not in fslog, "no leg hung up with MEDIA_TIMEOUT")
 check(not re.search(r"no usable answer SDP|answer carried no usable payload type", fslog),
       "answer SDP parsed (no codec fallback)")
 

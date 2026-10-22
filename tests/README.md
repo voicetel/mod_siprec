@@ -43,8 +43,9 @@ two stops, and checks each app's `Application-Response` as
 `srsbye` scenario has the SRS BYE the recording 2 s in and checks
 the fork stops at once and a second `siprec` replaces the dead
 recording. The internal profile runs `rtp-timeout-sec=6` and
-`rtp-hold-timeout-sec=8`, so the 11 s `main` call also guards
-against a recording leg being hung up for receiving no RTP. It covers
+`rtp-hold-timeout-sec=8`, and the `long` scenario records 9 s with no
+re-INVITE, so a recording leg hung up for receiving no RTP from the
+SRS fails it. It covers
 most of the checklist below automatically; interop with a production
 SRS (siprec-receiver, ClearIP, …) still needs the manual steps.
 
