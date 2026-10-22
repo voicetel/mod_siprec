@@ -29,13 +29,17 @@ mod_siprec into that path once the field-test gaps are closed.
 ## Automated live test
 
 `tests/live/run.sh` (after `tests/load/run.sh` has built the image)
-runs three real calls inside the container against `tests/live/srs.py`,
+runs real calls inside the container against `tests/live/srs.py`,
 a minimal SRS that records every SIP request and RTP header it
 receives, and asserts on them with `tests/live/check.py`. The
 `separate` scenario records a leg playing 1000 Hz whose far end plays
 440 Hz with `separate-streams` on, and checks each labelled stream
 carries only its own tone. The `ipv6` scenario answers `c=IN IP6 ::1`
-and checks the fork delivers RTP over IPv6. It covers
+and checks the fork delivers RTP over IPv6. The `callsid` scenario
+originates with `origination_uuid=CA…` (34 characters, as callBroadcast
+does), runs start, a duplicate start, a refused URI, pause, resume and
+two stops, and checks each app's `Application-Response` as
+`tests/live/esl_events.py` reads it over the event socket. It covers
 most of the checklist below automatically; interop with a production
 SRS (cb-srs, ClearIP, …) still needs the manual steps.
 

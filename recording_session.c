@@ -143,22 +143,24 @@ recording_t *acquire_recording(const char *key)
  * stop path doomed the recording while it was pinned, the last
  * releaser (use_count reaches 0 with doomed set) runs the deferred
  * teardown — the hash entry was already removed by claim_recording,
- * so this thread is the sole owner and the pool-free is safe. */
-void release_recording(recording_t *recording)
+ * so this thread is the sole owner and the pool-free is safe.
+ * Returns 1 if the recording was doomed when the pin dropped (a stop
+ * retired it), read in the same lock hold as the decrement. */
+int release_recording(recording_t *recording)
 {
-	int do_teardown = 0;
+	int doomed, do_teardown;
 
-	if (!recording) return;
+	if (!recording) return 0;
 
 	switch_mutex_lock(globals.recordings_mutex);
-	if (--recording->use_count == 0 && recording->doomed) {
-		do_teardown = 1;
-	}
+	doomed = recording->doomed;
+	do_teardown = --recording->use_count == 0 && doomed;
 	switch_mutex_unlock(globals.recordings_mutex);
 
 	if (do_teardown) {
 		teardown_recording(recording);
 	}
+	return doomed;
 }
 
 /* teardown_recording: fully retire one recording_t — detach the
@@ -511,7 +513,9 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
 			"siprec: recording %s already exists\n", recording->key);
 		switch_core_destroy_memory_pool(&recording_pool);
-		return SWITCH_STATUS_FALSE;
+		/* Distinct from FALSE: a recording IS live under this handle,
+		 * so a caller must not conclude nothing is recording. */
+		return SWITCH_STATUS_INUSE;
 	}
 	/* Insert already pinned by this start. Until the matching release
 	 * at the end, a concurrent stop (hangup, siprec_stop, unload) only
@@ -660,7 +664,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 	if (inv != SWITCH_STATUS_SUCCESS) {
 		/* INVITE failed: no recording leg and no media bug. */
 		discard_pending_recording(recording);
-		return inv;
+		return SWITCH_STATUS_FALSE;
 	}
 
 	/* siprec_invite_send populated invite_ctx->negotiated[]
@@ -683,8 +687,14 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 	}
 
 	/* Drop the start pin. If a stop arrived during start it doomed the
-	 * recording, and this release performs the deferred teardown. */
-	release_recording(recording);
+	 * recording, and this release performs the deferred teardown — the
+	 * recording no longer exists, so the start did not succeed. */
+	if (release_recording(recording)) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
+			"siprec: recording '%s' was stopped while it was starting\n",
+			recording_server_name);
+		return SWITCH_STATUS_FALSE;
+	}
 
 	return SWITCH_STATUS_SUCCESS;
 }

@@ -171,7 +171,17 @@ standalone.
       inserts the recording (dup check + insert under one lock),
       binds the hangup handler, builds the metadata XML, dispatches
       the INVITE via `siprec_invite_send_failover`, then attaches the
-      media bug with `siprec_media_attach`.
+      media bug with `siprec_media_attach`. It returns SUCCESS only if
+      the recording is still live when its start pin drops (a stop that
+      doomed it mid-start makes it FALSE), and INUSE for a duplicate
+      handle, which leaves the existing recording running.
+- [x] App outcomes. Each app publishes `success` / `failed` / `exists`
+      / `no_recording` on every path, as its named variable
+      (`siprec_start_status`, …; cleared at app entry) and as
+      `current_application_response`, which the core clears before
+      every app and reports as the app's `Application-Response` in
+      `CHANNEL_EXECUTE_COMPLETE` (`switch_core_session_exec`). An event
+      socket controller reads the outcome from that event.
 - [x] State handler: `on_hangup` (with `on_destroy` as an idempotent
       backstop) is bound *before* the INVITE, so a hangup at any point
       tears the recording down. The core removes media bugs before any
@@ -290,7 +300,9 @@ standalone.
 - [x] Live SIPREC test — `tests/live/run.sh` runs real sofia calls in
       the load-gate image against a minimal Python SRS (`srs.py`) and
       checks the SIP and RTP on the wire (`check.py`): pause/resume,
-      `siprec_stop` with an ad-hoc URI, and failover.
+      `siprec_stop` with an ad-hoc URI, failover, and a CallSid-shaped
+      channel UUID whose app outcomes are read from
+      `CHANNEL_EXECUTE_COMPLETE` over the event socket (`esl_events.py`).
 - [ ] Live integration against `cb-srs` — run
       `siprec-start-stop.xml` from callBroadcast's TwiML suite
       with mod_siprec built from this fork; the suite already

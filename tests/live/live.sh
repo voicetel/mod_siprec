@@ -3,7 +3,7 @@
 #
 # Boots FreeSWITCH, points siprec.conf at a local minimal SRS (srs.py),
 # and places real sofia calls: the internal profile calls the external
-# profile, whose dialplan answers with a 440 Hz tone. Three scenarios run
+# profile, whose dialplan answers with a 440 Hz tone. The scenarios run
 # in turn, each against a fresh SRS capture, then check.py asserts on the
 # SIP and RTP each SRS saw plus the FreeSWITCH log:
 #   main      siprec -> 4 s -> pause -> 3 s -> resume -> 4 s -> hangup
@@ -16,6 +16,10 @@
 #   ipv6      SRS answers c=IN IP6 ::1: the fork must send RTP over IPv6
 #   fallback  separate-streams on, SRS declines the 2nd stream: the module
 #             falls back to one mixed stream
+#   callsid   the recorded leg's UUID is a CallSid ("CA" + 32 hex), as
+#             callBroadcast originates it; start, duplicate start, refused
+#             URI, pause, resume, stop, stop again, with each app's
+#             Application-Response captured over the event socket
 set -uo pipefail
 PREFIX=/usr/local/freeswitch
 CONF=${PREFIX}/etc/freeswitch
@@ -75,6 +79,24 @@ EOF
 
 cat > "${CONF}/dialplan/default/00_siprec_live.xml" <<EOF
 <include>
+  <extension name="siprec_live_callsid">
+    <condition field="destination_number" expression="^siprec_live_callsid\$">
+      <action application="answer"/>
+      <action application="sleep" data="500"/>
+      <action application="siprec" data="cb sip:${IP}:5070;transport=udp"/>
+      <action application="siprec" data="cb sip:${IP}:5070;transport=udp"/>
+      <action application="siprec" data="bad sip:bad,uri"/>
+      <action application="sleep" data="2000"/>
+      <action application="siprec_pause" data="cb"/>
+      <action application="sleep" data="1000"/>
+      <action application="siprec_resume" data="cb"/>
+      <action application="sleep" data="1000"/>
+      <action application="siprec_stop" data="cb"/>
+      <action application="siprec_stop" data="cb"/>
+      <action application="sleep" data="1000"/>
+      <action application="hangup"/>
+    </condition>
+  </extension>
   <extension name="siprec_live_stop">
     <condition field="destination_number" expression="^siprec_live_stop\$">
       <action application="answer"/>
@@ -179,6 +201,12 @@ run_call codec siprec_live_codec "{absolute_codec_string=PCMA}"
 run_call separate siprec_live_sep
 run_call ipv6 siprec_live "" "--ip6 ::1"
 run_call fallback siprec_live_sep "" "--reject-second"
+CALLSID=CA5d1b0c0ffee0123456789abcdef01234
+python3 "${HERE}/esl_events.py" --out "${OUT}/callsid-events.json" --duration 90 > "${OUT}/esl-callsid.log" 2>&1 &
+ESL=$!
+sleep 1
+run_call callsid siprec_live_callsid "{origination_uuid=${CALLSID}}"
+kill -TERM "$ESL"; wait "$ESL"
 
 "$CLI" -x "shutdown" >/dev/null 2>&1 || kill "$FSPID"
 wait "$FSPID" 2>/dev/null
@@ -192,4 +220,7 @@ for mode in main stop failover codec separate ipv6 fallback; do
     echo "--- checks: ${mode}"
     python3 "${HERE}/check.py" "$mode" "${OUT}/${mode}.json" "${OUT}/fs.log" || rc=1
 done
+echo "--- checks: callsid"
+python3 "${HERE}/check.py" callsid "${OUT}/callsid.json" "${OUT}/fs.log" \
+    "$CALLSID" "${OUT}/callsid-events.json" || rc=1
 exit $rc

@@ -10,6 +10,9 @@ failure.
     check.py separate <capture.json> <fs.log>   separate RX/TX streams
     check.py ipv6     <capture.json> <fs.log>   SRS answers c=IN IP6 ::1
     check.py fallback <capture.json> <fs.log>   separate requested, 2nd declined
+    check.py callsid  <capture.json> <fs.log> <callsid> <events.json>
+                                                CallSid-shaped channel UUID and
+                                                each app's Application-Response
 """
 import base64
 import binascii
@@ -56,7 +59,10 @@ if mode == "stop":
         late = [p for p in rtp if p[0] > byes[0]["t"] + 0.1]
         check(len(late) == 0, "no RTP after siprec_stop", f"{len(late)}")
     check(len(rtp) > 50, "RTP flowed before stop", f"{len(rtp)}")
-    check("no active recording to stop" not in fslog, "siprec_stop found the recording")
+    # This scenario's siprec_stop has no handle; the callsid scenario's
+    # deliberate second "siprec_stop cb" logs "... for server cb".
+    check(re.search(r"no active recording to stop\r?$", fslog, re.M) is None,
+          "siprec_stop found the recording")
     check("by another module mid-call" not in fslog, "no unexpected mid-call bug removal")
     print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
     sys.exit(1 if fails else 0)
@@ -217,6 +223,41 @@ if mode == "fallback":
     check(p440 > 0.2 and p1000 > 0.2,
           "the fallback stream is the mix of both ends (440 Hz and 1000 Hz)",
           f"440 {p440:.2f}, 1000 {p1000:.2f}")
+    print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
+    sys.exit(1 if fails else 0)
+
+if mode == "callsid":
+    # callBroadcast originates with origination_uuid=<CallSid>, "CA" + 32
+    # hex: the metadata must preserve those same 16 identity bytes. Then
+    # each app's outcome, as a control plane reads it from its
+    # CHANNEL_EXECUTE_COMPLETE.
+    callsid, events = sys.argv[4], json.load(open(sys.argv[5]))
+    check("could not derive RFC 7865 metadata IDs" not in fslog, "metadata IDs derived")
+    lm = re.search(r"channel UUID (\S+) is not a UUID; metadata session_id (\S+) is fresh UUID (\S+)", fslog)
+    check(lm is None, "CallSid did not fall back to a random session identity")
+    check(len(invites) == 3, "one recording: INVITE + pause + resume (the duplicate start sent nothing)",
+          f"{len(invites)}")
+    check(len(byes) == 1, "siprec_stop: SRS received BYE", f"{len(byes)}")
+    check(len(rtp) > 50, "RTP flowed", f"{len(rtp)}")
+    if invites:
+        xm = re.search(r"<\?xml.*?</recording>", invites[0]["body"], re.S)
+        sess = None
+        if xm:
+            el = ET.fromstring(xm.group(0)).find("{urn:ietf:params:xml:ns:recording:1}session")
+            sess = el.get("session_id") if el is not None else None
+        check(sess is not None, "metadata session_id is present", str(sess))
+        if sess:
+            check(base64.b64decode(sess) == bytes.fromhex(callsid[2:]),
+                  "session_id preserves the CallSid identity")
+    want = [("siprec", "success"), ("siprec", "exists"), ("siprec", "failed"),
+            ("siprec_pause", "success"), ("siprec_resume", "success"),
+            ("siprec_stop", "success"), ("siprec_stop", "no_recording")]
+    mine = [e for e in events if e["Unique-ID"] == callsid]
+    got = [(e["Application"], e["Application-Response"]) for e in mine]
+    check(got == want, "each app's Application-Response, in order", str(got))
+    var = {"siprec": "start", "siprec_pause": "pause", "siprec_resume": "resume", "siprec_stop": "stop"}
+    check(all(e[f"variable_siprec_{var[e['Application']]}_status"] == e["Application-Response"] for e in mine),
+          "each app's named variable matches its Application-Response")
     print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
     sys.exit(1 if fails else 0)
 

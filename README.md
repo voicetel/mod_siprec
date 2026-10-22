@@ -170,7 +170,9 @@ PCMA call recorded to an SRS that answers PCMU (the payload bytes are
 decoded to prove they are μ-law), separate-streams mode (each labelled
 stream must carry only its own direction's tone), and an IPv6 answer
 (`c=IN IP6 ::1`), and a separate-streams fallback (the SRS declines
-the second stream). Interop
+the second stream), and a leg whose UUID is a CallSid (`CA` + 32 hex,
+as callBroadcast originates it) with every app outcome read from
+`Application-Response` over the event socket. Interop
 with a production SRS remains the operator verification path in
 [`tests/README.md`](tests/README.md).
 
@@ -304,6 +306,29 @@ to stop just that one.
 Hang-up tears any remaining recording dialog down automatically —
 the module installs an `on_hangup` state handler when the
 recording starts, so an explicit `siprec_stop` is optional.
+
+### App outcomes
+
+Dialplan apps return nothing, so each app publishes one outcome word
+before it returns, on every path:
+
+| App | Variable | Outcomes |
+|-----|----------|----------|
+| `siprec` | `siprec_start_status` | `success` (the SRS answered and the media fork attached), `exists` (this leg already records under that handle; it keeps running, nothing new starts), `failed` (nothing is recording for this start) |
+| `siprec_pause` | `siprec_pause_status` | `success`, `failed` |
+| `siprec_resume` | `siprec_resume_status` | `success`, `failed` |
+| `siprec_stop` | `siprec_stop_status` | `success` (at least one recording torn down), `no_recording` |
+
+The same word is also the app's `current_application_response`.
+FreeSWITCH clears that before every application and reports it as
+`Application-Response` in the app's own `CHANNEL_EXECUTE_COMPLETE`, so
+a controller driving calls over the event socket should read it from
+that event: it always belongs to that execution. The named variable
+is for dialplan logic after the app; it is unset while the app runs.
+
+A `failed` pause of a recording that exists still leaves its fork
+gated (no audio leaves the box); a `failed` pause or resume for a
+handle with no recording means nothing was recording under it.
 
 ## Architecture
 
