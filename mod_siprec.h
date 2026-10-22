@@ -102,6 +102,14 @@ struct recording {
 	int use_count;
 	int doomed;
 
+	/* Set (atomically) by the recording leg's own hangup handler when
+	 * that leg ends without us stopping it: the SRS sent BYE, or the
+	 * leg failed. The media-bug callback then stops the fork on its
+	 * next tick, and a new start under the same handle replaces this
+	 * recording instead of reporting "exists". See
+	 * siprec_recording_leg_ended. */
+	volatile switch_atomic_t leg_gone;
+
 	/* Requested stream mode, fixed at start: 1 = separate RX/TX streams
 	 * (label 1 = audio this leg receives, label 2 = audio it sends),
 	 * 0 = one mixed stream. The offer's m= lines follow this for the

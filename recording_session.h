@@ -75,6 +75,14 @@ void siprec_teardown_all_recordings(void);
 recording_t *acquire_recording(const char *key);
 int release_recording(recording_t *recording);
 
+/* siprec_recording_leg_ended: called from a recording leg's hangup
+ * handler. If the recording keyed `key` is still live on that leg
+ * (`leg_uuid`), mark it leg_gone so its fork stops. A leg we hung up
+ * ourselves (the recording already left the hash) or an older leg of a
+ * handle that has since restarted matches nothing. Returns 1 if a
+ * recording was marked. */
+int siprec_recording_leg_ended(const char *key, const char *leg_uuid);
+
 /* siprec_recording_key: build the globals.recordings_hash key for
  * a recording — "<server_name>-<uuid>". The key format is a
  * correctness-critical invariant: start_recording_session must

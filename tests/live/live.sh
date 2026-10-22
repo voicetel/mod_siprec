@@ -20,6 +20,9 @@
 #             VoiceML originates it; start, duplicate start, refused
 #             URI, pause, resume, stop, stop again, with each app's
 #             Application-Response captured over the event socket
+#   srsbye    the SRS BYEs the recording 2 s in: the fork must stop at
+#             once, and a second siprec start under the same handle
+#             must replace the dead recording rather than report exists
 set -uo pipefail
 PREFIX=/usr/local/freeswitch
 CONF=${PREFIX}/etc/freeswitch
@@ -94,6 +97,17 @@ cat > "${CONF}/dialplan/default/00_siprec_live.xml" <<EOF
       <action application="siprec_stop" data="cb"/>
       <action application="siprec_stop" data="cb"/>
       <action application="sleep" data="1000"/>
+      <action application="hangup"/>
+    </condition>
+  </extension>
+  <extension name="siprec_live_srsbye">
+    <condition field="destination_number" expression="^siprec_live_srsbye\$">
+      <action application="answer"/>
+      <action application="sleep" data="500"/>
+      <action application="siprec" data="default"/>
+      <action application="sleep" data="4000"/>
+      <action application="siprec" data="default"/>
+      <action application="sleep" data="3000"/>
       <action application="hangup"/>
     </condition>
   </extension>
@@ -207,6 +221,7 @@ ESL=$!
 sleep 1
 run_call callsid siprec_live_callsid "{origination_uuid=${CALLSID}}"
 kill -TERM "$ESL"; wait "$ESL"
+run_call srsbye siprec_live_srsbye "" "--bye-after 2"
 
 "$CLI" -x "shutdown" >/dev/null 2>&1 || kill "$FSPID"
 wait "$FSPID" 2>/dev/null
@@ -216,7 +231,7 @@ echo "--- negotiated codecs:"; grep -oE "Set Codec sofia/[a-z]+/[^ ]+ [A-Za-z0-9
 echo "--- mod_siprec log lines (INFO and above):"
 grep -E "siprec_[a-z]+\.c:[0-9]+ siprec|mod_siprec" "${OUT}/fs.log" | grep -v "\[DEBUG\]" | sed -E 's/^[0-9a-f-]{36} //' | cut -c1-200
 rc=0
-for mode in main stop failover codec separate ipv6 fallback; do
+for mode in main stop failover codec separate ipv6 fallback srsbye; do
     echo "--- checks: ${mode}"
     python3 "${HERE}/check.py" "$mode" "${OUT}/${mode}.json" "${OUT}/fs.log" || rc=1
 done

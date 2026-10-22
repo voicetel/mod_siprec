@@ -46,6 +46,32 @@
  */
 #include "siprec_invite.h"
 #include "siprec_sdp.h"
+#include "recording_session.h"
+
+/* Channel variable on the recording leg naming its recording's hash
+ * key, for the leg's hangup handler. */
+#define SIPREC_LEG_KEY_VAR "siprec_recording_key"
+
+/* Hangup of the recording leg itself. When it ends without us (the SRS
+ * sent BYE, or the leg failed), nothing else would stop the fork until
+ * the call hangs up, and the fork would keep sending to a port the SRS
+ * has released, possibly to another call's recording. */
+static switch_status_t siprec_leg_on_hangup(switch_core_session_t *session)
+{
+    switch_channel_t *ch = switch_core_session_get_channel(session);
+    const char *key = switch_channel_get_variable(ch, SIPREC_LEG_KEY_VAR);
+
+    if (siprec_recording_leg_ended(key, switch_core_session_get_uuid(session))) {
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
+            "siprec: recording leg for %s ended (%s); stopping its RTP fork\n",
+            key, switch_channel_cause2str(switch_channel_get_cause(ch)));
+    }
+    return SWITCH_STATUS_SUCCESS;
+}
+
+static switch_state_handler_table_t siprec_leg_state_handlers = {
+    .on_hangup = siprec_leg_on_hangup
+};
 
 /* Compile-time invariant: the parser's out_max derived from
  * sizeof(ctx->negotiated) must equal SIPREC_MAX_STREAMS. If
@@ -279,13 +305,19 @@ switch_status_t siprec_invite_send(
         sizeof(ctx->recording_uuid));
     recording->invite_ctx = ctx;
 
+    /* Watch the leg so an SRS-side end stops the fork (see
+     * siprec_leg_on_hangup). The handler only sees the leg's session,
+     * so the recording's key rides along as a channel variable. */
+    rch = switch_core_session_get_channel(new_session);
+    switch_channel_set_variable(rch, SIPREC_LEG_KEY_VAR, recording->key);
+    switch_channel_add_state_handler(rch, &siprec_leg_state_handlers);
+
     /* Pull the negotiated remote endpoint(s) from the SRS's answer
      * SDP, which mod_sofia stores in SWITCH_R_SDP_VARIABLE
      * ("switch_r_sdp"); there is no "sip_remote_sdp_str".
      *
      * Fallback: remote_media_ip / remote_media_port, single stream,
      * no codec. Logged, since it should not happen in practice. */
-    rch = switch_core_session_get_channel(new_session);
     remote_sdp = switch_channel_get_variable(rch, SWITCH_R_SDP_VARIABLE);
 
     if (!zstr(remote_sdp)) {

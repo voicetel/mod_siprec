@@ -35,6 +35,14 @@ typedef struct siprec_media_ctx {
      * CLOSE callback can tell our removal from the core's. */
     int detaching;
 
+    /* The recording this fork belongs to (same pool, same lifetime).
+     * The callback reads its leg_gone flag every tick. */
+    recording_t *recording;
+
+    /* Set by the callback when it removed itself because the
+     * recording leg ended, for the CLOSE log line. */
+    int leg_ended;
+
     /* The RTP socket (UDP) we send tapped audio over. One
      * socket per stream; v1 caps at 2 streams (read + write
      * directions of the original 2-leg call). */

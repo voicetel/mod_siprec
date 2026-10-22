@@ -23,6 +23,7 @@ p = argparse.ArgumentParser()
 p.add_argument("--ip", required=True, help="address advertised in SDP/Contact")
 p.add_argument("--ip6", help="if set, answer c=IN IP6 <ip6> and bind RTP there")
 p.add_argument("--reject-second", action="store_true", help="answer the 2nd m=audio with port 0")
+p.add_argument("--bye-after", type=float, help="BYE the first dialog this many seconds after its ACK")
 p.add_argument("--sip-port", type=int, default=5070)
 p.add_argument("--rtp-port", type=int, default=40000)
 p.add_argument("--out", required=True)
@@ -37,6 +38,7 @@ lock = threading.Lock()
 done = threading.Event()
 responses = {}    # (call-id, cseq) -> response bytes, for retransmissions
 sdp_version = {}  # call-id -> o= version we answer with
+first_invite = {}  # headers + source of the first INVITE, for --bye-after
 
 
 def now():
@@ -102,6 +104,31 @@ def response(headers, code, reason, body="", ctype=None, to_tag=True):
     return ("\r\n".join(out) + "\r\n\r\n" + body).encode()
 
 
+def send_bye(sock, addr, headers):
+    """End the first dialog from the SRS side, as a real SRS does when it
+    stops recording on its own (shutdown, idle reaping)."""
+    contact = hget(headers, "Contact", "m")[0]
+    target = contact[contact.find("<") + 1:contact.find(">")] if "<" in contact else contact.split(";")[0]
+    to = hget(headers, "To", "t")[0]
+    if ";tag=" not in to:
+        to += ";tag=srs4242"
+    msg = "\r\n".join([
+        f"BYE {target} SIP/2.0",
+        f"Via: SIP/2.0/UDP {args.ip}:{args.sip_port};branch=z9hG4bK-srsbye;rport",
+        "Max-Forwards: 70",
+        f"From: {to}",
+        f"To: {hget(headers, 'From', 'f')[0]}",
+        f"Call-ID: {hget(headers, 'Call-ID', 'i')[0]}",
+        "CSeq: 1 BYE",
+        f"Contact: <sip:srs@{args.ip}:{args.sip_port}>",
+        "Content-Length: 0",
+    ]) + "\r\n\r\n"
+    with lock:
+        sip_log.append({"t": now(), "method": "SENT-BYE", "start": f"BYE {target} SIP/2.0",
+                        "headers": [["Call-ID", hget(headers, "Call-ID", "i")[0]]], "body": ""})
+    sock.sendto(msg.encode(), addr)
+
+
 def sip_loop(sock):
     sock.settimeout(0.2)
     while not done.is_set():
@@ -124,7 +151,14 @@ def sip_loop(sock):
             sip_log.append({"t": now(), "method": method, "start": start,
                             "headers": headers, "body": body})
         if method == "ACK":
+            if args.bye_after and first_invite and not first_invite.get("armed") \
+                    and call_id == hget(first_invite["headers"], "Call-ID", "i")[0]:
+                first_invite["armed"] = True
+                threading.Timer(args.bye_after, send_bye,
+                                (sock, first_invite["addr"], first_invite["headers"])).start()
             continue
+        if method == "INVITE" and not first_invite:
+            first_invite.update(headers=headers, addr=addr)
         if method == "INVITE":
             resp = response(headers, 200, "OK", answer_sdp(call_id, body), "application/sdp")
         else:

@@ -10,6 +10,7 @@ failure.
     check.py separate <capture.json> <fs.log>   separate RX/TX streams
     check.py ipv6     <capture.json> <fs.log>   SRS answers c=IN IP6 ::1
     check.py fallback <capture.json> <fs.log>   separate requested, 2nd declined
+    check.py srsbye   <capture.json> <fs.log>   SRS ends the dialog; restart
     check.py callsid  <capture.json> <fs.log> <callsid> <events.json>
                                                 CallSid-shaped channel UUID and
                                                 each app's Application-Response
@@ -258,6 +259,35 @@ if mode == "callsid":
     var = {"siprec": "start", "siprec_pause": "pause", "siprec_resume": "resume", "siprec_stop": "stop"}
     check(all(e[f"variable_siprec_{var[e['Application']]}_status"] == e["Application-Response"] for e in mine),
           "each app's named variable matches its Application-Response")
+    print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
+    sys.exit(1 if fails else 0)
+
+if mode == "srsbye":
+    # siprec -> SRS BYEs 2 s after ACK -> (4 s in) siprec again -> 3 s.
+    sent = [m for m in sip if m["method"] == "SENT-BYE"]
+    if not check(len(sent) == 1, "SRS sent BYE on the first dialog", f"{len(sent)}"):
+        sys.exit(1)
+    bye_t = sent[0]["t"]
+    calls = []
+    for m in invites:
+        cid = hdr(m, "Call-ID")[0]
+        if cid not in calls:
+            calls.append(cid)
+    check(len(calls) == 2, "the second start opened a new recording dialog", f"{len(calls)}")
+    first = [p for p in rtp if p[0] < bye_t]
+    check(len(first) > 50, "RTP flowed before the SRS BYE", f"{len(first)}")
+    if first:
+        ssrc = first[-1][5]
+        late = [p for p in rtp if p[5] == ssrc and p[0] > bye_t + 0.5]
+        check(len(late) == 0, "the first fork stopped after the SRS BYE", f"{len(late)} late packets")
+        second = [p for p in rtp if p[5] != ssrc and p[0] > bye_t]
+        check(len(second) > 50, "the replacement recording forked RTP", f"{len(second)}")
+    check(re.search(r"recording leg for default-\S+ ended \(NORMAL_CLEARING\); stopping its RTP fork", fslog)
+          is not None, "the leg's hangup handler saw the SRS-side end")
+    check("recording leg ended; RTP fork stopped" in fslog, "the fork removed itself")
+    check(re.search(r"replacing recording default-\S+, whose SRS leg had ended", fslog) is not None,
+          "the second start replaced the dead recording")
+    check("by another module mid-call" not in fslog, "no unexpected mid-call bug removal")
     print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
     sys.exit(1 if fails else 0)
 

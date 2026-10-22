@@ -182,6 +182,15 @@ standalone.
       every app and reports as the app's `Application-Response` in
       `CHANNEL_EXECUTE_COMPLETE` (`switch_core_session_exec`). An event
       socket controller reads the outcome from that event.
+- [x] SRS-side end: the recording leg carries its recording's key
+      (`siprec_recording_key`) and its own `on_hangup` handler. When
+      the leg ends without us (SRS BYE, leg failure) and is still the
+      recording's current leg, `siprec_recording_leg_ended` sets the
+      recording's atomic `leg_gone`; the media-bug callback returns
+      FALSE on its next tick so the core removes the bug. The
+      recording stays hashed until the call's own thread retires it
+      (stop, hangup, or a new start under the handle, which replaces
+      it). Our own BYE matches nothing: teardown unhashes first.
 - [x] State handler: `on_hangup` (with `on_destroy` as an idempotent
       backstop) is bound *before* the INVITE, so a hangup at any point
       tears the recording down. The core removes media bugs before any

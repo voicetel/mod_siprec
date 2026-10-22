@@ -198,7 +198,12 @@ static switch_bool_t media_bug_callback(
          * handler runs). Forget the pointer so detach doesn't pass
          * an already-destroyed bug back to switch_core_media_bug_remove.
          * Sockets are closed in siprec_media_detach. */
-        if (!ctx->detaching) {
+        if (ctx->leg_ended) {
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(
+                    switch_core_media_bug_get_session(bug)),
+                SWITCH_LOG_WARNING,
+                "siprec: recording leg ended; RTP fork stopped\n");
+        } else if (!ctx->detaching) {
             switch_core_session_t *bs = switch_core_media_bug_get_session(bug);
             /* Expected at hangup (the core removes every bug before the
              * hangup handler runs). Mid-call it means something else
@@ -237,6 +242,15 @@ static switch_bool_t media_bug_callback(
 
         if (ctx->stream_count == 0) {
             return SWITCH_TRUE;
+        }
+
+        /* The SRS ended the recording leg (BYE, or the leg failed):
+         * no SRS is listening for this fork any more, and the port it
+         * answered may be handed to another call's recording. Stop
+         * sending; returning FALSE has the core remove this bug. */
+        if (ctx->recording && switch_atomic_read(&ctx->recording->leg_gone)) {
+            ctx->leg_ended = 1;
+            return SWITCH_FALSE;
         }
 
         for (;;) {
@@ -387,6 +401,7 @@ switch_status_t siprec_media_attach(recording_t *recording)
     for (size_t i = 0; i < sizeof(mctx->streams) / sizeof(mctx->streams[0]); i++) {
         mctx->streams[i].fd = -1;
     }
+    mctx->recording = recording;
 
     /* Fallback codec for any stream whose SRS answer didn't
      * carry a payload type our encoder produces (SIPREC_PT_UNSET

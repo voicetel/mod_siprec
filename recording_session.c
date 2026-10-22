@@ -163,6 +163,37 @@ int release_recording(recording_t *recording)
 	return doomed;
 }
 
+/* siprec_recording_leg_ended: see recording_session.h. The recording
+ * stays in the hash: its teardown touches the call's media bug, which
+ * belongs on the call's own thread (the next start under the handle,
+ * siprec_stop, or the call's hangup). Only the fork is stopped here,
+ * by the flag the media-bug callback checks on every tick.
+ *
+ * Our own BYE matches nothing: every teardown path removes the
+ * recording from the hash before siprec_invite_send_bye hangs the leg
+ * up. Matching on the leg UUID covers a restart under the same handle,
+ * whose new recording has a different leg (or none yet). */
+int siprec_recording_leg_ended(const char *key, const char *leg_uuid)
+{
+	recording_t *recording;
+	int marked = 0;
+
+	if (zstr(key) || zstr(leg_uuid)) {
+		return 0;
+	}
+
+	switch_mutex_lock(globals.recordings_mutex);
+	recording = switch_core_hash_find(globals.recordings_hash, key);
+	if (recording && recording->invite_ctx
+		&& !strcmp(recording->invite_ctx->recording_uuid, leg_uuid)) {
+		switch_atomic_set(&recording->leg_gone, 1);
+		marked = 1;
+	}
+	switch_mutex_unlock(globals.recordings_mutex);
+
+	return marked;
+}
+
 /* teardown_recording: fully retire one recording_t — detach the
  * media fork, BYE the SRS leg, free the pool. The caller MUST have
  * already removed it from the hash via claim_recording, so this
@@ -384,6 +415,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 {
 	recording_server_t *server = NULL;
 	recording_t *recording = NULL;
+	recording_t *stale;
 	const char *uuid = switch_core_session_get_uuid(session);
 	/* Ad-hoc per-call endpoint: a complete SRS SIP URI was supplied
 	 * at dispatch time (siprec <handle> <uri>). The config lookup is
@@ -506,9 +538,13 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 
 	/* Duplicate check and insert under ONE lock hold, so two
 	 * concurrent `siprec` calls for the same handle on the same leg
-	 * can't both pass the check and orphan one recording. */
+	 * can't both pass the check and orphan one recording. A recording
+	 * whose SRS leg already ended records nothing, so it is replaced
+	 * rather than reported as existing; it belongs to this call, so
+	 * its teardown runs here on the call's thread, after the unlock. */
 	switch_mutex_lock(globals.recordings_mutex);
-	if (switch_core_hash_find(globals.recordings_hash, recording->key)) {
+	stale = switch_core_hash_find(globals.recordings_hash, recording->key);
+	if (stale && (stale->use_count > 0 || !switch_atomic_read(&stale->leg_gone))) {
 		switch_mutex_unlock(globals.recordings_mutex);
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
 			"siprec: recording %s already exists\n", recording->key);
@@ -516,6 +552,9 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 		/* Distinct from FALSE: a recording IS live under this handle,
 		 * so a caller must not conclude nothing is recording. */
 		return SWITCH_STATUS_INUSE;
+	}
+	if (stale) {
+		switch_core_hash_delete(globals.recordings_hash, stale->key);
 	}
 	/* Insert already pinned by this start. Until the matching release
 	 * at the end, a concurrent stop (hangup, siprec_stop, unload) only
@@ -525,6 +564,13 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 	recording->use_count = 1;
 	switch_core_hash_insert(globals.recordings_hash, recording->key, recording);
 	switch_mutex_unlock(globals.recordings_mutex);
+
+	if (stale) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
+			"siprec: replacing recording %s, whose SRS leg had ended\n",
+			recording->key);
+		teardown_recording(stale);
+	}
 
 	/* Bind the hangup handler BEFORE the INVITE. The originate can
 	 * block for originate-timeout seconds per candidate; binding only

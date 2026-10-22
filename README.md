@@ -55,6 +55,7 @@ upgrading.
 | `+sip.src` Contact feature tag | [RFC 7866 §5.2.1][rfc7866-5.2.1] | ✅ via `sip_invite_contact_params=~+sip.src` ovar; the leading `~` tells `sofia_overcome_sip_uri_weakness` (sofia_glue.c:854,891) to place the tag AFTER the closing `>`, yielding `Contact: <sip:src@host:port>;+sip.src` per the spec |
 | `multipart/mixed` (SDP + metadata) | [RFC 7866 §6.1.2][rfc7866-6.1.2] / [RFC 2046][rfc2046] | ✅ `sip_multipart` channel var |
 | BYE on hangup | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `on_hangup` state handler (`on_destroy` as backstop) |
+| SRS-initiated BYE | [RFC 3261 §15][rfc3261] | ✅ the recording leg's own hangup handler stops the RTP fork at once; a later `siprec` under the same handle replaces the dead recording |
 | pause / resume re-INVITE | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_pause` / `siprec_resume` apps; re-INVITE offers `a=inactive` / `a=sendonly` via `origination_audio_mode` + `MEDIA_RENEG` (mod_sofia regenerates the SDP, so ports and codecs stay as negotiated). **PCI-safe**: pause sets the recording bug's native `SMBF_PAUSE` (FreeSWITCH stops capturing audio at the io pump — no frames forked, nothing buffered to burst on resume) *before* sending `a=inactive`, so cardholder audio never leaves the box |
 | explicit stop | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_stop` app — detaches the media fork + BYEs the SRS leg mid-call; no-arg form stops every recording on the leg (PCI-safe default). Not resumable; start a fresh `siprec` to record again |
 | sendonly direction on SRC streams | [RFC 7866 §7.4][rfc7866-7.4] | ✅ `origination_audio_mode=sendonly` on the recording leg (mod_sofia's default offer is `sendrecv`) |
@@ -306,6 +307,14 @@ to stop just that one.
 Hang-up tears any remaining recording dialog down automatically —
 the module installs an `on_hangup` state handler when the
 recording starts, so an explicit `siprec_stop` is optional.
+
+If the SRS ends the recording dialog itself (it sends BYE, for
+example when it shuts down or reaps an idle session) or the
+recording leg otherwise fails, the leg's own hangup handler stops
+the RTP fork on its next tick, so no audio is sent to a port the SRS
+may have handed to another call. The call continues unrecorded;
+`siprec` under the same handle then starts a fresh recording
+(instead of answering `exists`), and pause/resume report `failed`.
 
 ### App outcomes
 

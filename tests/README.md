@@ -39,7 +39,10 @@ and checks the fork delivers RTP over IPv6. The `callsid` scenario
 originates with `origination_uuid=CA…` (34 characters, as VoiceML
 does), runs start, a duplicate start, a refused URI, pause, resume and
 two stops, and checks each app's `Application-Response` as
-`tests/live/esl_events.py` reads it over the event socket. It covers
+`tests/live/esl_events.py` reads it over the event socket. The
+`srsbye` scenario has the SRS BYE the recording 2 s in and checks
+the fork stops at once and a second `siprec` replaces the dead
+recording. It covers
 most of the checklist below automatically; interop with a production
 SRS (siprec-receiver, ClearIP, …) still needs the manual steps.
 
