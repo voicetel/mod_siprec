@@ -551,17 +551,33 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 	 * the XSD types them xs:base64Binary, so "<uuid>-caller" style IDs
 	 * fail schema validation. The session ID is the call's own UUID so
 	 * an SRS-side record can be correlated with the FreeSWITCH call;
-	 * the group, participants and stream get fresh UUIDs. */
-	if (siprec_metadata_uuid_to_id(uuid, session_id) != 0
-		|| metadata_id_fresh(group_id) != 0
-		|| metadata_id_fresh(p_caller_id) != 0
-		|| metadata_id_fresh(p_callee_id) != 0
-		|| metadata_id_fresh(stream_id) != 0
-		|| metadata_id_fresh(stream2_id) != 0) {
-		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
-			SWITCH_LOG_ERROR, "siprec: could not derive RFC 7865 metadata IDs\n");
-		discard_pending_recording(recording);
-		return SWITCH_STATUS_FALSE;
+	 * the group, participants and stream get fresh UUIDs. The channel
+	 * UUID is whatever the originator chose (origination_uuid takes any
+	 * string). A callBroadcast "CA" + 32 hex CallSid preserves its 16
+	 * identity bytes. Other non-UUID names use a fresh session ID,
+	 * logged next to the channel name so operators can match them. */
+	{
+		char fresh[SWITCH_UUID_FORMATTED_LENGTH + 1];
+		int sid;
+
+		switch_uuid_str(fresh, sizeof(fresh));
+		sid = siprec_metadata_session_id(uuid, fresh, session_id);
+		if (sid < 0
+			|| metadata_id_fresh(group_id) != 0
+			|| metadata_id_fresh(p_caller_id) != 0
+			|| metadata_id_fresh(p_callee_id) != 0
+			|| metadata_id_fresh(stream_id) != 0
+			|| metadata_id_fresh(stream2_id) != 0) {
+			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+				SWITCH_LOG_ERROR, "siprec: could not derive RFC 7865 metadata IDs\n");
+			discard_pending_recording(recording);
+			return SWITCH_STATUS_FALSE;
+		}
+		if (sid == 1) {
+			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
+				"siprec: channel UUID %s is not a UUID; metadata session_id %s "
+				"is fresh UUID %s\n", uuid, session_id, fresh);
+		}
 	}
 
 	parts[0].participant_id = p_caller_id;

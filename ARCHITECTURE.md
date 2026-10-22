@@ -70,7 +70,10 @@ standalone.
       `<participant>` per leg, `<stream>` cross-references via
       `participantsessionassoc` / `participantstreamassoc`. IDs are
       base64-encoded UUIDs (RFC 7865 §6.9) and AORs are normalized to
-      URIs. Schema lives in RFC 7865 Appendix A.
+      URIs. `siprec_metadata_session_id` derives the session ID from
+      the channel UUID or a `CA` + 32-hex CallSid, or from a fresh UUID
+      for arbitrary other channel names (`origination_uuid` accepts any string).
+      Schema lives in RFC 7865 Appendix A.
 
 ### Phase 2 — SIP signaling
 
@@ -255,7 +258,8 @@ standalone.
       Run with `make -f Makefile.test test`; lint with
       `make -f Makefile.test lint` (cppcheck
       `--enable=all --check-level=exhaustive` clean). Also covered:
-      RFC 7865 §6.9 ID encoding and AOR normalization.
+      RFC 7865 §6.9 ID encoding (including deterministic CallSid identities
+      and fallback for arbitrary other channel names) and AOR normalization.
 - [x] Unit tests for `siprec_uri.c` — accepted and rejected ad-hoc
       URIs, including every dial-string metacharacter and `:_:`.
 - [x] `make -f Makefile.test fscheck FS_SRC=<tree>` compiles the four
@@ -264,7 +268,7 @@ standalone.
 - [x] Unit tests for `siprec_g711.c` — the branch-free encode
       tables are swept against the reference quantisers for all
       65536 int16 inputs (PCMU + PCMA) plus an idempotent-init
-      check; suite total is 161/161.
+      check; suite total is 174/174.
 - [x] Host coverage — `make -f Makefile.test coverage` (gcov;
       **100%** of the FS-free units). The string builder's
       allocator-failure paths are exercised through the

@@ -80,7 +80,7 @@ upgrading.
 | `<session>` (`session_id`, `<reason>`, `<group-ref>`, `<start-time>`) | [RFC 7865 Appendix A][rfc7865] | ✅ |
 | `<participant>` (`participant_id`, `<nameID>`) | [RFC 7865 Appendix A][rfc7865] | ✅ schema-strict (no inline send/recv, no session_id attr) |
 | Participant AORs (`<nameID aor>`) | [RFC 7865 Appendix A][rfc7865] | ✅ normalized to URIs: `user@host` gets `sip:`, bare numbers become `sip:<n>@<host>` |
-| Metadata IDs (`*_id`, `<group-ref>`, `<send>`) | [RFC 7865 §6.9][rfc7865] | ✅ standard base64 of a 16-byte UUID (`xs:base64Binary`); `session_id` is the call's UUID, the rest are fresh |
+| Metadata IDs (`*_id`, `<group-ref>`, `<send>`) | [RFC 7865 §6.9][rfc7865] | ✅ standard base64 of 16 identity bytes (`xs:base64Binary`); `session_id` preserves the channel UUID or `CA` + 32-hex CallSid identity. Arbitrary non-UUID channel names use a fresh UUID logged alongside the channel name; other metadata IDs are fresh |
 | `<stream>` (`stream_id`, `session_id`, `<label>`) | [RFC 7865 Appendix A][rfc7865] | ✅ |
 | `<participantsessionassoc>` / `<participantstreamassoc>` | [RFC 7865 Appendix A][rfc7865] | ✅ |
 | XML escaping for caller-supplied content | [RFC 7865 §5][rfc7865] | ✅ &amp; &lt; &gt; &quot; &apos; |

@@ -102,6 +102,13 @@ int siprec_metadata_uuid_to_id(const char *uuid, char out[SIPREC_METADATA_ID_LEN
     return 0;
 }
 
+int siprec_metadata_session_id(const char *channel_uuid, const char *fallback_uuid,
+    char out[SIPREC_METADATA_ID_LEN + 1]) {
+    if (siprec_metadata_uuid_to_id(channel_uuid, out) == 0) return 0;
+    if (siprec_metadata_uuid_to_id(fallback_uuid, out) == 0) return 1;
+    return -1;
+}
+
 char *siprec_metadata_aor(const char *raw, const char *host) {
     sb_t sb;
 

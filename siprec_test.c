@@ -679,6 +679,38 @@ static void test_metadata_uuid_to_id(void) {
         -1, "id:reject misplaced hyphen");
     check_int(siprec_metadata_uuid_to_id("00112233-4455-6677-8899+aabbccddeeff", id),
         -1, "id:reject bad separator");
+    /* callBroadcast originates with origination_uuid=<CallSid>: "CA"
+     * plus 32 hex, 34 characters, not a UUID. */
+    check_int(siprec_metadata_uuid_to_id("CA2d711642b726b04401627ca9fbac32f5", id),
+        0, "id:accept CallSid-shaped channel uuid");
+    check_int(siprec_metadata_uuid_to_id("CA00112233445566778899aabbccddeeff", id),
+        0, "id:CA callsid accepted");
+    check_str(id, "ABEiM0RVZneImaq7zN3u/w==", "id:CA callsid encodes as its hex");
+    check_int(siprec_metadata_uuid_to_id("CA00112233-4455-6677-8899-aabbccddeeff", id),
+        -1, "id:reject CA + hyphenated uuid");
+    check_int(siprec_metadata_uuid_to_id("XY00112233445566778899aabbccddeeff", id),
+        -1, "id:reject other 34-char prefix");
+    check_int(siprec_metadata_uuid_to_id("CA00112233445566778899aabbccddeefg", id),
+        -1, "id:reject CA + non-hex");
+}
+
+static void test_metadata_session_id(void) {
+    char id[SIPREC_METADATA_ID_LEN + 1];
+
+    check_int(siprec_metadata_session_id("00112233-4455-6677-8899-aabbccddeeff",
+        "ffffffff-ffff-ffff-ffff-ffffffffffff", id), 0, "sid:uuid channel id used");
+    check_str(id, "ABEiM0RVZneImaq7zN3u/w==", "sid:derived from channel uuid");
+
+    check_int(siprec_metadata_session_id("CA2d711642b726b04401627ca9fbac32f5",
+        "00112233-4455-6677-8899-aabbccddeeff", id), 0, "sid:CallSid identity used");
+    check_str(id, "LXEWQrcmsEQBYnyp+6wy9Q==", "sid:derived from CallSid");
+
+    check_int(siprec_metadata_session_id(NULL,
+        "00112233-4455-6677-8899-aabbccddeeff", id), 1, "sid:NULL channel id falls back");
+
+    check_int(siprec_metadata_session_id("not-a-uuid", "also-not", id),
+        -1, "sid:reject when neither is a uuid");
+    check_str(id, "", "sid:out empty on failure");
 }
 
 static void test_metadata_aor(void) {
@@ -944,6 +976,7 @@ int main(void) {
     test_metadata_assoc_elements();
     test_metadata_element_ordering();
     test_metadata_uuid_to_id();
+    test_metadata_session_id();
     test_metadata_aor();
 
     test_g711_tables_match_reference();
