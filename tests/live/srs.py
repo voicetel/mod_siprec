@@ -2,15 +2,17 @@
 """Minimal SIPREC Session Recording Server for the live test.
 
 Answers SIP over UDP (INVITE / re-INVITE / ACK / BYE / anything else with
-200), answers each offer with a single PCMU stream whose direction mirrors
-the offer (sendonly -> recvonly, inactive -> inactive), and records RTP
-header fields plus arrival times. Everything it sees is written as JSON to
+200). Each offered m=audio section is answered with PCMU on its own RTP
+port (rtp-port, rtp-port+2, ...) and a direction mirroring that section's
+(sendonly -> recvonly, inactive -> inactive). Records RTP header fields,
+payload bytes, arrival times and which port (stream) each packet hit. Everything it sees is written as JSON to
 the output file when it exits (SIGTERM/SIGINT, or --duration elapsed).
 
 Only what the test needs; not a general SIP implementation.
 """
 import argparse
 import json
+import re
 import signal
 import socket
 import struct
@@ -19,6 +21,9 @@ import time
 
 p = argparse.ArgumentParser()
 p.add_argument("--ip", required=True, help="address advertised in SDP/Contact")
+p.add_argument("--ip6", help="if set, answer c=IN IP6 <ip6> and bind RTP there")
+p.add_argument("--reject-second", action="store_true", help="answer the 2nd m=audio with port 0")
+p.add_argument("--bye-after", type=float, help="BYE the first dialog this many seconds after its ACK")
 p.add_argument("--sip-port", type=int, default=5070)
 p.add_argument("--rtp-port", type=int, default=40000)
 p.add_argument("--out", required=True)
@@ -27,11 +32,13 @@ args = p.parse_args()
 
 t0 = time.monotonic()
 sip_log = []      # every request received
-rtp_log = []      # [t, seq, ts, marker, pt, ssrc, payload_len, payload_hex]
+rtp_log = []      # [t, seq, ts, marker, pt, ssrc, payload_len, payload_hex, stream]
+MAX_STREAMS = 2
 lock = threading.Lock()
 done = threading.Event()
 responses = {}    # (call-id, cseq) -> response bytes, for retransmissions
 sdp_version = {}  # call-id -> o= version we answer with
+first_invite = {}  # headers + source of the first INVITE, for --bye-after
 
 
 def now():
@@ -55,23 +62,28 @@ def hget(headers, name, compact=None):
 
 
 def answer_sdp(call_id, offer):
-    direction = "recvonly"
-    if "a=inactive" in offer:
-        direction = "inactive"
-    elif "a=recvonly" in offer:
-        direction = "sendonly"
+    fam, advert = ("IP6", args.ip6) if args.ip6 else ("IP4", args.ip)
+    sdp = offer[offer.find("v=0"):]
+    sections = [sec for sec in re.split(r"(?m)^(?=m=)", sdp)[1:]
+                if sec.startswith("m=audio")][:MAX_STREAMS]
     ver = sdp_version.get(call_id, 0) + 1
     sdp_version[call_id] = ver
-    return (
+    out = (
         "v=0\r\n"
-        f"o=srs 4242 {ver} IN IP4 {args.ip}\r\n"
+        f"o=srs 4242 {ver} IN {fam} {advert}\r\n"
         "s=srs\r\n"
-        f"c=IN IP4 {args.ip}\r\n"
+        f"c=IN {fam} {advert}\r\n"
         "t=0 0\r\n"
-        f"m=audio {args.rtp_port} RTP/AVP 0\r\n"
-        "a=rtpmap:0 PCMU/8000\r\n"
-        f"a={direction}\r\n"
     )
+    for i, sec in enumerate(sections):
+        m = re.search(r"(?m)^a=(sendonly|recvonly|inactive|sendrecv)\r?$", sec)
+        offered = m.group(1) if m else "sendrecv"
+        direction = {"sendonly": "recvonly", "recvonly": "sendonly"}.get(offered, offered)
+        port = 0 if (args.reject_second and i > 0) else args.rtp_port + 2 * i
+        out += (f"m=audio {port} RTP/AVP 0\r\n"
+                "a=rtpmap:0 PCMU/8000\r\n"
+                f"a={direction}\r\n")
+    return out
 
 
 def response(headers, code, reason, body="", ctype=None, to_tag=True):
@@ -90,6 +102,31 @@ def response(headers, code, reason, body="", ctype=None, to_tag=True):
         out.append(f"Content-Type: {ctype}")
     out.append(f"Content-Length: {len(body.encode())}")
     return ("\r\n".join(out) + "\r\n\r\n" + body).encode()
+
+
+def send_bye(sock, addr, headers):
+    """End the first dialog from the SRS side, as a real SRS does when it
+    stops recording on its own (shutdown, idle reaping)."""
+    contact = hget(headers, "Contact", "m")[0]
+    target = contact[contact.find("<") + 1:contact.find(">")] if "<" in contact else contact.split(";")[0]
+    to = hget(headers, "To", "t")[0]
+    if ";tag=" not in to:
+        to += ";tag=srs4242"
+    msg = "\r\n".join([
+        f"BYE {target} SIP/2.0",
+        f"Via: SIP/2.0/UDP {args.ip}:{args.sip_port};branch=z9hG4bK-srsbye;rport",
+        "Max-Forwards: 70",
+        f"From: {to}",
+        f"To: {hget(headers, 'From', 'f')[0]}",
+        f"Call-ID: {hget(headers, 'Call-ID', 'i')[0]}",
+        "CSeq: 1 BYE",
+        f"Contact: <sip:srs@{args.ip}:{args.sip_port}>",
+        "Content-Length: 0",
+    ]) + "\r\n\r\n"
+    with lock:
+        sip_log.append({"t": now(), "method": "SENT-BYE", "start": f"BYE {target} SIP/2.0",
+                        "headers": [["Call-ID", hget(headers, "Call-ID", "i")[0]]], "body": ""})
+    sock.sendto(msg.encode(), addr)
 
 
 def sip_loop(sock):
@@ -114,7 +151,14 @@ def sip_loop(sock):
             sip_log.append({"t": now(), "method": method, "start": start,
                             "headers": headers, "body": body})
         if method == "ACK":
+            if args.bye_after and first_invite and not first_invite.get("armed") \
+                    and call_id == hget(first_invite["headers"], "Call-ID", "i")[0]:
+                first_invite["armed"] = True
+                threading.Timer(args.bye_after, send_bye,
+                                (sock, first_invite["addr"], first_invite["headers"])).start()
             continue
+        if method == "INVITE" and not first_invite:
+            first_invite.update(headers=headers, addr=addr)
         if method == "INVITE":
             resp = response(headers, 200, "OK", answer_sdp(call_id, body), "application/sdp")
         else:
@@ -123,7 +167,7 @@ def sip_loop(sock):
         sock.sendto(resp, addr)
 
 
-def rtp_loop(sock):
+def rtp_loop(sock, stream):
     sock.settimeout(0.2)
     while not done.is_set():
         try:
@@ -135,7 +179,7 @@ def rtp_loop(sock):
         b0, b1, seq, ts, ssrc = struct.unpack("!BBHII", data[:12])
         with lock:
             rtp_log.append([now(), seq, ts, (b1 >> 7) & 1, b1 & 0x7F, ssrc, len(data) - 12,
-                            data[12:].hex()])
+                            data[12:].hex(), stream])
 
 
 def stop(*_):
@@ -147,10 +191,11 @@ signal.signal(signal.SIGINT, stop)
 
 sip = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sip.bind(("0.0.0.0", args.sip_port))
-rtp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-rtp.bind(("0.0.0.0", args.rtp_port))
-threads = [threading.Thread(target=sip_loop, args=(sip,), daemon=True),
-           threading.Thread(target=rtp_loop, args=(rtp,), daemon=True)]
+threads = [threading.Thread(target=sip_loop, args=(sip,), daemon=True)]
+for i in range(MAX_STREAMS):
+    rtp = socket.socket(socket.AF_INET6 if args.ip6 else socket.AF_INET, socket.SOCK_DGRAM)
+    rtp.bind((args.ip6 if args.ip6 else "0.0.0.0", args.rtp_port + 2 * i))
+    threads.append(threading.Thread(target=rtp_loop, args=(rtp, i), daemon=True))
 for th in threads:
     th.start()
 print(f"srs: listening sip={args.sip_port} rtp={args.rtp_port}", flush=True)

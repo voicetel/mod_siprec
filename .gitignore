@@ -16,3 +16,4 @@ siprec_test
 
 # make -f Makefile.test fscheck stub include dir
 .fscheck-inc/
+__pycache__/

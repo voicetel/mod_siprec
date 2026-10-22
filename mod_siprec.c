@@ -48,6 +48,7 @@ static switch_xml_config_int_options_t originate_timeout_opts = { SWITCH_TRUE, 1
 
 static switch_xml_config_item_t general_instructions[] = {
 	SWITCH_CONFIG_ITEM("src-enabled", SWITCH_CONFIG_BOOL, CONFIG_RELOADABLE, &globals.src_enabled, SWITCH_TRUE, NULL, "true|false", "Enable/Disable Server Recording Client"),
+	SWITCH_CONFIG_ITEM("separate-streams", SWITCH_CONFIG_BOOL, CONFIG_RELOADABLE, &globals.separate_streams, SWITCH_FALSE, NULL, "true|false", "Record RX and TX as two labelled streams instead of one mixed stream"),
 	SWITCH_CONFIG_ITEM("originate-timeout", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.originate_timeout, (void *) 20, &originate_timeout_opts, "1-300", "Seconds to wait for each SRS candidate to answer the SIPREC INVITE"),
 	SWITCH_CONFIG_ITEM_END()
 };
@@ -79,6 +80,9 @@ static const char *recording_server_config_error(const recording_server_t *srv, 
 		&& strcasecmp(srv->transport, "tcp") && strcasecmp(srv->transport, "tls")) {
 		return "transport must be udp, tcp or tls";
 	}
+	if (srv->separate_streams == -2) {
+		return "separate-streams must be true or false";
+	}
 	return NULL;
 }
 
@@ -99,6 +103,7 @@ static switch_status_t load_recording_server(switch_xml_t xml)
 	recording_server = (recording_server_t *) switch_core_alloc(recording_server_pool, sizeof(*recording_server));
 	recording_server->name = switch_core_strdup(recording_server_pool, name);
 	recording_server->pool = recording_server_pool;
+	recording_server->separate_streams = -1;
 
 	if ((settings = switch_xml_child(xml, "settings"))) {
 		for (switch_xml_t param = switch_xml_child(settings, "param"); param; param = param->next) {
@@ -119,6 +124,8 @@ static switch_status_t load_recording_server(switch_xml_t xml)
 				 * URI uses sips:; the sofia profile MUST have
 				 * sip-tls-port configured. */
 				recording_server->transport = switch_core_strdup(recording_server_pool, val);
+			} else if (!strcmp(var, "separate-streams")) {
+				recording_server->separate_streams = switch_true(val) ? 1 : switch_false(val) ? 0 : -2;
 			} else {
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
 					"siprec: recording-server '%s': ignoring unknown param '%s'\n",
@@ -193,7 +200,40 @@ static switch_status_t do_config(switch_bool_t reload)
 	return SWITCH_STATUS_SUCCESS;
 }
 
-SWITCH_STANDARD_APP(siprec_app_function)
+/* App outcomes. SWITCH_STANDARD_APPs return void,
+ * so a control plane watching only CHANNEL_EXECUTE_COMPLETE can't tell
+ * a start whose SRS leg answered and attached from one that failed.
+ * Each app therefore publishes one outcome word, in two places:
+ *
+ *   - current_application_response. switch_core_session_exec clears it
+ *     before every application and reports it as Application-Response
+ *     in that execution's CHANNEL_EXECUTE_COMPLETE, so it is always
+ *     this run's outcome, never an earlier one's;
+ *   - the app's named variable (siprec_start_status, ...), for dialplan
+ *     logic that runs after the app. It is cleared when the app starts,
+ *     so a read while the app is still running finds it unset rather
+ *     than holding a previous run's outcome.
+ *
+ * Both are set before the app returns, on every path. */
+static void siprec_outcome_clear(switch_core_session_t *session, const char *var)
+{
+	switch_channel_set_variable(switch_core_session_get_channel(session), var, NULL);
+}
+
+static void siprec_outcome_set(switch_core_session_t *session, const char *var, const char *outcome)
+{
+	switch_channel_t *channel = switch_core_session_get_channel(session);
+
+	switch_channel_set_variable(channel, var, outcome);
+	switch_channel_set_variable(channel, SWITCH_CURRENT_APPLICATION_RESPONSE_VARIABLE, outcome);
+}
+
+/* siprec_start_app: parse the siprec app's arguments and start the
+ * recording. Returns the outcome: "success" (the SRS answered and the
+ * media fork attached), "exists" (this leg already has a recording
+ * under the handle; it keeps running and nothing new starts) or
+ * "failed" (nothing is recording for this start). */
+static const char *siprec_start_app(switch_core_session_t *session, const char *data)
 {
 	char *argv[4] = { 0 };
 	int argc;
@@ -204,11 +244,11 @@ SWITCH_STANDARD_APP(siprec_app_function)
 	if (zstr(data)) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
 			"siprec: no arguments — usage: siprec <recording_server> [<srs-sip-uri>]\n");
-		return;
+		return "failed";
 	}
 
 	if (!(mydata = switch_core_session_strdup(session, data))) {
-		return;
+		return "failed";
 	}
 
 	/* Grammar: siprec <handle> [<srs-sip-uri>]
@@ -236,12 +276,25 @@ SWITCH_STANDARD_APP(siprec_app_function)
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
 				"siprec: refusing ad-hoc SRS endpoint '%s': %s\n",
 				argv[1], why);
-			return;
+			return "failed";
 		}
 		srs_uri = argv[1];
 	}
 
-	start_recording_session(session, recording_server_name, srs_uri);
+	switch (start_recording_session(session, recording_server_name, srs_uri)) {
+	case SWITCH_STATUS_SUCCESS:
+		return "success";
+	case SWITCH_STATUS_INUSE:
+		return "exists";
+	default:
+		return "failed";
+	}
+}
+
+SWITCH_STANDARD_APP(siprec_app_function)
+{
+	siprec_outcome_clear(session, "siprec_start_status");
+	siprec_outcome_set(session, "siprec_start_status", siprec_start_app(session, data));
 }
 
 /* siprec_arg_handle: extract the recording handle — the first
@@ -383,16 +436,31 @@ static switch_status_t siprec_change_direction(
 	return st;
 }
 
+/* siprec_direction_outcome maps a direction change's status to its
+ * published outcome. siprec_change_direction gates the RTP fork BEFORE
+ * the re-INVITE and leaves it gated when the re-INVITE fails (the
+ * fail-safe direction is "not recording"), so even a "failed" pause of
+ * a recording that exists guarantees no audio leaves the box for it;
+ * the distinction is diagnostic. */
+static const char *siprec_direction_outcome(switch_status_t st)
+{
+	return st == SWITCH_STATUS_SUCCESS ? "success" : "failed";
+}
+
 SWITCH_STANDARD_APP(siprec_pause_app_function)
 {
-	siprec_change_direction(session, siprec_arg_handle(session, data),
-		/*paused*/ 1);
+	siprec_outcome_clear(session, "siprec_pause_status");
+	siprec_outcome_set(session, "siprec_pause_status",
+		siprec_direction_outcome(siprec_change_direction(session,
+			siprec_arg_handle(session, data), /*paused*/ 1)));
 }
 
 SWITCH_STANDARD_APP(siprec_resume_app_function)
 {
-	siprec_change_direction(session, siprec_arg_handle(session, data),
-		/*paused*/ 0);
+	siprec_outcome_clear(session, "siprec_resume_status");
+	siprec_outcome_set(session, "siprec_resume_status",
+		siprec_direction_outcome(siprec_change_direction(session,
+			siprec_arg_handle(session, data), /*paused*/ 0)));
 }
 
 SWITCH_STANDARD_APP(siprec_stop_app_function)
@@ -408,14 +476,24 @@ SWITCH_STANDARD_APP(siprec_stop_app_function)
 	 * resumable — to record again, start a fresh `siprec`, which
 	 * opens a new SRS recording with new metadata. Idempotent
 	 * with the on-hangup teardown: if nothing is active this is a
-	 * no-op. */
-	if (stop_recording_session_for_server(session, server_name)
-		== SWITCH_STATUS_FALSE) {
-		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
-			SWITCH_LOG_WARNING,
-			"siprec_stop: no active recording to stop%s%s\n",
-			server_name ? " for server " : "",
-			server_name ? server_name : "");
+	 * no-op.
+	 *
+	 * Outcome: "success" when at least one recording was torn down,
+	 * "no_recording" when nothing was active. Both mean no audio is
+	 * leaving the box for this handle; the distinction is
+	 * diagnostic. */
+	siprec_outcome_clear(session, "siprec_stop_status");
+	{
+		switch_status_t st = stop_recording_session_for_server(session, server_name);
+		siprec_outcome_set(session, "siprec_stop_status",
+			st == SWITCH_STATUS_FALSE ? "no_recording" : "success");
+		if (st == SWITCH_STATUS_FALSE) {
+			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+				SWITCH_LOG_WARNING,
+				"siprec_stop: no active recording to stop%s%s\n",
+				server_name ? " for server " : "",
+				server_name ? server_name : "");
+		}
 	}
 }
 

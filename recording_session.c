@@ -143,22 +143,55 @@ recording_t *acquire_recording(const char *key)
  * stop path doomed the recording while it was pinned, the last
  * releaser (use_count reaches 0 with doomed set) runs the deferred
  * teardown — the hash entry was already removed by claim_recording,
- * so this thread is the sole owner and the pool-free is safe. */
-void release_recording(recording_t *recording)
+ * so this thread is the sole owner and the pool-free is safe.
+ * Returns 1 if the recording was doomed when the pin dropped (a stop
+ * retired it), read in the same lock hold as the decrement. */
+int release_recording(recording_t *recording)
 {
-	int do_teardown = 0;
+	int doomed, do_teardown;
 
-	if (!recording) return;
+	if (!recording) return 0;
 
 	switch_mutex_lock(globals.recordings_mutex);
-	if (--recording->use_count == 0 && recording->doomed) {
-		do_teardown = 1;
-	}
+	doomed = recording->doomed;
+	do_teardown = --recording->use_count == 0 && doomed;
 	switch_mutex_unlock(globals.recordings_mutex);
 
 	if (do_teardown) {
 		teardown_recording(recording);
 	}
+	return doomed;
+}
+
+/* siprec_recording_leg_ended: see recording_session.h. The recording
+ * stays in the hash: its teardown touches the call's media bug, which
+ * belongs on the call's own thread (the next start under the handle,
+ * siprec_stop, or the call's hangup). Only the fork is stopped here,
+ * by the flag the media-bug callback checks on every tick.
+ *
+ * Our own BYE matches nothing: every teardown path removes the
+ * recording from the hash before siprec_invite_send_bye hangs the leg
+ * up. Matching on the leg UUID covers a restart under the same handle,
+ * whose new recording has a different leg (or none yet). */
+int siprec_recording_leg_ended(const char *key, const char *leg_uuid)
+{
+	recording_t *recording;
+	int marked = 0;
+
+	if (zstr(key) || zstr(leg_uuid)) {
+		return 0;
+	}
+
+	switch_mutex_lock(globals.recordings_mutex);
+	recording = switch_core_hash_find(globals.recordings_hash, key);
+	if (recording && recording->invite_ctx
+		&& !strcmp(recording->invite_ctx->recording_uuid, leg_uuid)) {
+		switch_atomic_set(&recording->leg_gone, 1);
+		marked = 1;
+	}
+	switch_mutex_unlock(globals.recordings_mutex);
+
+	return marked;
 }
 
 /* teardown_recording: fully retire one recording_t — detach the
@@ -369,6 +402,7 @@ static recording_server_t *copy_server_chain(switch_memory_pool_t *pool, const r
 		c->host      = src->host ? switch_core_strdup(pool, src->host) : NULL;
 		c->port      = src->port;
 		c->transport = src->transport ? switch_core_strdup(pool, src->transport) : NULL;
+		c->separate_streams = src->separate_streams;
 		c->uri       = src->uri ? switch_core_strdup(pool, src->uri) : NULL;
 		c->pool      = pool;
 		*tail = c;
@@ -381,6 +415,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 {
 	recording_server_t *server = NULL;
 	recording_t *recording = NULL;
+	recording_t *stale;
 	const char *uuid = switch_core_session_get_uuid(session);
 	/* Ad-hoc per-call endpoint: a complete SRS SIP URI was supplied
 	 * at dispatch time (siprec <handle> <uri>). The config lookup is
@@ -399,8 +434,10 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 	char p_caller_id[SIPREC_METADATA_ID_LEN + 1];
 	char p_callee_id[SIPREC_METADATA_ID_LEN + 1];
 	char stream_id[SIPREC_METADATA_ID_LEN + 1];
+	char stream2_id[SIPREC_METADATA_ID_LEN + 1];
+	size_t rx_idx;
 	siprec_metadata_participant_t parts[2];
-	siprec_metadata_stream_t streams_arr[1];
+	siprec_metadata_stream_t streams_arr[2];
 	char associate_time[64] = {0};
 	siprec_metadata_options_t mopts;
 	char *metadata_body;
@@ -441,32 +478,6 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 		return SWITCH_STATUS_FALSE;
 	}
 
-	/* Config path only: resolve the named <recording-server> from
-	 * siprec.conf. The ad-hoc path has no config entry — its server
-	 * is built from the recording pool once that pool exists (below),
-	 * so an operator can point a recording at an SRS that was never
-	 * provisioned in siprec.conf. */
-	if (!adhoc) {
-		switch_mutex_lock(globals.recording_servers_mutex);
-		server = switch_core_hash_find(globals.recording_servers_hash, recording_server_name);
-		switch_mutex_unlock(globals.recording_servers_mutex);
-
-		if (!server) {
-			/* Soft fail-closed: no SRS resolved (handle not in
-			 * siprec.conf and no ad-hoc URI given). Warn clearly that
-			 * NOTHING is recording/transmitting and let the call go on.
-			 * Add the named server to siprec.conf, or pass an ad-hoc
-			 * SRS URI as the second app argument
-			 * (siprec <handle> sip:host:port). */
-			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
-				"siprec: recording '%s' NOT active — no SRS resolved "
-				"(no '%s' in siprec.conf and no ad-hoc SRS URI supplied); "
-				"no audio transmitted\n",
-				recording_server_name, recording_server_name);
-			return SWITCH_STATUS_FALSE;
-		}
-	}
-
 	if (switch_core_new_memory_pool(&recording_pool) != SWITCH_STATUS_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
 			"siprec: failed to allocate recording memory pool\n");
@@ -490,6 +501,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 		server->name = switch_core_strdup(recording->pool, recording_server_name);
 		server->uri  = switch_core_strdup(recording->pool, srs_uri);
 		server->next = NULL;
+		server->separate_streams = -1; /* use the global default */
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
 			"siprec: ad-hoc SRS endpoint %s (handle '%s')\n",
 			srs_uri, recording_server_name);
@@ -497,35 +509,52 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 
 	if (!adhoc) {
 		/* Snapshot the failover chain into the recording's pool under
-		 * the servers lock. The config entries live in pools that
-		 * module unload destroys, and the INVITE walk below can outlast
-		 * a concurrent unload by the full originate timeout per
-		 * candidate; a private copy makes the recording self-contained. */
+		 * the servers lock, in one lookup: the config entries live in
+		 * pools that module unload destroys, and the INVITE walk below
+		 * can outlast a concurrent unload by the originate timeout per
+		 * candidate. A private copy makes the recording self-contained. */
 		switch_mutex_lock(globals.recording_servers_mutex);
 		server = copy_server_chain(recording->pool,
 			switch_core_hash_find(globals.recording_servers_hash, recording_server_name));
 		switch_mutex_unlock(globals.recording_servers_mutex);
 		if (!server) {
+			/* Soft fail-closed: nothing is recording/transmitting, and
+			 * the call continues. Add the named server to siprec.conf, or
+			 * pass an ad-hoc SRS URI as the second app argument
+			 * (siprec <handle> sip:host:port). */
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
-				"siprec: recording-server '%s' disappeared during start "
-				"(config reload?); recording NOT started\n", recording_server_name);
+				"siprec: recording '%s' NOT active — no SRS resolved "
+				"(no '%s' in siprec.conf and no ad-hoc SRS URI supplied); "
+				"no audio transmitted\n",
+				recording_server_name, recording_server_name);
 			switch_core_destroy_memory_pool(&recording_pool);
 			return SWITCH_STATUS_FALSE;
 		}
 	}
 
 	recording->server = server;
+	recording->separate = server->separate_streams >= 0
+		? server->separate_streams : (globals.separate_streams ? 1 : 0);
 
 	/* Duplicate check and insert under ONE lock hold, so two
 	 * concurrent `siprec` calls for the same handle on the same leg
-	 * can't both pass the check and orphan one recording. */
+	 * can't both pass the check and orphan one recording. A recording
+	 * whose SRS leg already ended records nothing, so it is replaced
+	 * rather than reported as existing; it belongs to this call, so
+	 * its teardown runs here on the call's thread, after the unlock. */
 	switch_mutex_lock(globals.recordings_mutex);
-	if (switch_core_hash_find(globals.recordings_hash, recording->key)) {
+	stale = switch_core_hash_find(globals.recordings_hash, recording->key);
+	if (stale && (stale->use_count > 0 || !switch_atomic_read(&stale->leg_gone))) {
 		switch_mutex_unlock(globals.recordings_mutex);
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
 			"siprec: recording %s already exists\n", recording->key);
 		switch_core_destroy_memory_pool(&recording_pool);
-		return SWITCH_STATUS_FALSE;
+		/* Distinct from FALSE: a recording IS live under this handle,
+		 * so a caller must not conclude nothing is recording. */
+		return SWITCH_STATUS_INUSE;
+	}
+	if (stale) {
+		switch_core_hash_delete(globals.recordings_hash, stale->key);
 	}
 	/* Insert already pinned by this start. Until the matching release
 	 * at the end, a concurrent stop (hangup, siprec_stop, unload) only
@@ -535,6 +564,13 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 	recording->use_count = 1;
 	switch_core_hash_insert(globals.recordings_hash, recording->key, recording);
 	switch_mutex_unlock(globals.recordings_mutex);
+
+	if (stale) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
+			"siprec: replacing recording %s, whose SRS leg had ended\n",
+			recording->key);
+		teardown_recording(stale);
+	}
 
 	/* Bind the hangup handler BEFORE the INVITE. The originate can
 	 * block for originate-timeout seconds per candidate; binding only
@@ -565,16 +601,33 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 	 * the XSD types them xs:base64Binary, so "<uuid>-caller" style IDs
 	 * fail schema validation. The session ID is the call's own UUID so
 	 * an SRS-side record can be correlated with the FreeSWITCH call;
-	 * the group, participants and stream get fresh UUIDs. */
-	if (siprec_metadata_uuid_to_id(uuid, session_id) != 0
-		|| metadata_id_fresh(group_id) != 0
-		|| metadata_id_fresh(p_caller_id) != 0
-		|| metadata_id_fresh(p_callee_id) != 0
-		|| metadata_id_fresh(stream_id) != 0) {
-		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
-			SWITCH_LOG_ERROR, "siprec: could not derive RFC 7865 metadata IDs\n");
-		discard_pending_recording(recording);
-		return SWITCH_STATUS_FALSE;
+	 * the group, participants and stream get fresh UUIDs. The channel
+	 * UUID is whatever the originator chose (origination_uuid takes any
+	 * string). A VoiceML "CA" + 32 hex CallSid preserves its 16
+	 * identity bytes. Other non-UUID names use a fresh session ID,
+	 * logged next to the channel name so operators can match them. */
+	{
+		char fresh[SWITCH_UUID_FORMATTED_LENGTH + 1];
+		int sid;
+
+		switch_uuid_str(fresh, sizeof(fresh));
+		sid = siprec_metadata_session_id(uuid, fresh, session_id);
+		if (sid < 0
+			|| metadata_id_fresh(group_id) != 0
+			|| metadata_id_fresh(p_caller_id) != 0
+			|| metadata_id_fresh(p_callee_id) != 0
+			|| metadata_id_fresh(stream_id) != 0
+			|| metadata_id_fresh(stream2_id) != 0) {
+			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
+				SWITCH_LOG_ERROR, "siprec: could not derive RFC 7865 metadata IDs\n");
+			discard_pending_recording(recording);
+			return SWITCH_STATUS_FALSE;
+		}
+		if (sid == 1) {
+			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
+				"siprec: channel UUID %s is not a UUID; metadata session_id %s "
+				"is fresh UUID %s\n", uuid, session_id, fresh);
+		}
 	}
 
 	parts[0].participant_id = p_caller_id;
@@ -585,18 +638,26 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 	parts[1].display_name   = NULL;
 
 	/* RFC 7865 §5 + RFC 7866 §8.5: each metadata <stream> binds to
-	 * the SDP stream carrying the same a=label. mod_sofia's offer is
-	 * single-track and siprec_invite_send labels it a=label:1, so the
-	 * metadata describes exactly one stream with label "1".
+	 * the SDP stream carrying the same a=label (see siprec_invite.c).
 	 *
-	 * That stream is a mono mix of both directions (siprec_media.c),
-	 * so it has no single speaker. It is attributed to participant[0]
-	 * by convention; per-direction attribution needs separated tracks,
-	 * which need the multi-track offer path mod_sofia doesn't offer. */
+	 * Mixed mode: one stream, label "1", a mono mix of both directions,
+	 * so it has no single speaker; attributed to participant[0] by
+	 * convention.
+	 *
+	 * Separate mode: label "1" is what this leg RECEIVES (the far end
+	 * speaking) and label "2" what it SENDS. The far end is the caller
+	 * (sip_from) on an inbound leg and the callee (sip_to) on an
+	 * outbound leg. */
+	rx_idx = switch_channel_direction(orig_ch) == SWITCH_CALL_DIRECTION_INBOUND ? 0 : 1;
+
 	streams_arr[0].stream_id       = stream_id;
 	streams_arr[0].mode            = SIPREC_STREAM_SEND;
-	streams_arr[0].participant_idx = 0;
+	streams_arr[0].participant_idx = recording->separate ? rx_idx : 0;
 	streams_arr[0].label           = "1";
+	streams_arr[1].stream_id       = stream2_id;
+	streams_arr[1].mode            = SIPREC_STREAM_SEND;
+	streams_arr[1].participant_idx = 1 - rx_idx;
+	streams_arr[1].label           = "2";
 
 	{
 		time_t now = time(NULL);
@@ -614,7 +675,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 	mopts.participants       = parts;
 	mopts.participant_count  = 2;
 	mopts.streams            = streams_arr;
-	mopts.stream_count       = sizeof(streams_arr) / sizeof(streams_arr[0]);
+	mopts.stream_count       = recording->separate ? 2 : 1;
 	metadata_body = siprec_metadata_build(&mopts);
 	if (!metadata_body) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session),
@@ -649,7 +710,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 	if (inv != SWITCH_STATUS_SUCCESS) {
 		/* INVITE failed: no recording leg and no media bug. */
 		discard_pending_recording(recording);
-		return inv;
+		return SWITCH_STATUS_FALSE;
 	}
 
 	/* siprec_invite_send populated invite_ctx->negotiated[]
@@ -672,8 +733,14 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 	}
 
 	/* Drop the start pin. If a stop arrived during start it doomed the
-	 * recording, and this release performs the deferred teardown. */
-	release_recording(recording);
+	 * recording, and this release performs the deferred teardown — the
+	 * recording no longer exists, so the start did not succeed. */
+	if (release_recording(recording)) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
+			"siprec: recording '%s' was stopped while it was starting\n",
+			recording_server_name);
+		return SWITCH_STATUS_FALSE;
+	}
 
 	return SWITCH_STATUS_SUCCESS;
 }

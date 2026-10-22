@@ -28,7 +28,7 @@ SRS's 200 OK answer.
 
 All paths build and lint clean. The unit suite for the
 FreeSWITCH-free units (SDP-answer parser, metadata builder, G.711
-tables, string builder, URI check) passes 147/147 assertions at 100%
+tables, string builder, URI check) passes 161/161 assertions at 100%
 line coverage of those units; the allocator-failure and 64 MB-cap
 paths are exercised via a realloc fault-injection seam and over-cap
 inputs. Those units are about a fifth of the non-test code. The four
@@ -39,7 +39,7 @@ and loads in a real FreeSWITCH built from source — the
 [`tests/load/`](tests/load/) Docker gate boots FS and confirms
 `module_exists mod_siprec` with all four apps registered. The dispatch / media / signalling pipeline has been
 audited and the broken pieces from the original fork have been
-replaced. Live integration against `cb-srs` is documented in
+replaced. Live integration against siprec-receiver is documented in
 [`tests/README.md`](tests/README.md) as the operator
 verification path. Note that v1.6.0–v1.6.1 changed what goes on the
 wire (a `a=sendonly` offer, `a=label:1` in the first INVITE, re-INVITEs
@@ -55,11 +55,13 @@ upgrading.
 | `+sip.src` Contact feature tag | [RFC 7866 §5.2.1][rfc7866-5.2.1] | ✅ via `sip_invite_contact_params=~+sip.src` ovar; the leading `~` tells `sofia_overcome_sip_uri_weakness` (sofia_glue.c:854,891) to place the tag AFTER the closing `>`, yielding `Contact: <sip:src@host:port>;+sip.src` per the spec |
 | `multipart/mixed` (SDP + metadata) | [RFC 7866 §6.1.2][rfc7866-6.1.2] / [RFC 2046][rfc2046] | ✅ `sip_multipart` channel var |
 | BYE on hangup | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `on_hangup` state handler (`on_destroy` as backstop) |
+| SRS-initiated BYE | [RFC 3261 §15][rfc3261] | ✅ the recording leg's own hangup handler stops the RTP fork at once; a later `siprec` under the same handle replaces the dead recording |
 | pause / resume re-INVITE | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_pause` / `siprec_resume` apps; re-INVITE offers `a=inactive` / `a=sendonly` via `origination_audio_mode` + `MEDIA_RENEG` (mod_sofia regenerates the SDP, so ports and codecs stay as negotiated). **PCI-safe**: pause sets the recording bug's native `SMBF_PAUSE` (FreeSWITCH stops capturing audio at the io pump — no frames forked, nothing buffered to burst on resume) *before* sending `a=inactive`, so cardholder audio never leaves the box |
 | explicit stop | [RFC 7866 §6.4][rfc7866-6.4] | ✅ `siprec_stop` app — detaches the media fork + BYEs the SRS leg mid-call; no-arg form stops every recording on the leg (PCI-safe default). Not resumable; start a fresh `siprec` to record again |
 | sendonly direction on SRC streams | [RFC 7866 §7.4][rfc7866-7.4] | ✅ `origination_audio_mode=sendonly` on the recording leg (mod_sofia's default offer is `sendrecv`) |
-| `a=label:N` per stream | [RFC 7866 §8.5][rfc7866-8.5] | ✅ `a=label:1` in the initial offer via the `rtp_append_audio_sdp` ovar (mod_sofia appends it inside the audio `m=` block of every offer it generates, so pause/resume re-INVITEs keep it). Multiple labelled tracks await a multi-track offer path |
-| Single mixed-audio stream (both directions) | [RFC 7866 §7][rfc7866-7] | ✅ one `m=audio` block in the offer, one `<stream>` in metadata. The audio bug observes both directions (`SMBF_READ_STREAM \| SMBF_WRITE_STREAM`); `switch_core_media_bug_read` returns them already mixed (read+write summed, normalized to 16-bit), so the single forked stream carries **both** parties. Drained on a fixed `SMBF_READ_PING` tick, the same way mod_sofia's `session_record` clocks its mixed capture. RFC 7866 §7 permits "MAY" send multiple streams; we send one mixed stream. Separated per-direction (labelled) tracks are a planned follow-up, gated on the multi-track offer path noted in the §8.5 row above — which needs the recording leg placed in proxy mode so mod_sofia emits a custom SDP instead of regenerating it |
+| `a=label:N` per stream | [RFC 7866 §8.5][rfc7866-8.5] | ✅ `a=label:1` (and `a=label:2` in separate-streams mode) in the initial offer via the `rtp_append_audio_sdp` ovar (mod_sofia appends it inside the audio `m=` block of every offer it generates, so pause/resume re-INVITEs keep it) |
+| Single mixed-audio stream (both directions) | [RFC 7866 §7][rfc7866-7] | ✅ default: one `m=audio` block in the offer, one `<stream>` in metadata. The audio bug observes both directions (`SMBF_READ_STREAM \| SMBF_WRITE_STREAM`); `switch_core_media_bug_read` returns them already mixed, so the single forked stream carries **both** parties. Drained on a fixed `SMBF_READ_PING` tick, the same way `session_record` clocks its mixed capture |
+| Separate RX / TX streams | [RFC 7866 §7][rfc7866-7] / [§8.5][rfc7866-8.5] | ✅ opt-in `separate-streams`: the offer carries two labelled `m=audio` sections (label 1 = audio the recorded leg receives, label 2 = audio it sends), the metadata two `<stream>`s attributed to the right participants, and the fork two RTP streams (own SSRC and sequence, one clock) from a stereo media bug. mod_sofia can't emit a second `m=` line itself, so the module appends it through `rtp_append_audio_sdp`; if the SRS declines either stream, or the leg is multichannel, the call falls back to one mixed stream with a logged warning (the already-sent metadata still names two streams) |
 | DTMF tone forking | [RFC 7866 §8.4][rfc7866-8.4] | ✅ passes through the audio bug |
 | communication-failure soft-fail | [RFC 7866 §11.1.1][rfc7866-11.1.1] | ✅ original call unaffected on dispatch failure |
 | SRS failover (multiple endpoints, ordered) | [RFC 7866 §11.1.1][rfc7866-11.1.1] | ✅ multiple `<recording-server>` entries, walked in config order |
@@ -70,7 +72,7 @@ upgrading.
 | SDP offer + `a=label:N` cross-reference | [RFC 4566][rfc4566] / [RFC 7866 §7][rfc7866-7] / [RFC 7866 §8.5][rfc7866-8.5] | ✅ mod_sofia auto-generates the single-`m=audio` offer; `a=label:1` matches the metadata's `<stream><label>1</label>` |
 | Pause/resume `o=` version bump | [RFC 4566 §5.2][rfc4566] | ✅ mod_sofia bumps session-version on every regenerated offer |
 | RTP packet framing (V=2, M-bit at talkspurt start, big-endian seq/ts/SSRC) | [RFC 3550 §5.1][rfc3550] / [RFC 3551 §4.1][rfc3551] | ✅ `siprec_media.c` |
-| IPv4 and IPv6 RTP fork | [RFC 4566 §5.7][rfc4566] | ✅ `c=IN IP4` / `c=IN IP6` answer endpoints are both parsed (`siprec_sdp_addr_kind`) and the fork opens the matching socket family |
+| IPv4 and IPv6 RTP fork | [RFC 4566 §5.7][rfc4566] | ✅ `c=IN IP4` / `c=IN IP6` answer endpoints are both parsed (`siprec_sdp_addr_kind`) and the fork opens the matching socket family. The live test's `ipv6` scenario verifies RTP delivery to `::1` |
 | Random SSRC | [RFC 3550 §8.1][rfc3550] | ✅ /dev/urandom seed |
 | G.711 µ-law / A-law encoders | [G.711][g711] | ✅ branch-free lookup tables (`siprec_g711.c`), INT16_MIN-safe, bit-verified vs reference for all 65536 inputs. Wideband / multichannel legs are downmixed and resampled to 8 kHz first |
 | `<recording>` schema (top-level element + sequence) | [RFC 7865 §5 / Appendix A][rfc7865] | ✅ |
@@ -79,7 +81,7 @@ upgrading.
 | `<session>` (`session_id`, `<reason>`, `<group-ref>`, `<start-time>`) | [RFC 7865 Appendix A][rfc7865] | ✅ |
 | `<participant>` (`participant_id`, `<nameID>`) | [RFC 7865 Appendix A][rfc7865] | ✅ schema-strict (no inline send/recv, no session_id attr) |
 | Participant AORs (`<nameID aor>`) | [RFC 7865 Appendix A][rfc7865] | ✅ normalized to URIs: `user@host` gets `sip:`, bare numbers become `sip:<n>@<host>` |
-| Metadata IDs (`*_id`, `<group-ref>`, `<send>`) | [RFC 7865 §6.9][rfc7865] | ✅ standard base64 of a 16-byte UUID (`xs:base64Binary`); `session_id` is the call's UUID, the rest are fresh |
+| Metadata IDs (`*_id`, `<group-ref>`, `<send>`) | [RFC 7865 §6.9][rfc7865] | ✅ standard base64 of 16 identity bytes (`xs:base64Binary`); `session_id` preserves the channel UUID or `CA` + 32-hex CallSid identity. Arbitrary non-UUID channel names use a fresh UUID logged alongside the channel name; other metadata IDs are fresh |
 | `<stream>` (`stream_id`, `session_id`, `<label>`) | [RFC 7865 Appendix A][rfc7865] | ✅ |
 | `<participantsessionassoc>` / `<participantstreamassoc>` | [RFC 7865 Appendix A][rfc7865] | ✅ |
 | XML escaping for caller-supplied content | [RFC 7865 §5][rfc7865] | ✅ &amp; &lt; &gt; &quot; &apos; |
@@ -166,7 +168,12 @@ bumped), the RTP (no packets while paused, markers, contiguous sequence,
 an 8 kHz clock that keeps running across the pause, from an Opus leg),
 `siprec_stop` with an ad-hoc URI, failover past a dead SRS, and a
 PCMA call recorded to an SRS that answers PCMU (the payload bytes are
-decoded to prove they are μ-law). Interop
+decoded to prove they are μ-law), separate-streams mode (each labelled
+stream must carry only its own direction's tone), and an IPv6 answer
+(`c=IN IP6 ::1`), and a separate-streams fallback (the SRS declines
+the second stream), and a leg whose UUID is a CallSid (`CA` + 32 hex,
+as VoiceML originates it) with every app outcome read from
+`Application-Response` over the event socket. Interop
 with a production SRS remains the operator verification path in
 [`tests/README.md`](tests/README.md).
 
@@ -180,6 +187,7 @@ with a production SRS remains the operator verification path in
   <settings>
     <param name="src-enabled" value="true"/>
     <param name="originate-timeout" value="20"/>
+    <param name="separate-streams" value="false"/>
   </settings>
   <recording-servers>
     <recording-server name="default">
@@ -192,6 +200,12 @@ with a production SRS remains the operator verification path in
   </recording-servers>
 </configuration>
 ```
+
+`separate-streams` (default `false`) records the two directions as two
+labelled streams instead of one mixed stream (see the status table). It
+can also be set per `<recording-server>`, which overrides the global
+value; ad-hoc URIs use the global value. Enable it only for SRSes that
+accept a two-stream SIPREC offer.
 
 `originate-timeout` (seconds, 1-300, default 20) bounds how long each
 SRS candidate gets to answer. The SIPREC INVITE is sent from the call's
@@ -294,6 +308,37 @@ Hang-up tears any remaining recording dialog down automatically —
 the module installs an `on_hangup` state handler when the
 recording starts, so an explicit `siprec_stop` is optional.
 
+If the SRS ends the recording dialog itself (it sends BYE, for
+example when it shuts down or reaps an idle session) or the
+recording leg otherwise fails, the leg's own hangup handler stops
+the RTP fork on its next tick, so no audio is sent to a port the SRS
+may have handed to another call. The call continues unrecorded;
+`siprec` under the same handle then starts a fresh recording
+(instead of answering `exists`), and pause/resume report `failed`.
+
+### App outcomes
+
+Dialplan apps return nothing, so each app publishes one outcome word
+before it returns, on every path:
+
+| App | Variable | Outcomes |
+|-----|----------|----------|
+| `siprec` | `siprec_start_status` | `success` (the SRS answered and the media fork attached), `exists` (this leg already records under that handle; it keeps running, nothing new starts), `failed` (nothing is recording for this start) |
+| `siprec_pause` | `siprec_pause_status` | `success`, `failed` |
+| `siprec_resume` | `siprec_resume_status` | `success`, `failed` |
+| `siprec_stop` | `siprec_stop_status` | `success` (at least one recording torn down), `no_recording` |
+
+The same word is also the app's `current_application_response`.
+FreeSWITCH clears that before every application and reports it as
+`Application-Response` in the app's own `CHANNEL_EXECUTE_COMPLETE`, so
+a controller driving calls over the event socket should read it from
+that event: it always belongs to that execution. The named variable
+is for dialplan logic after the app; it is unset while the app runs.
+
+A `failed` pause of a recording that exists still leaves its fork
+gated (no audio leaves the box); a `failed` pause or resume for a
+handle with no recording means nothing was recording under it.
+
 ## Architecture
 
 ```
@@ -319,7 +364,8 @@ recording starts, so an explicit `siprec_stop` is optional.
                                                                 ▼
                                                          ┌─────────────┐
                                                          │ SRS         │
-                                                         │ (cb-srs,    │
+                                                         │ (siprec-    │
+                                                         │  receiver,  │
                                                          │  ClearIP,   │
                                                          │  Genesys,   │
                                                          │  NICE, ...) │

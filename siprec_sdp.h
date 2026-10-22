@@ -71,6 +71,13 @@ typedef struct siprec_negotiated_s {
      * SIPREC_PT_UNSET and the fork falls back to the
      * read-codec default. */
     uint8_t  pt;
+
+    /* 0-based index of this stream's m= line among ALL m= lines of
+     * the answer. Answers keep the offer's m= order (RFC 3264 §6), so
+     * this says which offered stream (and so which a=label) the
+     * endpoint belongs to even when an earlier stream was declined
+     * with port 0 and skipped. */
+    int      mline;
 } siprec_negotiated_t;
 
 /* siprec_sdp_parse_remote_streams: walk the SRS-side SDP answer
@@ -86,7 +93,8 @@ typedef struct siprec_negotiated_s {
  * Streams with port=0 are rejected per RFC 3264 §5.1 and skipped
  * — they consume an m= slot in the answer but are not active
  * media. A block whose m= line carries no parseable PT gets
- * out[].pt = SIPREC_PT_UNSET.
+ * out[].pt = SIPREC_PT_UNSET. out[].mline records which m= line
+ * each stream came from.
  *
  * Both IPv4 and IPv6 connection lines (c=IN IP4 / c=IN IP6) are
  * parsed; siprec_sdp_addr_kind classifies the result so the fork can
@@ -98,5 +106,23 @@ int siprec_sdp_parse_remote_streams(
     const char *sdp,
     siprec_negotiated_t *out,
     size_t out_max);
+
+/* siprec_sdp_separate_append: build the rtp_append_audio_sdp value that
+ * turns mod_sofia's single-m=audio offer into the two labelled streams
+ * of separate-streams mode (RFC 7866 §8.5).
+ *
+ * mod_sofia appends this text inside its audio m= section and then
+ * emits that section's a=ptime and direction line. So the text first
+ * finishes stream 1 (a=label:1 and its own direction), then opens
+ * stream 2 (m=audio, PCMU/PCMA, a=label:2); mod_sofia's trailing ptime
+ * and direction (set through origination_audio_mode) land in stream 2.
+ * Stream 2 advertises port 9: the SRC is sendonly and never receives
+ * on it. `direction` is "sendonly" or "inactive" and must match the
+ * origination_audio_mode used for the same offer.
+ *
+ * Writes into buf like snprintf and returns its result: the length
+ * the full text needs, or a negative value on error. The caller treats
+ * a return >= len as truncation. Pure C, unit-tested. */
+int siprec_sdp_separate_append(char *buf, size_t len, const char *direction);
 
 #endif /* SIPREC_SDP_H */

@@ -46,6 +46,32 @@
  */
 #include "siprec_invite.h"
 #include "siprec_sdp.h"
+#include "recording_session.h"
+
+/* Channel variable on the recording leg naming its recording's hash
+ * key, for the leg's hangup handler. */
+#define SIPREC_LEG_KEY_VAR "siprec_recording_key"
+
+/* Hangup of the recording leg itself. When it ends without us (the SRS
+ * sent BYE, or the leg failed), nothing else would stop the fork until
+ * the call hangs up, and the fork would keep sending to a port the SRS
+ * has released, possibly to another call's recording. */
+static switch_status_t siprec_leg_on_hangup(switch_core_session_t *session)
+{
+    switch_channel_t *ch = switch_core_session_get_channel(session);
+    const char *key = switch_channel_get_variable(ch, SIPREC_LEG_KEY_VAR);
+
+    if (siprec_recording_leg_ended(key, switch_core_session_get_uuid(session))) {
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
+            "siprec: recording leg for %s ended (%s); stopping its RTP fork\n",
+            key, switch_channel_cause2str(switch_channel_get_cause(ch)));
+    }
+    return SWITCH_STATUS_SUCCESS;
+}
+
+static switch_state_handler_table_t siprec_leg_state_handlers = {
+    .on_hangup = siprec_leg_on_hangup
+};
 
 /* Compile-time invariant: the parser's out_max derived from
  * sizeof(ctx->negotiated) must equal SIPREC_MAX_STREAMS. If
@@ -77,6 +103,25 @@ static char *multipart_value(
         content_type, content_disposition, body);
 }
 
+/* siprec_invite_append_sdp: the rtp_append_audio_sdp value for this
+ * recording's offer with the given direction ("sendonly"/"inactive").
+ * Mixed mode just labels mod_sofia's one stream; separate mode also
+ * closes it with its own direction and opens stream 2 (see
+ * siprec_sdp_separate_append), whose direction mod_sofia then emits
+ * from origination_audio_mode. */
+static switch_status_t siprec_invite_append_sdp(const recording_t *recording,
+    const char *direction, char *buf, size_t len)
+{
+    int n;
+
+    if (!recording->separate) {
+        switch_copy_string(buf, "a=label:1", len);
+        return SWITCH_STATUS_SUCCESS;
+    }
+    n = siprec_sdp_separate_append(buf, len, direction);
+    return (n > 0 && (size_t)n < len) ? SWITCH_STATUS_SUCCESS : SWITCH_STATUS_FALSE;
+}
+
 switch_status_t siprec_invite_send(
     recording_t *recording,
     const char *sofia_profile,
@@ -87,6 +132,7 @@ switch_status_t siprec_invite_send(
     char *mp_metadata;
     switch_event_t *ovars = NULL;
     char dial_string[512];
+    char append[256];
     int dn;
     switch_core_session_t *new_session = NULL;
     switch_call_cause_t    cause       = SWITCH_CAUSE_NONE;
@@ -135,11 +181,17 @@ switch_status_t siprec_invite_send(
         != SWITCH_STATUS_SUCCESS) {
         return SWITCH_STATUS_FALSE;
     }
-    /* RFC 7866 §8.5: label the (single) SRC stream so the metadata's
-     * <stream><label>1</label> binds to it. gen_local_sdp appends this
-     * verbatim inside the audio m= block of every offer it builds. */
+    /* RFC 7866 §8.5: label the SRC stream(s) so the metadata's
+     * <stream><label>N</label> binds to them. gen_local_sdp appends this
+     * verbatim inside the audio m= block of every offer it builds; in
+     * separate-streams mode it also opens the second stream. */
+    if (siprec_invite_append_sdp(recording, "sendonly", append, sizeof(append))
+        != SWITCH_STATUS_SUCCESS) {
+        switch_event_destroy(&ovars);
+        return SWITCH_STATUS_FALSE;
+    }
     switch_event_add_header_string(ovars, SWITCH_STACK_BOTTOM,
-        "rtp_append_audio_sdp", "a=label:1");
+        "rtp_append_audio_sdp", append);
     /* RFC 7866 §6.1: SRS MUST 421 if siprec extension unsupported. */
     switch_event_add_header_string(ovars, SWITCH_STACK_BOTTOM,
         "sip_h_Require", "siprec");
@@ -253,13 +305,19 @@ switch_status_t siprec_invite_send(
         sizeof(ctx->recording_uuid));
     recording->invite_ctx = ctx;
 
+    /* Watch the leg so an SRS-side end stops the fork (see
+     * siprec_leg_on_hangup). The handler only sees the leg's session,
+     * so the recording's key rides along as a channel variable. */
+    rch = switch_core_session_get_channel(new_session);
+    switch_channel_set_variable(rch, SIPREC_LEG_KEY_VAR, recording->key);
+    switch_channel_add_state_handler(rch, &siprec_leg_state_handlers);
+
     /* Pull the negotiated remote endpoint(s) from the SRS's answer
      * SDP, which mod_sofia stores in SWITCH_R_SDP_VARIABLE
      * ("switch_r_sdp"); there is no "sip_remote_sdp_str".
      *
      * Fallback: remote_media_ip / remote_media_port, single stream,
      * no codec. Logged, since it should not happen in practice. */
-    rch = switch_core_session_get_channel(new_session);
     remote_sdp = switch_channel_get_variable(rch, SWITCH_R_SDP_VARIABLE);
 
     if (!zstr(remote_sdp)) {
@@ -493,6 +551,7 @@ switch_status_t siprec_invite_set_direction(recording_t *recording, int paused)
     switch_core_session_t *s;
     switch_core_session_message_t msg = { 0 };
     switch_status_t st;
+    char append[256];
 
     if (!recording || !(ctx = recording->invite_ctx) || !*ctx->recording_uuid) {
         return SWITCH_STATUS_FALSE;
@@ -507,6 +566,15 @@ switch_status_t siprec_invite_set_direction(recording_t *recording, int paused)
         return SWITCH_STATUS_FALSE;
     }
 
+    /* Separate mode: stream 1's direction lives in the appended text,
+     * so rewrite it too; stream 2 follows origination_audio_mode. The
+     * offer keeps both m= lines, as RFC 3264 §8 requires. */
+    if (recording->separate
+        && siprec_invite_append_sdp(recording, paused ? "inactive" : "sendonly",
+               append, sizeof(append)) == SWITCH_STATUS_SUCCESS) {
+        switch_channel_set_variable(switch_core_session_get_channel(s),
+            "rtp_append_audio_sdp", append);
+    }
     switch_channel_set_variable(switch_core_session_get_channel(s),
         "origination_audio_mode", paused ? "inactive" : "sendonly");
 

@@ -62,6 +62,12 @@ int siprec_metadata_uuid_to_id(const char *uuid, char out[SIPREC_METADATA_ID_LEN
     out[0] = '\0';
     if (!uuid) return -1;
     len = strlen(uuid);
+    /* VoiceML uses the CallSid as origination_uuid. Encode its 16
+     * identity bytes, not a fresh UUID, so webhooks can correlate. */
+    if (len == 34 && uuid[0] == 'C' && uuid[1] == 'A') {
+        uuid += 2;
+        len -= 2;
+    }
     if (len != 36 && len != 32) return -1;
     hyphenated = (len == 36);
 
@@ -94,6 +100,13 @@ int siprec_metadata_uuid_to_id(const char *uuid, char out[SIPREC_METADATA_ID_LEN
     *o++ = '=';
     *o = '\0';
     return 0;
+}
+
+int siprec_metadata_session_id(const char *channel_uuid, const char *fallback_uuid,
+    char out[SIPREC_METADATA_ID_LEN + 1]) {
+    if (siprec_metadata_uuid_to_id(channel_uuid, out) == 0) return 0;
+    if (siprec_metadata_uuid_to_id(fallback_uuid, out) == 0) return 1;
+    return -1;
 }
 
 char *siprec_metadata_aor(const char *raw, const char *host) {

@@ -14,26 +14,39 @@ and run with no external dependencies. The integration tests
 require:
 
 * A built `mod_siprec.so` loaded by FreeSWITCH.
-* A live SRS — Voicetel uses `cb-srs` (Go) under
-  `callBroadcast/tests/srs/`. cb-srs binds 127.0.0.1:5070,
-  accepts SIPREC INVITEs, parses the multipart body, and
-  records each stream as a WAV file under `${REC_DIR}`.
+* A live SRS — Voicetel uses siprec-receiver (Go). It binds
+  127.0.0.1:5070 by default, accepts SIPREC INVITEs, parses the
+  multipart body, and records each stream as a WAV file under
+  `RECORDING_DIR`.
 * mod_sofia loaded with at least one profile that can route to
   127.0.0.1:5070.
 
-The integration suite for callBroadcast (the consuming
-project) already drives a `siprec-start-stop.xml` TwiML
+The VoiceML integration suite (the consuming project)
+already drives a `siprec-start-stop.xml` markup
 fixture against a real SRS — this file documents how to plug
 mod_siprec into that path once the field-test gaps are closed.
 
 ## Automated live test
 
 `tests/live/run.sh` (after `tests/load/run.sh` has built the image)
-runs three real calls inside the container against `tests/live/srs.py`,
+runs real calls inside the container against `tests/live/srs.py`,
 a minimal SRS that records every SIP request and RTP header it
-receives, and asserts on them with `tests/live/check.py`. It covers
+receives, and asserts on them with `tests/live/check.py`. The
+`separate` scenario records a leg playing 1000 Hz whose far end plays
+440 Hz with `separate-streams` on, and checks each labelled stream
+carries only its own tone. The `ipv6` scenario answers `c=IN IP6 ::1`
+and checks the fork delivers RTP over IPv6. The `callsid` scenario
+originates with `origination_uuid=CA…` (34 characters, as VoiceML
+does), runs start, a duplicate start, a refused URI, pause, resume and
+two stops, and checks each app's `Application-Response` as
+`tests/live/esl_events.py` reads it over the event socket. The
+`srsbye` scenario has the SRS BYE the recording 2 s in and checks
+the fork stops at once and a second `siprec` replaces the dead
+recording. The internal profile runs `rtp-timeout-sec=6` and
+`rtp-hold-timeout-sec=8`, so the 11 s `main` call also guards
+against a recording leg being hung up for receiving no RTP. It covers
 most of the checklist below automatically; interop with a production
-SRS (cb-srs, ClearIP, …) still needs the manual steps.
+SRS (siprec-receiver, ClearIP, …) still needs the manual steps.
 
 ## Running locally
 
@@ -48,9 +61,10 @@ echo 'applications/mod_siprec' >> build/modules.conf.in
 cp /path/to/mod_siprec/autoload_conf/siprec.conf.xml \
    /usr/local/freeswitch/conf/autoload_configs/
 
-# 3. Start cb-srs
-cd /path/to/callBroadcast/tests/srs
-go run ./cmd -listen 127.0.0.1:5070 -dir /tmp/srs-recordings &
+# 3. Start siprec-receiver
+cd /path/to/siprec-receiver
+SIPREC_LISTEN=127.0.0.1:5070 SIPREC_LOCAL_IP=127.0.0.1 \
+  RECORDING_DIR=/tmp/srs-recordings go run ./cmd/siprec-receiver &
 
 # 4. Reload mod_siprec
 fs_cli -x 'reload mod_siprec'
@@ -87,16 +101,16 @@ first deploy.
    metadata and calls `siprec_invite_send_failover`.
 3. `switch_ivr_originate` opens the recording leg through the
    sofia profile; INVITE goes out with the multipart body.
-4. cb-srs answers 200 OK with its own SDP.
+4. siprec-receiver answers 200 OK with its own SDP.
 5. `siprec_media_attach` reads the negotiated remote IP /
    port, opens UDP sockets, installs the media bug.
 6. Audio frames flow: original session → bug callback →
-   G.711 RTP (codec per the SRS answer) → cb-srs's RTP listener.
+   G.711 RTP (codec per the SRS answer) → siprec-receiver's RTP listener.
 7. On hangup the core removes the media bug, then the
    `siprec_on_hangup` state handler runs →
    `stop_recording_session` → `siprec_media_detach` (closes
    sockets) → `siprec_invite_send_bye` (BYE on recording dialog).
-8. cb-srs flushes the WAV file with both streams.
+8. siprec-receiver flushes the WAV file with both streams.
 
 ### Error path: SRS not reachable
 

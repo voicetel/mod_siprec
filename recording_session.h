@@ -47,6 +47,12 @@
  *       config lookup is skipped and the recording targets this URI
  *       directly (the handle is used only for keying). NULL keeps
  *       the config-driven path.
+ *
+ * Returns SUCCESS once the SRS answered and the media fork attached,
+ * with the recording still live; INUSE when this leg already has a
+ * recording under the handle (that one is left running, nothing new
+ * starts); FALSE for any other failure, after which nothing is
+ * recording for this start.
  */
 switch_status_t start_recording_session(switch_core_session_t *session, const char *recording_server_name, const char *srs_uri);
 switch_status_t stop_recording_session(switch_core_session_t *session);
@@ -64,9 +70,18 @@ void siprec_teardown_all_recordings(void);
  * A concurrent stop that arrives while pinned is deferred to the
  * last releaser, so the recording_t's pool is never freed under a
  * live user. acquire returns NULL if the key isn't active; every
- * non-NULL acquire MUST be balanced by exactly one release. */
+ * non-NULL acquire MUST be balanced by exactly one release. release
+ * returns 1 if a stop retired the recording while it was pinned. */
 recording_t *acquire_recording(const char *key);
-void release_recording(recording_t *recording);
+int release_recording(recording_t *recording);
+
+/* siprec_recording_leg_ended: called from a recording leg's hangup
+ * handler. If the recording keyed `key` is still live on that leg
+ * (`leg_uuid`), mark it leg_gone so its fork stops. A leg we hung up
+ * ourselves (the recording already left the hash) or an older leg of a
+ * handle that has since restarted matches nothing. Returns 1 if a
+ * recording was marked. */
+int siprec_recording_leg_ended(const char *key, const char *leg_uuid);
 
 /* siprec_recording_key: build the globals.recordings_hash key for
  * a recording — "<server_name>-<uuid>". The key format is a

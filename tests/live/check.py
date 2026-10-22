@@ -7,6 +7,13 @@ failure.
     check.py stop     <capture.json> <fs.log>   ad-hoc URI + siprec_stop
     check.py failover <capture.json> <fs.log>   dead primary, live backup
     check.py codec    <capture.json> <fs.log>   PCMA call, SRS answers PCMU
+    check.py separate <capture.json> <fs.log>   separate RX/TX streams
+    check.py ipv6     <capture.json> <fs.log>   SRS answers c=IN IP6 ::1
+    check.py fallback <capture.json> <fs.log>   separate requested, 2nd declined
+    check.py srsbye   <capture.json> <fs.log>   SRS ends the dialog; restart
+    check.py callsid  <capture.json> <fs.log> <callsid> <events.json>
+                                                CallSid-shaped channel UUID and
+                                                each app's Application-Response
 """
 import base64
 import binascii
@@ -53,7 +60,10 @@ if mode == "stop":
         late = [p for p in rtp if p[0] > byes[0]["t"] + 0.1]
         check(len(late) == 0, "no RTP after siprec_stop", f"{len(late)}")
     check(len(rtp) > 50, "RTP flowed before stop", f"{len(rtp)}")
-    check("no active recording to stop" not in fslog, "siprec_stop found the recording")
+    # This scenario's siprec_stop has no handle; the callsid scenario's
+    # deliberate second "siprec_stop cb" logs "... for server cb".
+    check(re.search(r"no active recording to stop\r?$", fslog, re.M) is None,
+          "siprec_stop found the recording")
     check("by another module mid-call" not in fslog, "no unexpected mid-call bug removal")
     print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
     sys.exit(1 if fails else 0)
@@ -95,6 +105,189 @@ if mode == "codec":
           f"mu-law purity {pu:.3f}, a-law purity {pa:.3f}")
     check(not re.search(r"no usable answer SDP|answer carried no usable payload type", fslog),
           "answer SDP parsed (no codec fallback)")
+    print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
+    sys.exit(1 if fails else 0)
+
+def audio_sections(body):
+    sdp = body[body.find("v=0"):]
+    sdp = re.split(r"(?m)^--", sdp)[0]          # stop at a multipart boundary
+    return [sec for sec in re.split(r"(?m)^(?=m=)", sdp)[1:] if sec.startswith("m=audio")]
+
+
+def directions(sec):
+    return re.findall(r"(?m)^a=(sendonly|recvonly|inactive|sendrecv)\r?$", sec)
+
+
+if mode == "separate":
+    # siprec sep (separate-streams=true) -> 3 s -> pause -> 2 s -> resume -> 2.5 s.
+    # The recorded leg is the outbound (calling) leg. Its far end plays
+    # 440 Hz and the leg itself plays 1000 Hz, so label 1 (what the leg
+    # receives) must carry only 440 Hz and label 2 (what it sends) only
+    # 1000 Hz.
+    if not check(len(invites) == 3, "INVITE + pause + resume re-INVITEs", f"{len(invites)}"):
+        sys.exit(1)
+    for name, msg, want in (("initial", invites[0], "sendonly"), ("pause", invites[1], "inactive"),
+                            ("resume", invites[2], "sendonly")):
+        secs = audio_sections(msg["body"])
+        check(len(secs) == 2, f"{name} offer has two m=audio sections", f"{len(secs)}")
+        for i, sec in enumerate(secs[:2]):
+            check(re.search(rf"(?m)^a=label:{i + 1}\r?$", sec) is not None,
+                  f"{name} offer stream {i + 1} carries a=label:{i + 1}")
+            check(directions(sec) == [want], f"{name} offer stream {i + 1} is a={want} (once)",
+                  str(directions(sec)))
+
+    m = re.search(r"<\?xml.*?</recording>", invites[0]["body"], re.S)
+    ns = "{urn:ietf:params:xml:ns:recording:1}"
+    if check(m is not None, "metadata present"):
+        root = ET.fromstring(m.group(0))
+        labels = {st.get("stream_id"): (st.findtext(ns + "label") or "") for st in root.iter(ns + "stream")}
+        check(sorted(labels.values()) == ["1", "2"], "metadata declares streams labelled 1 and 2",
+              str(sorted(labels.values())))
+        aor = {p_.get("participant_id"): p_.find(ns + "nameID").get("aor") for p_ in root.iter(ns + "participant")}
+        owner = {}
+        for a in root.iter(ns + "participantstreamassoc"):
+            for snd in a.iter(ns + "send"):
+                owner[labels.get(snd.text.strip())] = aor.get(a.get("participant_id"), "")
+        check("siprec_tone" in owner.get("1", ""), "label 1 (received audio) is attributed to the far end",
+              owner.get("1", ""))
+        check(owner.get("1") != owner.get("2"), "labels 1 and 2 belong to different participants")
+
+    pause_t, resume_t = invites[1]["t"], invites[2]["t"]
+    per = {i: [p_ for p_ in rtp if p_[8] == i] for i in (0, 1)}
+    for i in (0, 1):
+        st = per[i]
+        check(len(st) > 100, f"stream {i + 1} received RTP", f"{len(st)}")
+        if not st:
+            continue
+        check(not [p_ for p_ in st if pause_t + 0.1 < p_[0] < resume_t - 0.05],
+              f"stream {i + 1}: no RTP while paused")
+        check(all(((b[1] - a[1]) & 0xFFFF) == 1 for a, b in zip(st, st[1:])),
+              f"stream {i + 1}: contiguous sequence numbers")
+        # The recorded leg runs playback, and FreeSWITCH's own playback
+        # stalls the channel thread at times (seen identically without
+        # siprec), so wall-clock rate isn't a property of the module here.
+        # Check what the module controls: 160 per 20 ms packet inside a
+        # talkspurt, and the pause gap carried into the timestamp.
+        steps_ok = all(((b[2] - a[2]) & 0xFFFFFFFF) == 160
+                       for a, b in zip(st, st[1:]) if not b[3])
+        check(steps_ok, f"stream {i + 1}: timestamp steps 160 per packet within talkspurts")
+        before = [p_ for p_ in st if p_[0] < pause_t]
+        after = [p_ for p_ in st if p_[0] > pause_t + 0.1]
+        if before and after:
+            wall = after[0][0] - before[-1][0]
+            ts = ((after[0][2] - before[-1][2]) & 0xFFFFFFFF) / 8000.0
+            check(abs(ts - wall) < 0.25 * wall, f"stream {i + 1}: RTP clock advances across the pause",
+                  f"ts {ts:.2f}s vs wall {wall:.2f}s")
+        check(len({p_[5] for p_ in st}) == 1, f"stream {i + 1}: single SSRC")
+    if per[0] and per[1]:
+        check(per[0][0][5] != per[1][0][5], "the two streams have different SSRCs")
+        d0 = (per[0][-1][2] - per[0][0][2]) & 0xFFFFFFFF
+        d1 = (per[1][-1][2] - per[1][0][2]) & 0xFFFFFFFF
+        check(abs(d0 - d1) <= 320, "the two streams share one clock", f"{d0} vs {d1}")
+        mid0 = per[0][len(per[0]) // 4: len(per[0]) // 4 + 40]
+        mid1 = per[1][len(per[1]) // 4: len(per[1]) // 4 + 40]
+        p0_440, p0_1k = tone_purity(mid0, ulaw, 440.0), tone_purity(mid0, ulaw, 1000.0)
+        p1_440, p1_1k = tone_purity(mid1, ulaw, 440.0), tone_purity(mid1, ulaw, 1000.0)
+        check(p0_440 > 0.9 and p0_1k < 0.05, "label 1 carries only the far end (440 Hz)",
+              f"440 {p0_440:.3f}, 1000 {p0_1k:.3f}")
+        check(p1_1k > 0.9 and p1_440 < 0.05, "label 2 carries only the near end (1000 Hz)",
+              f"1000 {p1_1k:.3f}, 440 {p1_440:.3f}")
+    m2 = re.findall(r"RTP fork stream\[(\d)\] .* closing: (\d+) packets sent, (\d+) send failures", fslog)
+    check(sorted({x[0] for x in m2}) == ["0", "1"] and all(x[2] == "0" for x in m2),
+          "both forks closed with no send failures", str(m2[-2:]))
+    print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
+    sys.exit(1 if fails else 0)
+
+if mode == "ipv6":
+    # The SRS answers c=IN IP6 ::1; the fork must parse it and send RTP
+    # over an AF_INET6 socket (the capture's rtp list comes from an
+    # ::1-bound socket).
+    check(len(invites) >= 1, "SRS received the INVITE", f"{len(invites)}")
+    check("remote=::1" in fslog, "module parsed the IPv6 answer endpoint")
+    check(len(rtp) > 50, "RTP delivered to the IPv6 endpoint", f"{len(rtp)}")
+    check({p_[4] for p_ in rtp} <= {0, 8}, "payload type is G.711", str({p_[4] for p_ in rtp}))
+    check("aborting media attach" not in fslog, "IPv6 endpoint accepted (no attach abort)")
+    check("is not an IP address" not in fslog, "IPv6 endpoint classified as an IP address")
+    print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
+    sys.exit(1 if fails else 0)
+
+if mode == "fallback":
+    # separate-streams requested but the SRS answers the 2nd m=audio with
+    # port 0. The module must fall back to one mixed stream and say so.
+    check(re.search(r"separate streams requested but .*did not accept both", fslog) is not None,
+          "fallback logged a clear reason")
+    check(len([p_ for p_ in rtp if p_[8] == 1]) == 0, "no RTP on the declined stream (port 2)")
+    st = [p_ for p_ in rtp if p_[8] == 0]
+    check(len(st) > 50, "mixed RTP flowed on stream 1", f"{len(st)}")
+    mids = st[len(st) // 4: len(st) // 4 + 40]
+    p440, p1000 = tone_purity(mids, ulaw, 440.0), tone_purity(mids, ulaw, 1000.0)
+    check(p440 > 0.2 and p1000 > 0.2,
+          "the fallback stream is the mix of both ends (440 Hz and 1000 Hz)",
+          f"440 {p440:.2f}, 1000 {p1000:.2f}")
+    print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
+    sys.exit(1 if fails else 0)
+
+if mode == "callsid":
+    # VoiceML originates with origination_uuid=<CallSid>, "CA" + 32
+    # hex: the metadata must preserve those same 16 identity bytes. Then
+    # each app's outcome, as a control plane reads it from its
+    # CHANNEL_EXECUTE_COMPLETE.
+    callsid, events = sys.argv[4], json.load(open(sys.argv[5]))
+    check("could not derive RFC 7865 metadata IDs" not in fslog, "metadata IDs derived")
+    lm = re.search(r"channel UUID (\S+) is not a UUID; metadata session_id (\S+) is fresh UUID (\S+)", fslog)
+    check(lm is None, "CallSid did not fall back to a random session identity")
+    check(len(invites) == 3, "one recording: INVITE + pause + resume (the duplicate start sent nothing)",
+          f"{len(invites)}")
+    check(len(byes) == 1, "siprec_stop: SRS received BYE", f"{len(byes)}")
+    check(len(rtp) > 50, "RTP flowed", f"{len(rtp)}")
+    if invites:
+        xm = re.search(r"<\?xml.*?</recording>", invites[0]["body"], re.S)
+        sess = None
+        if xm:
+            el = ET.fromstring(xm.group(0)).find("{urn:ietf:params:xml:ns:recording:1}session")
+            sess = el.get("session_id") if el is not None else None
+        check(sess is not None, "metadata session_id is present", str(sess))
+        if sess:
+            check(base64.b64decode(sess) == bytes.fromhex(callsid[2:]),
+                  "session_id preserves the CallSid identity")
+    want = [("siprec", "success"), ("siprec", "exists"), ("siprec", "failed"),
+            ("siprec_pause", "success"), ("siprec_resume", "success"),
+            ("siprec_stop", "success"), ("siprec_stop", "no_recording")]
+    mine = [e for e in events if e["Unique-ID"] == callsid]
+    got = [(e["Application"], e["Application-Response"]) for e in mine]
+    check(got == want, "each app's Application-Response, in order", str(got))
+    var = {"siprec": "start", "siprec_pause": "pause", "siprec_resume": "resume", "siprec_stop": "stop"}
+    check(all(e[f"variable_siprec_{var[e['Application']]}_status"] == e["Application-Response"] for e in mine),
+          "each app's named variable matches its Application-Response")
+    print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
+    sys.exit(1 if fails else 0)
+
+if mode == "srsbye":
+    # siprec -> SRS BYEs 2 s after ACK -> (4 s in) siprec again -> 3 s.
+    sent = [m for m in sip if m["method"] == "SENT-BYE"]
+    if not check(len(sent) == 1, "SRS sent BYE on the first dialog", f"{len(sent)}"):
+        sys.exit(1)
+    bye_t = sent[0]["t"]
+    calls = []
+    for m in invites:
+        cid = hdr(m, "Call-ID")[0]
+        if cid not in calls:
+            calls.append(cid)
+    check(len(calls) == 2, "the second start opened a new recording dialog", f"{len(calls)}")
+    first = [p for p in rtp if p[0] < bye_t]
+    check(len(first) > 50, "RTP flowed before the SRS BYE", f"{len(first)}")
+    if first:
+        ssrc = first[-1][5]
+        late = [p for p in rtp if p[5] == ssrc and p[0] > bye_t + 0.5]
+        check(len(late) == 0, "the first fork stopped after the SRS BYE", f"{len(late)} late packets")
+        second = [p for p in rtp if p[5] != ssrc and p[0] > bye_t]
+        check(len(second) > 50, "the replacement recording forked RTP", f"{len(second)}")
+    check(re.search(r"recording leg for default-\S+ ended \(NORMAL_CLEARING\); stopping its RTP fork", fslog)
+          is not None, "the leg's hangup handler saw the SRS-side end")
+    check("recording leg ended; RTP fork stopped" in fslog, "the fork removed itself")
+    check(re.search(r"replacing recording default-\S+, whose SRS leg had ended", fslog) is not None,
+          "the second start replaced the dead recording")
+    check("by another module mid-call" not in fslog, "no unexpected mid-call bug removal")
     print(f"\n{'PASS' if fails == 0 else 'FAIL'}: {fails} failed check(s)")
     sys.exit(1 if fails else 0)
 
@@ -165,6 +358,12 @@ if len(reinvites) == 2:
     v0, v1, v2 = o_version(sdp_part), o_version(pz["body"]), o_version(rs["body"])
     check(None not in (v0, v1, v2) and v0 < v1 < v2, "o= session-version increases", f"{v0} {v1} {v2}")
 check(len(byes) >= 1, "SRS received BYE")
+if byes and invites:
+    # The internal profile runs rtp-timeout-sec=6 / rtp-hold-timeout-sec=8
+    # and the SRS sends no RTP: the 11 s recording leg must still last.
+    span = byes[0]["t"] - invites[0]["t"]
+    check(span > 10.0, "recording leg outlived the profile's media timeouts", f"BYE {span:.1f}s after INVITE")
+check("MEDIA_TIMEOUT" not in fslog, "no leg hung up with MEDIA_TIMEOUT")
 check(not re.search(r"no usable answer SDP|answer carried no usable payload type", fslog),
       "answer SDP parsed (no codec fallback)")
 

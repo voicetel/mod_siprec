@@ -120,11 +120,18 @@ typedef struct {
 #define SIPREC_METADATA_ID_LEN 24
 
 /* siprec_metadata_uuid_to_id: encode a textual UUID as an RFC 7865
- * metadata ID. Accepts the canonical 8-4-4-4-12 form or 32 bare hex
- * digits, either case. Writes SIPREC_METADATA_ID_LEN characters plus a
+ * metadata ID. Accepts the canonical 8-4-4-4-12 form, 32 bare hex
+ * digits, either case, or a Twilio-shape CallSid ("CA" + 32 hex), which
+ * VoiceML uses as the channel UUID of originated calls.
+ * Writes SIPREC_METADATA_ID_LEN characters plus a
  * NUL to `out`. Returns 0 on success, -1 on malformed input (out is
  * then set to ""). */
 int siprec_metadata_uuid_to_id(const char *uuid, char out[SIPREC_METADATA_ID_LEN + 1]);
+
+/* Prefer the channel identity; use fallback_uuid only for arbitrary
+ * non-UUID channel names. Returns 0 for channel, 1 for fallback, -1 on error. */
+int siprec_metadata_session_id(const char *channel_uuid, const char *fallback_uuid,
+    char out[SIPREC_METADATA_ID_LEN + 1]);
 
 /* siprec_metadata_aor: normalize a FreeSWITCH-side address into the
  * URI RFC 7865 expects in <nameID aor="...">.

@@ -35,6 +35,14 @@ typedef struct siprec_media_ctx {
      * CLOSE callback can tell our removal from the core's. */
     int detaching;
 
+    /* The recording this fork belongs to (same pool, same lifetime).
+     * The callback reads its leg_gone flag every tick. */
+    recording_t *recording;
+
+    /* Set by the callback when it removed itself because the
+     * recording leg ended, for the CLOSE log line. */
+    int leg_ended;
+
     /* The RTP socket (UDP) we send tapped audio over. One
      * socket per stream; v1 caps at 2 streams (read + write
      * directions of the original 2-leg call). */
@@ -82,6 +90,11 @@ typedef struct siprec_media_ctx {
      * recreated if the rate changes mid-call. Owned by the callback
      * until siprec_media_detach destroys it after the bug is gone. */
     switch_audio_resampler_t *resampler;
+
+    /* 1 when forking RX and TX as two streams (streams[0] = what the
+     * leg receives, streams[1] = what it sends, bug has SMBF_STEREO);
+     * 0 for one mixed stream. Fixed at attach. */
+    int separate;
 
     /* Wall-clock time the fork was paused (0 when running), so
      * resume can advance the RTP timestamp across the gap. */
