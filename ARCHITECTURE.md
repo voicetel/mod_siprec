@@ -303,8 +303,8 @@ standalone.
       `siprec_stop` with an ad-hoc URI, failover, and a CallSid-shaped
       channel UUID whose app outcomes are read from
       `CHANNEL_EXECUTE_COMPLETE` over the event socket (`esl_events.py`).
-- [ ] Live integration against `cb-srs` — run
-      `siprec-start-stop.xml` from callBroadcast's TwiML suite
+- [ ] Live integration against siprec-receiver — run
+      `siprec-start-stop.xml` from VoiceML's markup test suite
       with mod_siprec built from this fork; the suite already
       checks for `EXECUTE.*siprec\(` in the journal and
       `[twiml] <uuid>: done`. Move from FAIL to PASS once the
@@ -326,8 +326,8 @@ standalone.
 
 ## Non-goals (deferred)
 
-- **Server-side (SRS)**: this module is SRC-only. The cb-srs
-  receiver is implemented separately in Go.
+- **Server-side (SRS)**: this module is SRC-only. The
+  siprec-receiver SRS is implemented separately in Go.
 - **Video tracks**: RFC 7866 supports them; v1 is audio-only.
 - **IPv6 RTP fork**: supported. The answer's `c=IN IP4` / `c=IN IP6`
   endpoint is classified by `siprec_sdp_addr_kind` and the fork opens

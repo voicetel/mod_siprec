@@ -17,7 +17,7 @@
 #   fallback  separate-streams on, SRS declines the 2nd stream: the module
 #             falls back to one mixed stream
 #   callsid   the recorded leg's UUID is a CallSid ("CA" + 32 hex), as
-#             callBroadcast originates it; start, duplicate start, refused
+#             VoiceML originates it; start, duplicate start, refused
 #             URI, pause, resume, stop, stop again, with each app's
 #             Application-Response captured over the event socket
 set -uo pipefail

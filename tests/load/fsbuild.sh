@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # In-container build: FreeSWITCH (core + sofia) + mod_siprec, reusing the
-# callBroadcast installer's FUNCTIONS but running only the FS+siprec subset
+# VoiceML installer's FUNCTIONS but running only the FS+siprec subset
 # of its main() — no vendor STT modules, no systemd, no verify, no
-# callBroadcast-specific config templating. The local working-tree snapshot
+# VoiceML-specific config templating. The local working-tree snapshot
 # is injected via SIPREC_REPO (a local git path) so the exact code under
 # test is what gets compiled, linked, and loaded.
 set -euo pipefail
 
-INSTALLER=/build/cbfs/install-freeswitch-debian-trixie.sh
+INSTALLER=/build/fs-installer/install-freeswitch-debian-trixie.sh
 [ -f "$INSTALLER" ] || { echo "fsbuild: installer not found at $INSTALLER" >&2; exit 1; }
 
 # Source ONLY the function/variable definitions: strip the trailing
@@ -17,7 +17,7 @@ INSTALLER=/build/cbfs/install-freeswitch-debian-trixie.sh
 # The stripped file MUST live next to the original installer so its
 # SCRIPT_DIR=$(dirname BASH_SOURCE) still resolves — the installer sources
 # its own lib/common.sh via ${SCRIPT_DIR}/lib/common.sh.
-FUNCS="$(dirname "$INSTALLER")/cbfs-funcs.sh"
+FUNCS="$(dirname "$INSTALLER")/installer-funcs.sh"
 sed '/^case "${1:-install}"/,$d' "$INSTALLER" > "$FUNCS"
 
 # install_mod_siprec compiles a hard-coded list of mod_siprec sources,
@@ -55,7 +55,7 @@ done
 # vendor/STT and host-integration steps:
 #   clone_drachtio_modules, stage_mod_{deepgram,google,aws,azure}_transcribe,
 #   install_mod_audio_stream, install_systemd_unit, verify, write_install_stamp,
-#   configure_freeswitch (callBroadcast host config — we boot vanilla instead).
+#   configure_freeswitch (VoiceML host config — we boot vanilla instead).
 install_apt_deps
 install_libpcre
 install_spandsp

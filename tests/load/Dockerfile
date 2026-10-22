@@ -9,7 +9,7 @@
 #
 # Driven from the repo root by tests/load/run.sh, which snapshots the
 # working tree (so the code UNDER TEST is what builds) and supplies
-# callBroadcast's FreeSWITCH installer as the known-good FS build engine.
+# VoiceML's FreeSWITCH installer as the known-good FS build engine.
 FROM debian:trixie
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -27,9 +27,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git ca-certificates sudo libpcre2-dev rsync \
     && rm -rf /var/lib/apt/lists/*
 
-# callBroadcast's FS installer (used as a function library) + the snapshot
+# VoiceML's FS installer (used as a function library) + the snapshot
 # of the mod_siprec working tree under test + the in-container scripts.
-COPY cbfs/                 /build/cbfs/
+COPY fs-installer/         /build/fs-installer/
 COPY mod_siprec_snapshot/  /build/mod_siprec_snapshot/
 COPY fsbuild.sh gate.sh    /build/
 

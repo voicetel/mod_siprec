@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Host orchestration for the Layer 3 load gate. Snapshots the CURRENT
 # mod_siprec working tree (so uncommitted changes UNDER TEST are what
-# build), assembles a Docker build context with callBroadcast's FreeSWITCH
+# build), assembles a Docker build context with VoiceML's FreeSWITCH
 # installer as the build engine, builds the image, and runs the gate.
 #
 #   tests/load/run.sh
 #
 # Env:
-#   CBFS   path to callBroadcast's freeswitch installer dir
-#          (default: ../callBroadcast/freeswitch relative to this repo)
-#   TAG    image tag (default: mod-siprec-load)
+#   FS_INSTALLER  path to VoiceML's freeswitch installer dir
+#                 (default: ../voiceml/freeswitch relative to this repo)
+#   TAG           image tag (default: mod-siprec-load)
 #
 # The build is a full FreeSWITCH-from-source compile (~30-45 min at JOBS=2)
 # and produces a multi-GB image; both are deleted-able afterward with
@@ -19,11 +19,20 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)   # tests/load
 repo=$(cd "$here/../.." && pwd)       # repo root (two levels up)
 tag=${TAG:-mod-siprec-load}
-cbfs=${CBFS:-$(cd "$repo/../callBroadcast/freeswitch" 2>/dev/null && pwd || true)}
+# CBFS is the legacy name for FS_INSTALLER.
+fsinst=${FS_INSTALLER:-${CBFS:-}}
+if [ -z "$fsinst" ]; then
+    for candidate in "$repo/../voiceml/freeswitch" "$repo/../callBroadcast/freeswitch"; do
+        if [ -f "$candidate/install-freeswitch-debian-trixie.sh" ]; then
+            fsinst=$candidate
+            break
+        fi
+    done
+fi
 
-if [ -z "$cbfs" ] || [ ! -f "$cbfs/install-freeswitch-debian-trixie.sh" ]; then
-    echo "callBroadcast FS installer not found." >&2
-    echo "Set CBFS=/path/to/callBroadcast/freeswitch" >&2
+if [ -z "$fsinst" ] || [ ! -f "$fsinst/install-freeswitch-debian-trixie.sh" ]; then
+    echo "VoiceML FreeSWITCH installer not found." >&2
+    echo "Set FS_INSTALLER=/path/to/voiceml/freeswitch" >&2
     exit 1
 fi
 
@@ -42,11 +51,11 @@ git -C "$ctx/mod_siprec_snapshot" -c user.email=load@test -c user.name=load \
 ref=$(git -C "$ctx/mod_siprec_snapshot" rev-parse HEAD)
 
 echo "==> assembling context (installer engine + scripts)"
-cp -a "$cbfs" "$ctx/cbfs"
+cp -a "$fsinst" "$ctx/fs-installer"
 cp "$here/Dockerfile" "$here/fsbuild.sh" "$here/gate.sh" "$ctx/"
 
 if [ "${DRY_RUN:-0}" = 1 ]; then
-    echo "DRY_RUN: context=$ctx ref=$ref cbfs=$cbfs tag=$tag — skipping docker build"
+    echo "DRY_RUN: context=$ctx ref=$ref fs_installer=$fsinst tag=$tag — skipping docker build"
     ls "$ctx"
     exit 0
 fi

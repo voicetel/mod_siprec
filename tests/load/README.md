@@ -47,8 +47,8 @@ A `LAYER3 PASS` line on success; non-zero exit + an `fs.log` tail on failure.
 
 Requirements:
 - Docker.
-- callBroadcast's FreeSWITCH installer at `../callBroadcast/freeswitch`
-  (override with `CBFS=/path`). It is used as the known-good FS build
+- VoiceML's FreeSWITCH installer at `../voiceml/freeswitch`
+  (override with `FS_INSTALLER=/path`). It is used as the known-good FS build
   *engine* — the installer's functions are sourced and only the
   FS + sofia + mod_siprec subset of its `main()` is run (vendor STT
   modules, systemd, and host config templating are skipped).

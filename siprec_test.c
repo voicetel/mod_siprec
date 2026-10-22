@@ -679,7 +679,7 @@ static void test_metadata_uuid_to_id(void) {
         -1, "id:reject misplaced hyphen");
     check_int(siprec_metadata_uuid_to_id("00112233-4455-6677-8899+aabbccddeeff", id),
         -1, "id:reject bad separator");
-    /* callBroadcast originates with origination_uuid=<CallSid>: "CA"
+    /* VoiceML originates with origination_uuid=<CallSid>: "CA"
      * plus 32 hex, 34 characters, not a UUID. */
     check_int(siprec_metadata_uuid_to_id("CA2d711642b726b04401627ca9fbac32f5", id),
         0, "id:accept CallSid-shaped channel uuid");

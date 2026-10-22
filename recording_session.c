@@ -557,7 +557,7 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 	 * an SRS-side record can be correlated with the FreeSWITCH call;
 	 * the group, participants and stream get fresh UUIDs. The channel
 	 * UUID is whatever the originator chose (origination_uuid takes any
-	 * string). A callBroadcast "CA" + 32 hex CallSid preserves its 16
+	 * string). A VoiceML "CA" + 32 hex CallSid preserves its 16
 	 * identity bytes. Other non-UUID names use a fresh session ID,
 	 * logged next to the channel name so operators can match them. */
 	{

@@ -227,7 +227,7 @@ if mode == "fallback":
     sys.exit(1 if fails else 0)
 
 if mode == "callsid":
-    # callBroadcast originates with origination_uuid=<CallSid>, "CA" + 32
+    # VoiceML originates with origination_uuid=<CallSid>, "CA" + 32
     # hex: the metadata must preserve those same 16 identity bytes. Then
     # each app's outcome, as a control plane reads it from its
     # CHANNEL_EXECUTE_COMPLETE.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Records mod_siprec apps' CHANNEL_EXECUTE_COMPLETE events for the live
-test, the way a control plane such as callBroadcast sees them: over
+test, the way a control plane such as VoiceML sees them: over
 mod_event_socket, one event per finished application.
 
 Connects to the local event socket, subscribes to CHANNEL_EXECUTE_COMPLETE

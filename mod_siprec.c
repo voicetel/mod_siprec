@@ -200,7 +200,7 @@ static switch_status_t do_config(switch_bool_t reload)
 	return SWITCH_STATUS_SUCCESS;
 }
 
-/* App outcomes (callBroadcast #171). SWITCH_STANDARD_APPs return void,
+/* App outcomes. SWITCH_STANDARD_APPs return void,
  * so a control plane watching only CHANNEL_EXECUTE_COMPLETE can't tell
  * a start whose SRS leg answered and attached from one that failed.
  * Each app therefore publishes one outcome word, in two places:

@@ -39,7 +39,7 @@ and loads in a real FreeSWITCH built from source — the
 [`tests/load/`](tests/load/) Docker gate boots FS and confirms
 `module_exists mod_siprec` with all four apps registered. The dispatch / media / signalling pipeline has been
 audited and the broken pieces from the original fork have been
-replaced. Live integration against `cb-srs` is documented in
+replaced. Live integration against siprec-receiver is documented in
 [`tests/README.md`](tests/README.md) as the operator
 verification path. Note that v1.6.0–v1.6.1 changed what goes on the
 wire (a `a=sendonly` offer, `a=label:1` in the first INVITE, re-INVITEs
@@ -171,7 +171,7 @@ decoded to prove they are μ-law), separate-streams mode (each labelled
 stream must carry only its own direction's tone), and an IPv6 answer
 (`c=IN IP6 ::1`), and a separate-streams fallback (the SRS declines
 the second stream), and a leg whose UUID is a CallSid (`CA` + 32 hex,
-as callBroadcast originates it) with every app outcome read from
+as VoiceML originates it) with every app outcome read from
 `Application-Response` over the event socket. Interop
 with a production SRS remains the operator verification path in
 [`tests/README.md`](tests/README.md).
@@ -355,7 +355,8 @@ handle with no recording means nothing was recording under it.
                                                                 ▼
                                                          ┌─────────────┐
                                                          │ SRS         │
-                                                         │ (cb-srs,    │
+                                                         │ (siprec-    │
+                                                         │  receiver,  │
                                                          │  ClearIP,   │
                                                          │  Genesys,   │
                                                          │  NICE, ...) │

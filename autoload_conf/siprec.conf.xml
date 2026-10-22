@@ -51,7 +51,7 @@
        (Failover applies to config entries only; an ad-hoc URI
        is a single endpoint.)
 
-       Voicetel default deployment: cb-srs (Go SRS) on
+       Voicetel default deployment: siprec-receiver (Go SRS) on
        127.0.0.1:5070. -->
   <recording-servers>
     <recording-server name="default">
@@ -63,7 +63,7 @@
 
         <!-- SRS SIP port. Distinct from the carrier-side
              5060/5080 to keep recording traffic on its own
-             socket. cb-srs binds 5070 by default. -->
+             socket. siprec-receiver binds 5070 by default. -->
         <param name="port" value="5070"/>
 
         <!-- Transport: "udp" (default) | "tcp" | "tls".
