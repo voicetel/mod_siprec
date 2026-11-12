@@ -141,9 +141,42 @@ typedef struct {
 	switch_mutex_t *recording_servers_mutex;
 	switch_hash_t *recordings_hash;
 	switch_mutex_t *recordings_mutex;
+
+	/* Unload barrier (see siprec_op_begin). `stopping` is set at the
+	 * very top of module shutdown; `ops` counts module entry points
+	 * (apps, hangup handlers) currently executing. Shutdown waits for
+	 * ops to drain before tearing anything down, so no thread is ever
+	 * inside module code — locking a destroyed mutex, running a
+	 * deferred teardown, binding a state handler — after unload has
+	 * returned and the .so is unmapped. */
+	volatile switch_atomic_t stopping;
+	volatile switch_atomic_t ops;
 } globals_t;
 
 extern globals_t globals;
+
+/* siprec_op_begin: register the calling thread as an in-flight module
+ * op for unload safety. Increments globals.ops FIRST and only then
+ * checks stopping, so shutdown (which sets stopping and then waits for
+ * ops to reach 0) always counts an op that is about to run module
+ * code; an op that sees stopping set must touch no module state.
+ *
+ * Returns 1 to proceed (balanced by exactly one siprec_op_end), or 0
+ * when the module is stopping and the op must refuse. */
+static inline int siprec_op_begin(void)
+{
+	switch_atomic_inc(&globals.ops);
+	if (switch_atomic_read(&globals.stopping)) {
+		switch_atomic_dec(&globals.ops);
+		return 0;
+	}
+	return 1;
+}
+
+static inline void siprec_op_end(void)
+{
+	switch_atomic_dec(&globals.ops);
+}
 
 #endif
 

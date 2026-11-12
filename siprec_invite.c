@@ -61,10 +61,17 @@ static switch_status_t siprec_leg_on_hangup(switch_core_session_t *session)
     switch_channel_t *ch = switch_core_session_get_channel(session);
     const char *key = switch_channel_get_variable(ch, SIPREC_LEG_KEY_VAR);
 
-    if (siprec_recording_leg_ended(key, switch_core_session_get_uuid(session))) {
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
-            "siprec: recording leg for %s ended (%s); stopping its RTP fork\n",
-            key, switch_channel_cause2str(switch_channel_get_cause(ch)));
+    /* Refuse when the module is stopping: this handler must not touch
+     * the recordings hash/lock after shutdown's wait has let it be
+     * destroyed. Teardown paths unbind it before their own BYE, and
+     * unload's drain removes whatever recording it would mark. */
+    if (siprec_op_begin()) {
+        if (siprec_recording_leg_ended(key, switch_core_session_get_uuid(session))) {
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
+                "siprec: recording leg for %s ended (%s); stopping its RTP fork\n",
+                key, switch_channel_cause2str(switch_channel_get_cause(ch)));
+        }
+        siprec_op_end();
     }
     return SWITCH_STATUS_SUCCESS;
 }

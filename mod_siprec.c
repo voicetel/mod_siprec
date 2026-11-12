@@ -294,7 +294,13 @@ static const char *siprec_start_app(switch_core_session_t *session, const char *
 SWITCH_STANDARD_APP(siprec_app_function)
 {
 	siprec_outcome_clear(session, "siprec_start_status");
+	if (!siprec_op_begin()) {
+		/* Module is unloading: publish the failure, touch nothing. */
+		siprec_outcome_set(session, "siprec_start_status", "failed");
+		return;
+	}
 	siprec_outcome_set(session, "siprec_start_status", siprec_start_app(session, data));
+	siprec_op_end();
 }
 
 /* siprec_arg_handle: extract the recording handle — the first
@@ -450,17 +456,27 @@ static const char *siprec_direction_outcome(switch_status_t st)
 SWITCH_STANDARD_APP(siprec_pause_app_function)
 {
 	siprec_outcome_clear(session, "siprec_pause_status");
+	if (!siprec_op_begin()) {
+		siprec_outcome_set(session, "siprec_pause_status", "failed");
+		return;
+	}
 	siprec_outcome_set(session, "siprec_pause_status",
 		siprec_direction_outcome(siprec_change_direction(session,
 			siprec_arg_handle(session, data), /*paused*/ 1)));
+	siprec_op_end();
 }
 
 SWITCH_STANDARD_APP(siprec_resume_app_function)
 {
 	siprec_outcome_clear(session, "siprec_resume_status");
+	if (!siprec_op_begin()) {
+		siprec_outcome_set(session, "siprec_resume_status", "failed");
+		return;
+	}
 	siprec_outcome_set(session, "siprec_resume_status",
 		siprec_direction_outcome(siprec_change_direction(session,
 			siprec_arg_handle(session, data), /*paused*/ 0)));
+	siprec_op_end();
 }
 
 SWITCH_STANDARD_APP(siprec_stop_app_function)
@@ -483,6 +499,14 @@ SWITCH_STANDARD_APP(siprec_stop_app_function)
 	 * leaving the box for this handle; the distinction is
 	 * diagnostic. */
 	siprec_outcome_clear(session, "siprec_stop_status");
+	if (!siprec_op_begin()) {
+		/* Module is unloading: its drain stops every recording, but
+		 * this stop must not touch module state the shutdown wait
+		 * has already allowed to be destroyed. Report failure — the
+		 * stop itself did not do the tearing down. */
+		siprec_outcome_set(session, "siprec_stop_status", "failed");
+		return;
+	}
 	{
 		switch_status_t st = stop_recording_session_for_server(session, server_name);
 		siprec_outcome_set(session, "siprec_stop_status",
@@ -495,6 +519,7 @@ SWITCH_STANDARD_APP(siprec_stop_app_function)
 				server_name ? server_name : "");
 		}
 	}
+	siprec_op_end();
 }
 
 /* free_recording_servers: destroy every configured recording-server
@@ -534,6 +559,12 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_siprec_load)
 	/* Build the G.711 encode tables once, before any recording can
 	 * attach a media bug. Idempotent. */
 	siprec_g711_init();
+
+	/* Reset the unload barrier: BSS-zero on a fresh dlopen, but a
+	 * load following an unload in the same process must not inherit
+	 * the previous image's stopping flag. */
+	switch_atomic_set(&globals.stopping, 0);
+	switch_atomic_set(&globals.ops, 0);
 
 	switch_mutex_init(&globals.recording_servers_mutex, SWITCH_MUTEX_NESTED, pool);
 	switch_mutex_init(&globals.recordings_mutex, SWITCH_MUTEX_NESTED, pool);
@@ -577,10 +608,42 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_siprec_shutdown)
 {
 	switch_xml_config_cleanup(general_instructions);
 
+	/* Unload barrier. Set stopping FIRST, then wait for every module
+	 * entry point (apps, both hangup handlers, an in-flight start)
+	 * to finish. siprec_op_begin increments ops before checking
+	 * stopping, so any op that is about to run module code is already
+	 * counted here, and any op that sees stopping set refuses and
+	 * touches nothing. Without this wait, a start still parked in its
+	 * originate (up to originate-timeout seconds) would return to
+	 * bind the call's hangup handler into an unmapped .so, lock the
+	 * recordings mutex this function destroys below, and run its
+	 * deferred teardown in freed code.
+	 *
+	 * The wait is bounded by the ops themselves: apps do not sleep
+	 * internally, the re-INVITEs and BYEs are message-based, and the
+	 * originate honors originate-timeout per candidate. */
+	switch_atomic_set(&globals.stopping, 1);
+	{
+		int waited_ms = 0;
+		while (switch_atomic_read(&globals.ops) > 0) {
+			switch_yield(10000);
+			waited_ms += 10;
+			if (waited_ms % 5000 == 0) {
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+					"siprec: unload waiting for %u in-flight op(s) "
+					"(%d ms so far)\n",
+					switch_atomic_read(&globals.ops), waited_ms);
+			}
+		}
+	}
+
 	/* Tear down every active recording through the same claim-then-
 	 * teardown drain as the stop paths: no blocking teardown runs under
 	 * recordings_mutex, and the hash is empty afterwards so the destroy
-	 * below is safe.
+	 * below is safe. With no ops in flight, no recording is pinned, so
+	 * every teardown runs here rather than being deferred past the
+	 * unload. Each stopped recording's call also loses this module's
+	 * hangup handler, so a later hangup cannot call into unmapped code.
 	 *
 	 * siprec_media_detach calls switch_core_media_bug_remove, which is
 	 * synchronous — it blocks until any in-flight callback on the FS

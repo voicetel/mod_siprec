@@ -197,6 +197,16 @@ standalone.
       failed start) and at unload; a recording leg's watcher is unbound
       before the module BYEs the leg itself. The handlers are never
       unbound from inside themselves (FreeSWITCH walks the array by index).
+      Shutdown is additionally fenced by an op barrier: every module
+      entry point (the four apps, both hangup handlers) registers as an
+      in-flight op (`globals.ops`, incremented before `stopping` is
+      checked); shutdown sets `stopping`, waits for `ops` to drain, and
+      only then tears recordings down and destroys the hashes. A
+      `siprec` start still parked in its originate therefore finishes
+      (its deferred teardown included) before the .so is unmapped,
+      and ops that begin after `stopping` is set refuse and touch
+      nothing — a start can no longer re-bind a hangup handler into a
+      module that is going away.
 - [x] State handler: `on_hangup` (with `on_destroy` as an idempotent
       backstop) is bound *before* the INVITE, so a hangup at any point
       tears the recording down. The core removes media bugs before any

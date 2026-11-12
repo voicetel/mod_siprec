@@ -48,7 +48,13 @@
 static switch_status_t siprec_on_hangup(switch_core_session_t *session)
 {
 	switch_assert(session);
-	stop_recording_session(session);
+	/* Refuse when the module is stopping: shutdown's drain stops
+	 * every recording anyway, and proceeding could touch state the
+	 * wait in mod_siprec_shutdown has already let it destroy. */
+	if (siprec_op_begin()) {
+		stop_recording_session(session);
+		siprec_op_end();
+	}
 	return SWITCH_STATUS_SUCCESS;
 }
 
@@ -69,6 +75,10 @@ char *siprec_recording_key(const char *server_name, const char *uuid)
 /* Forward declaration: release_recording (below) may run the deferred
  * teardown, but teardown_recording is defined further down. */
 static void teardown_recording(recording_t *recording);
+
+/* Forward declaration: the public start_recording_session wrapper is
+ * defined further down. */
+static switch_status_t start_recording_session_inner(switch_core_session_t *session, const char *recording_server_name, const char *srs_uri);
 
 /* claim_recording: atomically remove the recording for `key` from
  * the recordings hash and return it, or NULL if it wasn't there.
@@ -471,7 +481,24 @@ static recording_server_t *copy_server_chain(switch_memory_pool_t *pool, const r
 	return head;
 }
 
+/* Public entry point, wrapped in the unload op guard: an in-flight
+ * start is exactly the op shutdown must wait for (its final release
+ * can run the deferred teardown, and it binds the call's hangup
+ * handler), and a start that races shutdown refuses rather than bind
+ * handlers into a module that is going away. */
 switch_status_t start_recording_session(switch_core_session_t *session, const char *recording_server_name, const char *srs_uri)
+{
+	switch_status_t st;
+
+	if (!siprec_op_begin()) {
+		return SWITCH_STATUS_FALSE;
+	}
+	st = start_recording_session_inner(session, recording_server_name, srs_uri);
+	siprec_op_end();
+	return st;
+}
+
+static switch_status_t start_recording_session_inner(switch_core_session_t *session, const char *recording_server_name, const char *srs_uri)
 {
 	recording_server_t *server = NULL;
 	recording_t *recording = NULL;
@@ -606,7 +633,10 @@ switch_status_t start_recording_session(switch_core_session_t *session, const ch
 	stale = switch_core_hash_find(globals.recordings_hash, recording->key);
 	if (stale && (stale->use_count > 0 || !switch_atomic_read(&stale->leg_gone))) {
 		switch_mutex_unlock(globals.recordings_mutex);
-		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+		/* WARNING, not ERROR: the app reports this as its own "exists"
+		 * outcome, so a duplicate start is an expected condition, not
+		 * a fault. */
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
 			"siprec: recording %s already exists\n", recording->key);
 		switch_core_destroy_memory_pool(&recording_pool);
 		/* Distinct from FALSE: a recording IS live under this handle,
